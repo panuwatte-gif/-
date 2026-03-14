@@ -2,7 +2,7 @@
 <html lang="th">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>วางแผนออมเงิน / ငွေစုဆောင်းမှု</title>
 <style>
   :root {
@@ -187,45 +187,45 @@
     <div class="card-body">
       <div class="field">
         <div class="field-label">ดอกเบี้ย Digital / ဒစ်ဂျစ်တယ်အတိုး (%/ปี)</div>
-        <div class="input-wrap"><input type="number" id="r2" value="1.5" step="0.25" min="0" max="10" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="r2" value="1.5" step="0.25" min="0" max="10" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">ดอกเบี้ยธนาคาร / ဘဏ်အတိုး (%/ปี)</div>
-        <div class="input-wrap"><input type="number" id="r3" value="1.0" step="0.25" min="0" max="10" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="r3" value="1.0" step="0.25" min="0" max="10" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">ทองคำ — ขั้นต่ำ / ရွှေ (အနည်းဆုံး) (%/ปี)</div>
-        <div class="input-wrap"><input type="number" id="rlo" value="2" step="1" min="-10" max="15" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="rlo" value="2" step="1" min="-10" max="15" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">ทองคำ — ค่าเฉลี่ย / ရွှေ (ပျမ်းမျှ) (%/ปี)</div>
-        <div class="input-wrap"><input type="number" id="rhi" value="8" step="1" min="0" max="20" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="rhi" value="8" step="1" min="0" max="20" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">สลากออมสิน — ดอกเบี้ย (%/ปี)</div>
-        <div class="input-wrap"><input type="number" id="rb" value="1.5" step="0.25" min="0" max="5" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="rb" value="1.5" step="0.25" min="0" max="5" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">สลากออมสิน — คาดถูกรางวัล (%/ปี)</div>
-        <div class="input-wrap"><input type="number" id="rl" value="0.3" step="0.1" min="0" max="5" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="rl" value="0.3" step="0.1" min="0" max="5" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="divl"></div>
       <div class="field">
         <div class="field-label">เงินเฟ้อ (ชายแดนพม่า) / ငွေဖောင်းပွမှု</div>
-        <div class="input-wrap"><input type="number" id="infl" value="3.5" step="0.5" min="0" max="20" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="infl" value="3.5" step="0.5" min="0" max="20" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">ค่าครองชีพ/เดือน หลังกลับบ้าน / နေ့စဉ်ကုန်ကျ</div>
-        <div class="input-wrap"><input type="number" id="coc" value="4000" step="500" min="1000" max="20000" oninput="go()"><span class="unit">฿/เดือน</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="coc" value="4000" step="500" min="1000" max="20000" oninput="go()" onchange="go()"><span class="unit">฿/เดือน</span></div>
         <div class="field-hint">* สำหรับชนกลุ่มน้อยชายแดน ปรับตามพื้นที่จริง</div>
       </div>
       <div class="field">
         <div class="field-label">ค่าวีซ่า+ใบอนุญาต / ဗီဇာကြေး</div>
-        <div class="input-wrap"><input type="number" id="visa" value="20000" step="1000" min="0" max="50000" oninput="go()"><span class="unit">฿/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="visa" value="20000" step="1000" min="0" max="50000" oninput="go()" onchange="go()"><span class="unit">฿/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">ค่าใช้จ่ายอื่นๆ/ปี (เช่น ค่าเทอมลูก) / အခြားကုန်ကျ</div>
-        <div class="input-wrap"><input type="number" id="other" value="0" step="500" min="0" oninput="go()"><span class="unit">฿/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="other" value="0" step="500" min="0" oninput="go()" onchange="go()"><span class="unit">฿/ปี</span></div>
         <div class="field-hint">ใส่ได้เลย เช่น ค่าเทอม ค่าส่งเงินเพิ่มพิเศษ</div>
       </div>
     </div>
@@ -242,28 +242,28 @@
     <div class="card-body">
       <div class="field">
         <div class="field-label">ค่าแรง/วัน <span class="mm">လုပ်ခ (တစ်ရက်)</span></div>
-        <div class="input-wrap"><input type="number" id="wage" value="400" step="25" min="0" oninput="go()"><span class="unit">฿/วัน</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="wage" value="400" step="25" min="0" oninput="go()" onchange="go()"><span class="unit">฿/วัน</span></div>
       </div>
       <div class="field">
         <div class="field-label">วันทำงาน/สัปดาห์ <span class="mm">တစ်ပတ်အလုပ်ရက်</span></div>
-        <div class="input-wrap"><input type="number" id="days" value="6" step="1" min="1" max="7" oninput="go()"><span class="unit">วัน</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="days" value="6" step="1" min="1" max="7" oninput="go()" onchange="go()"><span class="unit">วัน</span></div>
       </div>
       <div class="field">
         <div class="field-label">วันลา+วันหยุด/ปี <span class="mm">ရုံးပိတ်ရက် (တစ်နှစ်)</span></div>
-        <div class="input-wrap"><input type="number" id="vac" value="15" step="1" min="0" max="60" oninput="go()"><span class="unit">วัน/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="vac" value="15" step="1" min="0" max="60" oninput="go()" onchange="go()"><span class="unit">วัน/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">ค่าแรงเพิ่มขึ้น/ปี <span class="mm">လုပ်ခတိုးနှုန်း</span></div>
-        <div class="input-wrap"><input type="number" id="wg" value="3" step="1" min="0" max="15" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="wg" value="3" step="1" min="0" max="15" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="divl"></div>
       <div class="field">
         <div class="field-label">โบนัส/ปี <span class="mm">ဆုကြေး (တစ်နှစ်)</span></div>
-        <div class="input-wrap"><input type="number" id="bon" value="10000" step="1000" min="0" oninput="go()"><span class="unit">฿/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="bon" value="10000" step="1000" min="0" oninput="go()" onchange="go()"><span class="unit">฿/ปี</span></div>
       </div>
       <div class="field">
         <div class="field-label">โบนัสเพิ่มขึ้น/ปี <span class="mm">ဆုကြေးတိုးနှုန်း</span></div>
-        <div class="input-wrap"><input type="number" id="bg" value="2" step="1" min="0" max="15" oninput="go()"><span class="unit">%/ปี</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="bg" value="2" step="1" min="0" max="15" oninput="go()" onchange="go()"><span class="unit">%/ปี</span></div>
       </div>
       <div class="income-box">
         <div><div class="income-lbl">รายได้เฉลี่ย/เดือน / လစဉ်ဝင်ငွေ</div><div class="income-sub" id="inc_yr"></div></div>
@@ -283,15 +283,15 @@
     <div class="card-body">
       <div class="field">
         <div class="field-label">ส่งกลับบ้าน/เดือน <span class="mm">အိမ်ပြန်ပို့</span></div>
-        <div class="input-wrap"><input type="number" id="snd" value="2000" step="100" min="0" oninput="go()"><span class="unit">฿/เดือน</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="snd" value="2000" step="100" min="0" oninput="go()" onchange="go()"><span class="unit">฿/เดือน</span></div>
       </div>
       <div class="field">
         <div class="field-label">ค่าใช้จ่ายทั่วไป/เดือน <span class="mm">နေ့စဉ်ကုန်ကျ</span></div>
-        <div class="input-wrap"><input type="number" id="gen" value="5000" step="100" min="0" oninput="go()"><span class="unit">฿/เดือน</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="gen" value="5000" step="100" min="0" oninput="go()" onchange="go()"><span class="unit">฿/เดือน</span></div>
       </div>
       <div class="field">
         <div class="field-label">เผื่อป่วย/ฉุกเฉิน/เดือน <span class="mm">ကျန်းမာ/အရေးပေါ်</span></div>
-        <div class="input-wrap"><input type="number" id="emg" value="500" step="100" min="0" oninput="go()"><span class="unit">฿/เดือน</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="emg" value="500" step="100" min="0" oninput="go()" onchange="go()"><span class="unit">฿/เดือน</span></div>
         <div class="field-hint">⚕ ค่าหมอ ยา อุบัติเหตุ — สำคัญมาก อย่าลืมเผื่อไว้</div>
       </div>
 
@@ -341,23 +341,23 @@
     <div class="card-body">
       <div class="field">
         <div class="field-label">1. เงินสด / ငွေသား <span style="color:#a0a0a0">0%</span></div>
-        <div class="input-wrap"><input type="number" id="p1" value="10" step="5" min="0" max="100" oninput="go()"><span class="unit">%</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="p1" value="10" step="5" min="0" max="100" oninput="go()" onchange="go()"><span class="unit">%</span></div>
       </div>
       <div class="field">
         <div class="field-label">2. เงินฝาก Digital / ဒစ်ဂျစ်တယ်</div>
-        <div class="input-wrap"><input type="number" id="p2" value="40" step="5" min="0" max="100" oninput="go()"><span class="unit">%</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="p2" value="40" step="5" min="0" max="100" oninput="go()" onchange="go()"><span class="unit">%</span></div>
       </div>
       <div class="field">
         <div class="field-label">3. ธนาคาร / ဘဏ်</div>
-        <div class="input-wrap"><input type="number" id="p3" value="20" step="5" min="0" max="100" oninput="go()"><span class="unit">%</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="p3" value="20" step="5" min="0" max="100" oninput="go()" onchange="go()"><span class="unit">%</span></div>
       </div>
       <div class="field">
         <div class="field-label">4. ทองคำ / ရွှေ</div>
-        <div class="input-wrap"><input type="number" id="p4" value="20" step="5" min="0" max="100" oninput="go()"><span class="unit">%</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="p4" value="20" step="5" min="0" max="100" oninput="go()" onchange="go()"><span class="unit">%</span></div>
       </div>
       <div class="field">
         <div class="field-label">5. สลากออมสิน / ထီဘောင်</div>
-        <div class="input-wrap"><input type="number" id="p5" value="10" step="5" min="0" max="100" oninput="go()"><span class="unit">%</span></div>
+        <div class="input-wrap"><input type="number" inputmode="decimal" id="p5" value="10" step="5" min="0" max="100" oninput="go()" onchange="go()"><span class="unit">%</span></div>
       </div>
       <div class="port-bar">
         <div class="alloc-seg" id="pb1" style="background:#767676;flex:10"></div>
@@ -378,7 +378,7 @@
     </div>
     <div class="card-body">
       <div class="yr-row">
-        <input type="number" class="yr-input" id="yrin" value="15" min="1" max="30" oninput="clampY()">
+        <input type="number" inputmode="decimal" class="yr-input" id="yrin" value="15" min="1" max="30" oninput="clampY()">
         <span style="font-size:14px;color:#767676">ปี / နှစ်</span>
         <div class="yr-btns">
           <button class="yr-btn" onclick="setY(5,this)">5</button>
@@ -504,6 +504,8 @@
 
 <script>
 var YR = 15;
+// Mobile fallback: recalc on any input blur
+document.addEventListener("focusout", function(e){ if(e.target.tagName==="INPUT") go(); });
 var chartOpen = false;
 var chartData = { lo:[], hi:[], re:[], sn:[] };
 
@@ -512,8 +514,18 @@ var DEFAULTS = { r2:1.5, r3:1.0, rlo:2, rhi:8, rb:1.5, rl:0.3, infl:3.5, coc:400
   snd:2000, gen:5000, emg:500, p1:10, p2:40, p3:20, p4:20, p5:10 };
 
 function g(id){ return document.getElementById(id); }
-function v(id){ return parseFloat(g(id).value) || 0; }
-function fmt(n){ if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return Math.round(n/1e3)+'K'; return Math.round(n).toLocaleString(); }
+function v(id){
+  var el = g(id); if(!el) return (DEFAULTS[id]||0);
+  var n = parseFloat(el.value);
+  return (isFinite(n) ? n : (DEFAULTS[id]||0));
+}
+function safeDiv(a,b){ return (b && isFinite(b) && b!==0) ? a/b : 0; }
+function fmt(n){
+  if(!isFinite(n)||isNaN(n)) return '–';
+  if(n>=1e6) return (n/1e6).toFixed(1)+'M';
+  if(n>=1e3) return Math.round(n/1e3)+'K';
+  return Math.round(n).toLocaleString();
+}
 function pct(x, total){ return total > 0 ? Math.round(x/total*100) : 0; }
 
 function doReset(){
@@ -610,15 +622,18 @@ function go(){
     aLo = aLo*(1+rLo) + svY;
     aHi = aHi*(1+rHi) + svY;
     aSn += snd*12;
+    var inflFactor = Math.pow(1+infl, y);
+    var reVal = (isFinite(inflFactor) && inflFactor>0) ? Math.round(aHi/inflFactor) : 0;
     dLo.push(Math.round(aLo));
     dHi.push(Math.round(aHi));
-    dRe.push(Math.round(aHi/Math.pow(1+infl,y)));
+    dRe.push(reVal);
     dSn.push(Math.round(aSn));
   }
   chartData = { lo:dLo, hi:dHi, re:dRe, sn:dSn };
 
-  var fLo=dLo[YR-1], fHi=dHi[YR-1], fRe=dRe[YR-1], fSn=dSn[YR-1];
-  var yL = fRe/(coc*12);
+  var fLo=dLo[YR-1]||0, fHi=dHi[YR-1]||0, fRe=dRe[YR-1]||0, fSn=dSn[YR-1]||0;
+  var cocMo = Math.max(1, coc) * 12;
+  var yL = isFinite(fRe) && fRe>0 ? fRe/cocMo : 0;
 
   g('rv1').textContent = '฿'+fmt(fLo);
   g('rv2').textContent = '฿'+fmt(fHi);
@@ -737,7 +752,20 @@ function drawBiz(real){
   });
 }
 
-go();
-</script>
+// Populate all inputs from DEFAULTS on load (ensures values exist before go())
+function populateDefaults(){
+  Object.keys(DEFAULTS).forEach(function(k){
+    var el = g(k);
+    if(el && (el.value==='' || el.value==='0' && DEFAULTS[k]!==0)){
+      el.value = DEFAULTS[k];
+    }
+  });
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded', function(){ populateDefaults(); go(); });
+} else {
+  populateDefaults(); go();
+}
 </body>
 </html>
