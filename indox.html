@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>วางแผนออมเงิน / ငွေစုဆောင်းမှု</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f2f4f6;color:#4a4a4a;font-size:15px}
+.page{max-width:480px;margin:0 auto;padding:12px}
+.card{background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin-bottom:12px;overflow:hidden}
+.ch{padding:11px 14px 9px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #d8d8d8}
+.ch .ico{font-size:18px}
+.ch .ttl{font-size:13px;font-weight:700;flex:1}
+.ch .mmtl{font-size:10px;font-weight:400;color:#767676;display:block;font-family:"Noto Sans Myanmar","Padauk","Myanmar Text",sans-serif;margin-top:1px}
+.cb{padding:12px 14px}
+/* assumption card */
+.acard{border:1.5px solid #f0c060}
+.acard .ch{background:#fffae8;border-bottom-color:#f0c060}
+/* field */
+.f{margin-bottom:10px}
+.f:last-child{margin-bottom:0}
+.fl{font-size:12px;color:#767676;margin-bottom:4px}
+.fl .mm{font-size:10px;color:#a0a0a0;font-family:"Noto Sans Myanmar","Padauk","Myanmar Text",sans-serif;display:block;margin-top:1px}
+.iw{display:flex;align-items:center;gap:6px}
+input[type=number]{-moz-appearance:textfield;width:100%;padding:10px 12px;border:1.5px solid #d0d0d0;border-radius:8px;font-size:16px;color:#4a4a4a;background:#fff;outline:none}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+input[type=number]:focus{border-color:#1a5a9a}
+.un{font-size:12px;color:#767676;white-space:nowrap;flex-shrink:0;min-width:44px}
+.fh{font-size:10px;color:#a0a0a0;margin-top:3px}
+.dl{height:1px;background:#e0e0e0;margin:10px 0}
+/* status colors */
+.st-ok{background:#e8f5ee!important;border-color:#a8d8bc!important}
+.st-ok .sv-lbl,.st-ok .sv-val,.st-ok .sv-pct{color:#1a7a52!important}
+.st-warn{background:#fffae8!important;border-color:#f0c060!important}
+.st-warn .sv-lbl,.st-warn .sv-val,.st-warn .sv-pct{color:#b06000!important}
+.st-bad{background:#fdecea!important;border-color:#f0a8a0!important}
+.st-bad .sv-lbl,.st-bad .sv-val,.st-bad .sv-pct{color:#c0302a!important}
+/* income summary */
+.inc-box{display:flex;justify-content:space-between;align-items:center;background:#f8f8f8;border-radius:8px;border:1px solid #d0d0d0;padding:9px 12px;margin-top:8px}
+.inc-lbl{font-size:11px;color:#767676}
+.inc-val{font-size:17px;font-weight:700;color:#4a4a4a}
+.inc-sub{font-size:10px;color:#a0a0a0}
+/* savings box */
+.sv-box{display:flex;justify-content:space-between;align-items:center;border-radius:8px;border:1.5px solid #d0d0d0;padding:10px 12px;margin-top:8px;background:#fff;transition:background .2s,border-color .2s}
+.sv-lbl{font-size:12px;font-weight:600;color:#4a4a4a}
+.sv-val{font-size:20px;font-weight:700;color:#4a4a4a}
+.sv-pct{font-size:11px;color:#767676}
+.err{font-size:11px;color:#c0302a;margin-top:4px;display:none}
+/* alloc bar */
+.ab-wrap{background:#f2f4f6;border-radius:8px;padding:10px 12px;margin-top:10px}
+.ab-title{font-size:11px;font-weight:600;color:#767676;margin-bottom:7px}
+.ab-bar{height:10px;border-radius:5px;display:flex;overflow:hidden;margin-bottom:7px}
+.ab-seg{min-width:0;transition:flex .25s}
+.ab-rows{display:flex;flex-direction:column;gap:5px}
+.ab-row{display:flex;align-items:center;gap:7px}
+.ab-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.ab-lbl{font-size:11px;flex:1}
+.ab-pct{font-size:12px;font-weight:600;min-width:36px;text-align:right}
+.ab-bt{font-size:11px;color:#767676;min-width:80px;text-align:right}
+.ab-total{display:flex;align-items:center;padding-top:6px;border-top:1px solid #d8d8d8;margin-top:4px}
+.ab-tlbl{font-size:12px;font-weight:700;flex:1}
+.ab-tval{font-size:13px;font-weight:700}
+/* port bar */
+.pb{height:10px;border-radius:5px;display:flex;overflow:hidden;margin:8px 0 4px}
+.pt-note{font-size:11px;margin-top:4px}
+/* year selector */
+.yr-row{display:flex;align-items:center;gap:10px}
+.yr-in{width:64px;padding:8px;border:1.5px solid #d0d0d0;border-radius:8px;font-size:18px;font-weight:700;text-align:center;color:#4a4a4a;background:#fff;outline:none}
+.yr-in:focus{border-color:#1a5a9a}
+.yr-btns{display:flex;gap:5px;flex-wrap:wrap}
+.yr-btn{padding:6px 11px;border-radius:20px;border:1.5px solid #d0d0d0;background:#fff;font-size:12px;color:#767676;cursor:pointer}
+.yr-btn.act{border-color:#1a5a9a;background:#e8f0fa;color:#1a5a9a;font-weight:600}
+/* result grid */
+.rg{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.rc{border-radius:8px;padding:12px 10px;text-align:center;border:1.5px solid #d0d0d0;background:#fff}
+.rc .rv{font-size:22px;font-weight:700;color:#4a4a4a;line-height:1.1}
+.rc .rl{font-size:10px;color:#767676;margin-top:4px;line-height:1.4}
+.rc.ok{border-color:#a8d8bc;background:#e8f5ee}.rc.ok .rv{color:#1a7a52}
+.rc.warn{border-color:#f0c060;background:#fffae8}.rc.warn .rv{color:#b06000}
+/* read box */
+.read-box{background:#f8f8f8;border-radius:8px;border:1px solid #e0e0e0;padding:10px 12px;font-size:11px;color:#767676;line-height:1.7;margin-bottom:10px}
+.read-box b{color:#4a4a4a}
+/* chart toggle */
+.ct-btn{width:100%;padding:11px 14px;border:none;background:#f2f4f6;border-top:1px solid #d8d8d8;text-align:left;font-size:13px;font-weight:600;color:#1a5a9a;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.cw{padding:10px 14px 14px;display:none}
+.cw.open{display:block}
+.c-title{font-size:12px;font-weight:600;color:#4a4a4a;margin-bottom:4px}
+.c-sub{font-size:10px;color:#767676;margin-bottom:8px;line-height:1.5}
+canvas{display:block;width:100%!important}
+.leg{display:flex;flex-wrap:wrap;gap:8px;margin-top:7px}
+.li{display:flex;align-items:center;gap:4px;font-size:10px;color:#767676}
+.ld{width:14px;height:3px;border-radius:2px;flex-shrink:0}
+/* biz */
+.bi{display:flex;align-items:flex-start;gap:9px;padding:9px 10px;border-radius:8px;border:1.5px solid #d0d0d0;background:#fff;margin-bottom:7px}
+.bi.can{border-color:#a8d8bc;background:#e8f5ee}
+.bi-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:3px}
+.bi-name{font-size:13px;font-weight:600;color:#4a4a4a}
+.bi-mm{font-size:10px;color:#767676;font-family:"Noto Sans Myanmar","Padauk","Myanmar Text",sans-serif;display:block;margin-top:1px}
+.bi-desc{font-size:11px;color:#767676;margin-top:2px}
+.bi-cost{font-size:12px;font-weight:600;flex-shrink:0;color:#a0a0a0}
+.bi-cost.can{color:#1a7a52}
+/* note */
+.ni{background:#fff;border-radius:8px;border:1.5px solid #d0d0d0;padding:10px 12px;margin-bottom:7px}
+.ntl{font-size:13px;font-weight:700;margin-bottom:5px}
+.nl{font-size:11px;color:#767676;line-height:1.7;padding-left:14px;text-indent:-14px}
+/* reset btn */
+.rbtn{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid #f0c060;background:#fff;color:#b06000;cursor:pointer}
+/* legend bar */
+.color-legend{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;padding:0 0 12px}
+.cl-item{display:flex;align-items:center;gap:5px;font-size:11px}
+.cl-box{width:14px;height:14px;border-radius:4px;flex-shrink:0}
+</style>
+</head>
+<body>
+<div class="page">
+
+<div style="text-align:center;padding:14px 0 10px">
+  <div style="font-size:20px;font-weight:800;color:#1a1a1a">วางแผนออมเงิน</div>
+  <div style="font-size:13px;color:#767676;font-family:'Noto Sans Myanmar','Padauk',sans-serif;margin-top:3px">ငွေစုဆောင်းမှုစီစဉ်ခြင်း</div>
+</div>
+
+<div class="color-legend">
+  <div class="cl-item"><div class="cl-box" style="background:#e8f5ee;border:1.5px solid #a8d8bc"></div>🟢 ดี / ကောင်း</div>
+  <div class="cl-item"><div class="cl-box" style="background:#fffae8;border:1.5px solid #f0c060"></div>🟡 พอใช้ / အတော်ရ</div>
+  <div class="cl-item"><div class="cl-box" style="background:#fdecea;border:1.5px solid #f0a8a0"></div>🔴 ต้องแก้ / ပြင်ရမည်</div>
+</div>
+
+<!-- ASSUMPTIONS -->
+<div class="card acard">
+  <div class="ch"><span class="ico">⚙️</span><span class="ttl">สมมติฐาน<span class="mmtl">ကျွမ်းကျင်သူသတ်မှတ်ချက်</span></span><button class="rbtn" onclick="doReset()">↺ คืนค่า</button></div>
+  <div class="cb">
+    <div class="f"><div class="fl">ดอกเบี้ย Digital (%/ปี)<span class="mm">Digital အတိုးနှုန်း</span></div><div class="iw"><input type="number" inputmode="decimal" id="r2" step="0.25" min="0" max="10"><span class="un">%/ปี</span></div></div>
+    <div class="f"><div class="fl">ดอกเบี้ยธนาคาร (%/ปี)<span class="mm">ဘဏ်အတိုးနှုန်း</span></div><div class="iw"><input type="number" inputmode="decimal" id="r3" step="0.25" min="0" max="10"><span class="un">%/ปี</span></div></div>
+    <div class="f"><div class="fl">ทองคำ ขั้นต่ำ (%/ปี)<span class="mm">ရွှေ အနည်းဆုံး</span></div><div class="iw"><input type="number" inputmode="decimal" id="rlo" step="1" min="-10" max="15"><span class="un">%/ปี</span></div></div>
+    <div class="f"><div class="fl">ทองคำ ค่าเฉลี่ย (%/ปี)<span class="mm">ရွှေ ပျမ်းမျှ</span></div><div class="iw"><input type="number" inputmode="decimal" id="rhi" step="1" min="0" max="20"><span class="un">%/ปี</span></div></div>
+    <div class="f"><div class="fl">สลากออมสิน ดอกเบี้ย (%/ปี)<span class="mm">ထီဘောင် အတိုး</span></div><div class="iw"><input type="number" inputmode="decimal" id="rb" step="0.25" min="0" max="5"><span class="un">%/ปี</span></div></div>
+    <div class="f"><div class="fl">สลากออมสิน คาดถูกรางวัล (%/ปี)<span class="mm">ထီပေါက်မျှော်လင့်</span></div><div class="iw"><input type="number" inputmode="decimal" id="rl" step="0.1" min="0" max="5"><span class="un">%/ปี</span></div></div>
+    <div class="dl"></div>
+    <div class="f"><div class="fl">เงินเฟ้อ ชายแดน (%/ปี)<span class="mm">ငွေဖောင်းပွမှု</span></div><div class="iw"><input type="number" inputmode="decimal" id="infl" step="0.5" min="0" max="20"><span class="un">%/ปี</span></div></div>
+    <div class="f"><div class="fl">ค่าครองชีพ/เดือน หลังกลับบ้าน<span class="mm">အိမ်ပြန်ကုန်ကျ (လစဉ်)</span></div><div class="iw"><input type="number" inputmode="decimal" id="coc" step="500" min="1000" max="20000"><span class="un">฿/เดือน</span></div><div class="fh">* ปรับตามพื้นที่จริง ชนกลุ่มน้อยชายแดน</div></div>
+    <div class="f"><div class="fl">ค่าวีซ่า+ใบอนุญาต/ปี<span class="mm">ဗီဇာကြေး (တစ်နှစ်)</span></div><div class="iw"><input type="number" inputmode="decimal" id="visa" step="1000" min="0" max="50000"><span class="un">฿/ปี</span></div></div>
+    <div class="f"><div class="fl">ค่าใช้จ่ายอื่นๆ/ปี (เช่น ค่าเทอมลูก)<span class="mm">အခြားကုန်ကျ (တစ်နှစ်)</span></div><div class="iw"><input type="number" inputmode="decimal" id="other" step="500" min="0"><span class="un">฿/ปี</span></div></div>
+  </div>
+</div>
+
+<!-- INCOME -->
+<div class="card">
+  <div class="ch"><span class="ico">💼</span><span class="ttl">รายได้<span class="mmtl">ဝင်ငွေ</span></span></div>
+  <div class="cb">
+    <div class="f"><div class="fl">ค่าแรง/วัน<span class="mm">လုပ်ခ (တစ်ရက်)</span></div><div class="iw"><input type="number" inputmode="decimal" id="wage" step="25" min="0"><span class="un">฿/วัน</span></div></div>
+    <div class="f"><div class="fl">วันทำงาน/สัปดาห์<span class="mm">တစ်ပတ် အလုပ်ရက်</span></div><div class="iw"><input type="number" inputmode="decimal" id="days" step="1" min="1" max="7"><span class="un">วัน</span></div></div>
+    <div class="f"><div class="fl">วันลา+หยุด/ปี<span class="mm">ရုံးပိတ်ရက် (တစ်နှစ်)</span></div><div class="iw"><input type="number" inputmode="decimal" id="vac" step="1" min="0" max="60"><span class="un">วัน/ปี</span></div></div>
+    <div class="f"><div class="fl">ค่าแรงเพิ่มขึ้น/ปี<span class="mm">လုပ်ခ တိုးနှုန်း</span></div><div class="iw"><input type="number" inputmode="decimal" id="wg" step="1" min="0" max="15"><span class="un">%/ปี</span></div></div>
+    <div class="dl"></div>
+    <div class="f"><div class="fl">โบนัส/ปี<span class="mm">ဆုကြေး (တစ်နှစ်)</span></div><div class="iw"><input type="number" inputmode="decimal" id="bon" step="1000" min="0"><span class="un">฿/ปี</span></div></div>
+    <div class="f"><div class="fl">โบนัสเพิ่มขึ้น/ปี<span class="mm">ဆုကြေး တိုးနှုန်း</span></div><div class="iw"><input type="number" inputmode="decimal" id="bg" step="1" min="0" max="15"><span class="un">%/ปี</span></div></div>
+    <div class="inc-box"><div><div class="inc-lbl">รายได้เฉลี่ย/เดือน / လစဉ်ဝင်ငွေ</div><div class="inc-sub" id="inc_yr"></div></div><div class="inc-val" id="inc_mo">–</div></div>
+  </div>
+</div>
+
+<!-- ALLOCATION -->
+<div class="card">
+  <div class="ch"><span class="ico">📊</span><span class="ttl">แบ่งเงินแต่ละเดือน<span class="mmtl">လစဉ်ငွေဖွဲ့ဝေပုံ</span></span></div>
+  <div class="cb">
+    <div class="f"><div class="fl">ส่งกลับบ้าน/เดือน<span class="mm">အိမ်ပြန်ပို့</span></div><div class="iw"><input type="number" inputmode="decimal" id="snd" step="100" min="0"><span class="un">฿/เดือน</span></div></div>
+    <div class="f"><div class="fl">ค่าใช้จ่ายทั่วไป/เดือน<span class="mm">နေ့စဉ်ကုန်ကျ</span></div><div class="iw"><input type="number" inputmode="decimal" id="gen" step="100" min="0"><span class="un">฿/เดือน</span></div></div>
+    <div class="f"><div class="fl">เผื่อป่วย/ฉุกเฉิน/เดือน ⚕<span class="mm">ကျန်းမာ/အရေးပေါ်</span></div><div class="iw"><input type="number" inputmode="decimal" id="emg" step="100" min="0"><span class="un">฿/เดือน</span></div><div class="fh">⚕ ค่าหมอ ยา อุบัติเหตุ — สำคัญมาก อย่าลืมเผื่อไว้</div></div>
+    <div class="err" id="sv_error">⚠ รายจ่ายเกินรายรับ ออมได้ 0 / ကုန်ကျသည်သာရှိ</div>
+    <div class="sv-box" id="sv_box">
+      <div><div class="sv-lbl">💰 ออมได้/เดือน / စုဆောင်းရငွေ</div><div class="sv-pct" id="sv_pct">–</div></div>
+      <div class="sv-val" id="sv_mo">–</div>
+    </div>
+    <div class="ab-wrap">
+      <div class="ab-title">สัดส่วนรายได้ / ဝင်ငွေအချိုး</div>
+      <div class="ab-bar">
+        <div class="ab-seg" id="as1" style="background:#1a5a9a"></div>
+        <div class="ab-seg" id="as2" style="background:#e07000"></div>
+        <div class="ab-seg" id="as3" style="background:#c0302a"></div>
+        <div class="ab-seg" id="as4" style="background:#5a3a9a"></div>
+        <div class="ab-seg" id="as5" style="background:#1a7a52"></div>
+      </div>
+      <div class="ab-rows">
+        <div class="ab-row"><div class="ab-dot" style="background:#1a5a9a"></div><div class="ab-lbl">ส่งบ้าน</div><div class="ab-pct" id="ap1" style="color:#1a5a9a">–%</div><div class="ab-bt" id="abt1">–</div></div>
+        <div class="ab-row"><div class="ab-dot" style="background:#e07000"></div><div class="ab-lbl">ค่าใช้จ่าย</div><div class="ab-pct" id="ap2" style="color:#e07000">–%</div><div class="ab-bt" id="abt2">–</div></div>
+        <div class="ab-row"><div class="ab-dot" style="background:#c0302a"></div><div class="ab-lbl">ฉุกเฉิน</div><div class="ab-pct" id="ap3" style="color:#c0302a">–%</div><div class="ab-bt" id="abt3">–</div></div>
+        <div class="ab-row"><div class="ab-dot" style="background:#5a3a9a"></div><div class="ab-lbl">วีซ่า+อื่นๆ</div><div class="ab-pct" id="ap4" style="color:#5a3a9a">–%</div><div class="ab-bt" id="abt4">–</div></div>
+        <div class="ab-row"><div class="ab-dot" style="background:#1a7a52"></div><div class="ab-lbl" style="font-weight:600">💰 ออม</div><div class="ab-pct" id="ap5" style="color:#1a7a52;font-weight:700">–%</div><div class="ab-bt" id="abt5" style="color:#1a7a52;font-weight:600">–</div></div>
+      </div>
+      <div class="ab-total"><div class="ab-tlbl">รวม / စုစုပေါင်း</div><div class="ab-tval" id="tot_pct">–</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- PORTFOLIO -->
+<div class="card">
+  <div class="ch"><span class="ico">🏦</span><span class="ttl">เก็บเงินในรูปแบบไหน?<span class="mmtl">ငွေသိုလှောင်ပုံ</span></span></div>
+  <div class="cb">
+    <div class="f"><div class="fl">1. เงินสด / ငွေသား (ผลตอบแทน 0%)</div><div class="iw"><input type="number" inputmode="decimal" id="p1" step="5" min="0" max="100"><span class="un">%</span></div></div>
+    <div class="f"><div class="fl">2. เงินฝาก Digital / ဒစ်ဂျစ်တယ်</div><div class="iw"><input type="number" inputmode="decimal" id="p2" step="5" min="0" max="100"><span class="un">%</span></div></div>
+    <div class="f"><div class="fl">3. ธนาคาร / ဘဏ်</div><div class="iw"><input type="number" inputmode="decimal" id="p3" step="5" min="0" max="100"><span class="un">%</span></div></div>
+    <div class="f"><div class="fl">4. ทองคำ / ရွှေ</div><div class="iw"><input type="number" inputmode="decimal" id="p4" step="5" min="0" max="100"><span class="un">%</span></div></div>
+    <div class="f"><div class="fl">5. สลากออมสิน / ထီဘောင်</div><div class="iw"><input type="number" inputmode="decimal" id="p5" step="5" min="0" max="100"><span class="un">%</span></div></div>
+    <div class="pb">
+      <div class="ab-seg" id="pb1" style="background:#888"></div>
+      <div class="ab-seg" id="pb2" style="background:#378add"></div>
+      <div class="ab-seg" id="pb3" style="background:#1a5a9a"></div>
+      <div class="ab-seg" id="pb4" style="background:#e07000"></div>
+      <div class="ab-seg" id="pb5" style="background:#1a7a52"></div>
+    </div>
+    <div class="pt-note" id="pt_note">รวม: <b id="pt_val">–</b></div>
+  </div>
+</div>
+
+<!-- YEARS -->
+<div class="card">
+  <div class="ch"><span class="ico">📅</span><span class="ttl">จะออมกี่ปี? / နှစ်မည်မျှ</span></div>
+  <div class="cb">
+    <div class="yr-row">
+      <input type="number" inputmode="decimal" class="yr-in" id="yrin" min="1" max="30">
+      <span style="font-size:14px;color:#767676">ปี / နှစ်</span>
+      <div class="yr-btns">
+        <button class="yr-btn" onclick="setY(5,this)">5</button>
+        <button class="yr-btn" onclick="setY(10,this)">10</button>
+        <button class="yr-btn" onclick="setY(15,this)">15</button>
+        <button class="yr-btn" onclick="setY(20,this)">20</button>
+        <button class="yr-btn" onclick="setY(25,this)">25</button>
+        <button class="yr-btn" onclick="setY(30,this)">30</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- RESULTS -->
+<div class="card">
+  <div class="ch"><span class="ico">🎯</span><span class="ttl">เงินออมที่ได้ / စုဆောင်းမှုရလဒ်</span></div>
+  <div class="cb">
+    <div class="rg">
+      <div class="rc" id="rc1"><div class="rv" id="rv1">–</div><div class="rl">ขั้นต่ำสุด<br><span style="font-size:9px">(ถ้าทองตก)</span></div></div>
+      <div class="rc" id="rc2"><div class="rv" id="rv2">–</div><div class="rl">ค่าเฉลี่ย<br><span style="font-size:9px">(ตัวเลขในกระเป๋า)</span></div></div>
+      <div class="rc" id="rc3"><div class="rv" id="rv3">–</div><div class="rl">มูลค่าจริง<br><span style="font-size:9px">(หักเงินเฟ้อ)</span></div></div>
+      <div class="rc" id="rc4"><div class="rv" id="rv4">–</div><div class="rl">อยู่ได้กี่ปี<br><span style="font-size:9px">(ไม่ทำงานเลย)</span></div></div>
+    </div>
+    <div class="read-box">
+      <b>วิธีอ่านผล / ဖတ်နည်း</b><br>
+      <b>ค่าเฉลี่ย</b> = ตัวเลขในกระเป๋า แต่ซื้อของได้น้อยลงเพราะเงินเฟ้อ<br>
+      <b>มูลค่าจริง</b> = ซื้อของได้จริงเท่าไหร่เทียบวันนี้ — ใช้ตัวนี้วางแผน<br>
+      <b>ขั้นต่ำ–ค่าเฉลี่ย</b> = ช่วงผลลัพธ์ ขึ้นกับราคาทอง
+    </div>
+    <button class="ct-btn" onclick="toggleChart(this)">
+      📈 ดูกราฟเงินออมตลอด <span id="yr_lbl">15</span> ปี <span id="c_arrow">▼</span>
+    </button>
+    <div class="cw" id="c_wrap">
+      <div class="c-title" id="c_title">กราฟเงินออมสะสม 15 ปี</div>
+      <div class="c-sub">เส้นเขียว = เงินออมค่าเฉลี่ย | พื้นที่เขียวอ่อน = ช่วงขั้นต่ำ–ค่าเฉลี่ย | เส้นเทาประ = มูลค่าจริงหักเงินเฟ้อ | เส้นแดงประ = เงินส่งบ้านสะสม</div>
+      <canvas id="ch" height="180"></canvas>
+      <div class="leg">
+        <div class="li"><div class="ld" style="background:#1a7a52"></div>เงินออมค่าเฉลี่ย</div>
+        <div class="li"><div class="ld" style="background:#1a7a52;opacity:.2;height:8px"></div>ช่วง low–avg</div>
+        <div class="li"><div class="ld" style="background:#767676;border-top:2px dashed #767676"></div>มูลค่าจริง</div>
+        <div class="li"><div class="ld" style="background:#c0302a;opacity:.5"></div>ส่งบ้านสะสม</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BIZ -->
+<div class="card">
+  <div class="ch"><span class="ico">🏘️</span><span class="ttl">กลับบ้านทำอะไรได้บ้าง?<span class="mmtl">အိမ်ပြန်လျှင် ဘာလုပ်နိုင်မည်</span></span></div>
+  <div class="cb">
+    <div style="font-size:11px;color:#767676;margin-bottom:8px">🟢 กรอบเขียว = เงินออมถึงแล้ว ✓ | ⬜ กรอบเทา = ยังไม่ถึง</div>
+    <div id="biz"></div>
+  </div>
+</div>
+
+<!-- HIDDEN COSTS -->
+<div class="card">
+  <div class="ch"><span class="ico">⚠️</span><span class="ttl">ค่าใช้จ่ายที่มักลืมคิด<span class="mmtl">မမေ့ပါနှင့် ကုန်ကျစရိတ်</span></span></div>
+  <div class="cb">
+    <div class="ni"><div class="ntl">🏥 สุขภาพ / ကျန်းမာရေး</div>
+      <div class="nl">• ป่วยทั่วไป (ไข้ ท้องเสีย): ~500–2,000฿/ครั้ง ปีละ 3–5 ครั้ง</div>
+      <div class="nl">• ป่วยหนัก อุบัติเหตุ: 20,000–200,000฿+ ห่างไกลแพงมาก</div>
+      <div class="nl">• โรคเรื้อรัง เบาหวาน ความดัน: 1,000–3,000฿/เดือน ตลอดชีวิต</div>
+      <div class="nl">• คลอดบุตร: 5,000–30,000฿</div>
+    </div>
+    <div class="ni"><div class="ntl">📚 การศึกษาลูก / သားသမီးပညာ</div>
+      <div class="nl">• ประถม–มัธยม ชายแดนพม่า: ~3,000–8,000฿/ปี × 12 ปี</div>
+      <div class="nl">• มหาวิทยาลัยรัฐพม่า: ~5,000–15,000฿/ปี × 4 ปี</div>
+      <div class="nl">• ลูก 2 คน เรียนจนจบ ม.ปลาย: ต้องการ ~70,000–190,000฿</div>
+    </div>
+    <div class="ni"><div class="ntl">🏠 บ้านและที่ดิน / အိမ်နှင့်မြေ</div>
+      <div class="nl">• ซ่อมบ้าน/หลังคา: 10,000–50,000฿ ทุก 5–10 ปี</div>
+      <div class="nl">• ปลูกบ้านใหม่ (ไม้): 60,000–200,000฿</div>
+      <div class="nl">• ซื้อที่ดิน ½–1 ไร่ ชายแดน: 50,000–300,000฿</div>
+    </div>
+    <div class="ni"><div class="ntl">👨‍👩‍👧 ครอบครัวและสังคม / မိသားစုနှင့်လူမှု</div>
+      <div class="nl">• งานแต่งงาน (ลูก): 30,000–100,000฿+</div>
+      <div class="nl">• งานศพ: 10,000–50,000฿</div>
+      <div class="nl">• ดูแลพ่อแม่ชรา: 1,000–5,000฿/เดือน × หลายปี</div>
+      <div class="nl">• ภัยธรรมชาติ น้ำท่วม ไฟไหม้: 20,000–100,000฿</div>
+    </div>
+    <div style="font-size:10px;color:#a0a0a0;margin-top:6px;font-style:italic">* ตัวเลขสำหรับชนกลุ่มน้อยชายแดน อาจต่างกันตามพื้นที่และเผ่า</div>
+  </div>
+</div>
+
+<div style="text-align:center;padding:12px 0 20px;font-size:10px;color:#a0a0a0">สร้างด้วยความห่วงใย | ကြင်နာမှုဖြင့်ဖန်တီးသည်</div>
+</div>
+
+<script>
+// ── DEFAULT VALUES ──────────────────────────────────────
+var D = {
+  r2:1.5, r3:1.0, rlo:2, rhi:8, rb:1.5, rl:0.3,
+  infl:3.5, coc:4000, visa:20000, other:0,
+  wage:400, days:6, vac:15, wg:3, bon:10000, bg:2,
+  snd:2000, gen:5000, emg:500,
+  p1:10, p2:40, p3:20, p4:20, p5:10
+};
+var YR = 15;
+var chartOpen = false;
+var CD = {lo:[],hi:[],re:[],sn:[]};
+
+// ── HELPERS ─────────────────────────────────────────────
+function g(id){ return document.getElementById(id); }
+function v(id){ var el=g(id); if(!el) return 0; var n=parseFloat(el.value); return isNaN(n)?0:n; }
+function fmt(n){ if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return Math.round(n/1e3)+'K'; return Math.round(n).toLocaleString(); }
+function pc(x,t){ return t>0 ? Math.round(x/t*100) : 0; }
+
+// ── INIT: set all values from defaults ─────────────────
+function init(){
+  Object.keys(D).forEach(function(k){
+    var el=g(k);
+    if(el) el.value = D[k];
+  });
+  g('yrin').value = YR;
+  document.querySelectorAll('.yr-btn').forEach(function(b){
+    b.classList.toggle('act', parseInt(b.textContent)===YR);
+  });
+  // attach events
+  Object.keys(D).forEach(function(k){
+    var el=g(k);
+    if(el){ el.addEventListener('input',go); el.addEventListener('change',go); }
+  });
+  g('yrin').addEventListener('input', clampY);
+  g('yrin').addEventListener('change', clampY);
+  document.addEventListener('focusout', function(e){ if(e.target.tagName==='INPUT') go(); });
+  go();
+}
+
+function doReset(){
+  Object.keys(D).forEach(function(k){ var el=g(k); if(el) el.value=D[k]; });
+  YR=15; g('yrin').value=15;
+  document.querySelectorAll('.yr-btn').forEach(function(b){ b.classList.toggle('act', b.textContent==='15'); });
+  go();
+}
+
+function clampY(){
+  var n=Math.min(30,Math.max(1,parseInt(g('yrin').value)||1));
+  g('yrin').value=n; YR=n;
+  document.querySelectorAll('.yr-btn').forEach(function(b){ b.classList.remove('act'); });
+  go();
+}
+
+function setY(y,el){
+  YR=y; g('yrin').value=y;
+  document.querySelectorAll('.yr-btn').forEach(function(b){ b.classList.remove('act'); });
+  el.classList.add('act'); go();
+}
+
+function toggleChart(btn){
+  chartOpen=!chartOpen;
+  g('c_wrap').classList.toggle('open',chartOpen);
+  g('c_arrow').textContent=chartOpen?'▲':'▼';
+  if(chartOpen) setTimeout(function(){ drawChart(CD.lo,CD.hi,CD.re,CD.sn,YR); },60);
+}
+
+// ── MAIN CALC ───────────────────────────────────────────
+function go(){
+  var wage=v('wage'),days=v('days'),vac=v('vac'),wg=v('wg')/100;
+  var bon=v('bon'),bg=v('bg')/100;
+  var wdY=Math.max(0,days*52-vac);
+  var annI0=wage*wdY+bon, moInc=annI0/12;
+  g('inc_mo').textContent='฿'+Math.round(moInc).toLocaleString();
+  g('inc_yr').textContent='รายปี ฿'+Math.round(annI0).toLocaleString();
+
+  var snd=v('snd'),gen=v('gen'),emg=v('emg');
+  var visaM=v('visa')/12, othM=v('other')/12;
+  var fixOut=snd+gen+emg+visaM+othM;
+  var svMo=Math.max(0,moInc-fixOut);
+  var ow=fixOut>moInc;
+
+  g('sv_error').style.display=ow?'block':'none';
+  g('sv_mo').textContent='฿'+Math.round(svMo).toLocaleString();
+  var svPct=pc(svMo,moInc);
+  g('sv_pct').textContent=svPct+'% ของรายได้ / ဝင်ငွေ၏';
+  var sb=g('sv_box');
+  sb.className='sv-box '+(ow?'st-bad':svPct>=20?'st-ok':svPct>=10?'st-warn':'st-bad');
+
+  // alloc bar
+  var tot=Math.max(moInc,fixOut+0.01);
+  var segs=[snd,gen,emg,visaM+othM,svMo];
+  ['as1','as2','as3','as4','as5'].forEach(function(id,i){ g(id).style.flex=segs[i]/tot*100; });
+  ['ap1','ap2','ap3','ap4','ap5'].forEach(function(id,i){ g(id).textContent=pc(segs[i],moInc)+'%'; });
+  ['abt1','abt2','abt3','abt4','abt5'].forEach(function(id,i){ g(id).textContent='฿'+Math.round(segs[i]).toLocaleString(); });
+  var totPct=pc(snd+gen+emg+visaM+othM+svMo,moInc);
+  g('tot_pct').textContent=totPct+'%';
+  g('tot_pct').style.color=Math.abs(totPct-100)<2?'#1a7a52':'#c0302a';
+
+  // portfolio
+  var p=[v('p1'),v('p2'),v('p3'),v('p4'),v('p5')];
+  var pt=p.reduce(function(a,b){return a+b},0);
+  var pn=pt>0?p.map(function(x){return x/pt}):[.2,.2,.2,.2,.2];
+  ['pb1','pb2','pb3','pb4','pb5'].forEach(function(id,i){ g(id).style.flex=pn[i]*100; });
+  g('pt_val').textContent=pt+'%';
+  g('pt_val').style.color=pt===100?'#1a7a52':'#c0302a';
+  g('pt_note').innerHTML='รวม: <b id="pt_val" style="color:'+(pt===100?'#1a7a52':'#c0302a')+'">'+pt+'%</b> '+(pt===100?'✓':'← ต้องรวมได้ 100%');
+
+  // returns
+  var r2=v('r2')/100,r3=v('r3')/100,rlo=v('rlo')/100,rhi=v('rhi')/100;
+  var rb=v('rb')/100,rl=v('rl')/100,infl=v('infl')/100,coc=v('coc');
+  var rLo=pn[1]*r2+pn[2]*r3+pn[3]*rlo+pn[4]*(rb+rl);
+  var rHi=pn[1]*r2+pn[2]*r3+pn[3]*rhi+pn[4]*(rb+rl);
+
+  // 30-year projection
+  var dLo=[],dHi=[],dRe=[],dSn=[],aLo=0,aHi=0,aSn=0;
+  for(var y=1;y<=30;y++){
+    var wY=wage*wdY*Math.pow(1+wg,y-1);
+    var bY=bon*Math.pow(1+bg,y-1);
+    var moY=(wY+bY)/12;
+    var svY=Math.max(0,moY-fixOut)*12;
+    aLo=aLo*(1+rLo)+svY; aHi=aHi*(1+rHi)+svY; aSn+=snd*12;
+    dLo.push(Math.round(aLo)); dHi.push(Math.round(aHi));
+    dRe.push(Math.round(aHi/Math.pow(1+infl,y))); dSn.push(Math.round(aSn));
+  }
+  CD={lo:dLo,hi:dHi,re:dRe,sn:dSn};
+
+  var fLo=dLo[YR-1],fHi=dHi[YR-1],fRe=dRe[YR-1],yL=fRe/(coc*12);
+  g('rv1').textContent='฿'+fmt(fLo);
+  g('rv2').textContent='฿'+fmt(fHi);
+  g('rv3').textContent='฿'+fmt(fRe);
+  g('rv4').textContent=yL>=1?yL.toFixed(1)+' ปี':'< 1 ปี';
+  g('rc2').className='rc '+(fHi>=400000?'ok':fHi>=150000?'warn':'');
+  g('rc3').className='rc '+(fRe>=300000?'ok':fRe>=100000?'warn':'');
+  g('rc4').className='rc '+(yL>=5?'ok':yL>=2?'warn':'');
+  g('yr_lbl').textContent=YR;
+  g('c_title').textContent='กราฟเงินออมสะสม '+YR+' ปี';
+
+  if(chartOpen) drawChart(dLo,dHi,dRe,dSn,YR);
+  drawBiz(fRe);
+}
+
+// ── CHART ───────────────────────────────────────────────
+function drawChart(dLo,dHi,dRe,dSn,yr){
+  var cv=g('ch'); if(!cv) return;
+  var W=cv.parentElement.clientWidth-28; if(W<200) W=300;
+  var H=180;
+  cv.width=W*2; cv.height=H*2; cv.style.width=W+'px'; cv.style.height=H+'px';
+  var ctx=cv.getContext('2d'); ctx.scale(2,2);
+  var pd={t:16,r:14,b:28,l:54}, cw=W-pd.l-pd.r, ch=H-pd.t-pd.b;
+  var all=dHi.slice(0,yr).concat(dRe.slice(0,yr),dSn.slice(0,yr));
+  var mx=Math.max.apply(null,all)*1.12||1;
+  ctx.clearRect(0,0,W,H);
+  // grid
+  for(var i=0;i<=4;i++){
+    var gy=pd.t+ch*i/4;
+    ctx.strokeStyle='rgba(0,0,0,.07)'; ctx.lineWidth=.5;
+    ctx.beginPath(); ctx.moveTo(pd.l,gy); ctx.lineTo(pd.l+cw,gy); ctx.stroke();
+    var gv=mx*(1-i/4);
+    ctx.fillStyle='rgba(0,0,0,.45)'; ctx.font='bold 11px -apple-system,sans-serif'; ctx.textAlign='right';
+    ctx.fillText(gv>=1e6?(gv/1e6).toFixed(1)+'M':Math.round(gv/1e3)+'K', pd.l-4, gy+4);
+  }
+  var step=yr<=10?1:yr<=15?3:5;
+  ctx.fillStyle='rgba(0,0,0,.4)'; ctx.font='11px -apple-system,sans-serif'; ctx.textAlign='center';
+  for(var y=step;y<=yr;y+=step) ctx.fillText('ปี'+y, pd.l+cw*(y-1)/Math.max(yr-1,1), H-pd.b+11);
+  function xo(i){ return pd.l+cw*(i/Math.max(yr-1,1)); }
+  function yo(val){ return pd.t+ch*(1-Math.max(0,val)/mx); }
+  // band
+  ctx.beginPath();
+  for(var i2=0;i2<yr;i2++){ i2===0?ctx.moveTo(xo(i2),yo(dHi[i2])):ctx.lineTo(xo(i2),yo(dHi[i2])); }
+  for(var i3=yr-1;i3>=0;i3--) ctx.lineTo(xo(i3),yo(dLo[i3]));
+  ctx.closePath(); ctx.fillStyle='rgba(26,122,82,.13)'; ctx.fill();
+  // lines
+  function line(d,col,w,dash){
+    ctx.beginPath(); ctx.strokeStyle=col; ctx.lineWidth=w;
+    if(dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
+    for(var ii=0;ii<yr;ii++) ii===0?ctx.moveTo(xo(ii),yo(d[ii])):ctx.lineTo(xo(ii),yo(d[ii]));
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  line(dLo,'rgba(26,122,82,.3)',1,[3,3]);
+  line(dSn,'rgba(192,48,42,.5)',1.5,[2,3]);
+  line(dRe,'#888',1.5,[5,3]);
+  line(dHi,'#1a7a52',2.5,null);
+  // endpoint dot + label
+  var ex=xo(yr-1),ey=yo(dHi[yr-1]);
+  ctx.beginPath(); ctx.arc(ex,ey,5,0,Math.PI*2); ctx.fillStyle='#1a7a52'; ctx.fill();
+  ctx.beginPath(); ctx.arc(ex,ey,5,0,Math.PI*2); ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
+  ctx.font='bold 11px -apple-system,sans-serif'; ctx.fillStyle='#1a7a52'; ctx.textAlign='center';
+  var lx=Math.min(Math.max(ex,pd.l+20),pd.l+cw-20);
+  ctx.fillText('฿'+fmt(dHi[yr-1]), lx, ey-10);
+}
+
+// ── BIZ LIST ────────────────────────────────────────────
+var BIZ=[
+  {c:25000,  n:'เลี้ยงไก่/เป็ด (10–20 ตัว)', mm:'ကြက်/ဘဲမွေးမြူ',   d:'ขายไข่+เนื้อในชุมชน ~1,000฿/เดือน'},
+  {c:40000,  n:'แผงขายอาหาร/ขนม',           mm:'အစားအသောက်ရောင်း', d:'ตลาดนัดชุมชน หน้าโรงเรียน'},
+  {c:60000,  n:'ร้านของชำเล็กๆ',             mm:'ကုန်စုံဆိုင်လေး',  d:'ขายของใช้+อาหารแห้ง ชายแดน'},
+  {c:80000,  n:'รับซื้อของป่า/ผลผลิต',       mm:'တောထွက်ဝယ်ရောင်း', d:'พ่อค้าคนกลาง ซื้อจากชาวบ้านขายต่อ'},
+  {c:100000, n:'มอเตอร์ไซค์รับจ้าง',         mm:'ဆိုင်ကယ်ငှားရမ်း', d:'ซื้อรถมือสอง วิ่งรับ-ส่งคน/สินค้า'},
+  {c:150000, n:'สวนผัก/พืชผสม',              mm:'ဟင်းသီးဟင်းရွက်ခြံ',d:'กะหล่ำ ผักกาด ถั่ว ขายส่งตลาด'},
+  {c:250000, n:'ร้านอาหารเล็ก',              mm:'စားသောက်ဆိုင်လေး', d:'ในชุมชนหรือตลาด ผลตอบแทนดี'},
+  {c:350000, n:'เลี้ยงหมู (2–3 แม่พันธุ์)',  mm:'ဝက်မွေးမြူ',       d:'ขายลูกหมู รายได้ดี ต้องมีความรู้'},
+  {c:500000, n:'ที่ดินเกษตร ½–1 ไร่',        mm:'လယ်မြေ ½–1 ဧက',   d:'ปลูกข้าว เลี้ยงตัวได้ เป็นมรดก'},
+  {c:700000, n:'ฟาร์มครบวงจรขนาดเล็ก',       mm:'စိုက်ပျိုးရေးဖားမ်',d:'ผัก+สัตว์+แปรรูป หลายแหล่งรายได้'},
+];
+
+function drawBiz(real){
+  var el=g('biz'); el.innerHTML='';
+  var reach=BIZ.filter(function(b){ return real>=b.c; });
+  var near=BIZ.filter(function(b){ return real<b.c; }).slice(0,3);
+  reach.concat(near).forEach(function(b){
+    var ok=real>=b.c;
+    var d=document.createElement('div');
+    d.className='bi'+(ok?' can':'');
+    d.innerHTML=
+      '<div class="bi-dot" style="background:'+(ok?'#1a7a52':'#c0c0c0')+'"></div>'+
+      '<div style="flex:1">'+
+        '<div class="bi-name">'+(ok?'✓ ':'')+b.n+'</div>'+
+        '<span class="bi-mm">'+b.mm+'</span>'+
+        '<div class="bi-desc">'+b.d+'</div>'+
+      '</div>'+
+      '<div class="bi-cost'+(ok?' can':'')+'">฿'+b.c.toLocaleString()+'</div>';
+    el.appendChild(d);
+  });
+}
+
+// ── START ────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
