@@ -33,6 +33,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # The Gradle download host sometimes answers 5xx; retry instead of failing the build.
+      - name: Download Gradle
+        run: |
+          for i in 1 2 3 4; do
+            ./gradlew --no-daemon --version && exit 0
+            echo "Gradle download failed (attempt $i), retrying..."
+            sleep $((i * 15))
+          done
+          exit 1
+
       - name: Unit tests (screen + report logic)
         run: ./gradlew --no-daemon --stacktrace :core:test
 
