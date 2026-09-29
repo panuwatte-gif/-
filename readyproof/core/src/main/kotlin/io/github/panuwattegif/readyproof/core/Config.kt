@@ -1,8 +1,9 @@
 package io.github.panuwattegif.readyproof.core
 
 /**
- * Every behaviour the app has is driven by this object. Defaults match the Thai GrabMerchant
- * screens (tabs "กำลังเตรียม / พร้อมจัดส่ง / ประวัติ", order numbers "GF-123").
+ * Every behaviour the app has is driven by this object. Defaults cover GrabMerchant in both
+ * English and Thai (tabs "Preparing / Ready / Upcoming / History" =
+ * "กำลังเตรียม / พร้อมจัดส่ง / ที่กำลังจะถึง / ประวัติ", order numbers "GF-123").
  * Adding a setting = add a field here + in [ConfigCodec] + a row in the Settings screen.
  */
 data class Config(
@@ -15,34 +16,45 @@ data class Config(
     /** Prefix put in front of group 1 to build the canonical order number. */
     val gfPrefix: String = "GF-",
 
-    /** Screenshot when a button matching [pressTriggers] is tapped. */
-    val capturePress: Boolean = true,
+    /** Labels of the order tabs; used to tell which tab is open. */
+    val tabLabels: List<String> = listOf(
+        "Preparing", "Ready", "Upcoming", "History",
+        "กำลังเตรียม", "พร้อมจัดส่ง", "ที่กำลังจะถึง", "ประวัติ",
+    ),
+    /** The tab whose orders are all "pressed ready": everything shown there is evidence. */
+    val readyTabLabels: List<String> = listOf("Ready", "พร้อมจัดส่ง"),
+
+    /** Screenshot orders shown in the Ready tab (once per order). */
+    val captureReady: Boolean = true,
+    /**
+     * Only used when the app does not report which tab is open: a card with one of these
+     * (and none of [readyNone]) counts as being in the Ready tab.
+     */
+    val readyAny: List<String> = listOf("Finding a driver", "Driver", "กำลังค้นหาคนขับ", "คนขับ"),
+    val readyNone: List<String> = listOf("Ready in", "พร้อมจัดส่งใน", "Completed", "เสร็จสมบูรณ์", "Cancelled", "ยกเลิก"),
+    /** The same order is photographed as READY again only after this many minutes. */
+    val readyRepeatMinutes: Int = 90,
+
     /**
      * Button labels that mean "food is ready". Exact match by default;
      * "text*" = starts with, "*text*" = contains, "id:xyz" = view id contains xyz.
      */
-    val pressTriggers: List<String> = listOf("พร้อมจัดส่ง"),
-    /** Taps on widgets whose class/role contains these tokens are ignored (the tab "พร้อมจัดส่ง"). */
+    val pressTriggers: List<String> = listOf("Ready", "พร้อมจัดส่ง"),
+    /** Taps on widgets whose class/role contains these tokens are ignored (the tab of the same name). */
     val pressExcludeHints: List<String> = listOf("tab", "แท็บ"),
-    /** Label of the prep countdown on a card, e.g. "พร้อมจัดส่งใน: 5:53 นาที". */
-    val countdownKeywords: List<String> = listOf("พร้อมจัดส่งใน"),
+    /** Label of the prep countdown on a card, e.g. "Ready in: 9:32 min". */
+    val countdownKeywords: List<String> = listOf("Ready in", "พร้อมจัดส่งใน"),
+    /** After the button is tapped, remind to open the Ready tab if no READY shot follows. */
+    val remindReadyTab: Boolean = true,
+    /** Also screenshot the moment the button is tapped (not needed as evidence). */
+    val capturePress: Boolean = false,
 
-    /** Screenshot when an order card shows a "ready, waiting for / with driver" status. */
-    val captureReady: Boolean = true,
-    val readyAny: List<String> = listOf(
-        "กำลังค้นหาคนขับ", "คนขับจะมารับ", "คนขับกำลังมา", "คนขับมาถึง", "คนขับถึงร้าน",
-    ),
-    /** A card containing any of these is NOT counted as READY (still preparing / already done). */
-    val readyNone: List<String> = listOf("พร้อมจัดส่งใน", "เสร็จสมบูรณ์"),
-    /** The same order is photographed as READY again only after this many minutes. */
-    val readyRepeatMinutes: Int = 90,
-
-    /** Screenshot when the history list shows a delayed order. */
+    /** Screenshot the history list when it shows a delayed order. */
     val captureDelay: Boolean = true,
-    val doneAny: List<String> = listOf("เสร็จสมบูรณ์"),
-    val delayAny: List<String> = listOf("ล่าช้าไป"),
+    val doneAny: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
+    val delayAny: List<String> = listOf("Delayed by", "ล่าช้าไป"),
 
-    /** Evidence counts for a delayed order if taken within this many hours before it finished. */
+    /** A READY shot counts for a delayed order if taken within this many hours before it finished. */
     val evidenceWindowHours: Int = 4,
 
     val showToast: Boolean = true,
@@ -59,8 +71,8 @@ data class Config(
         val errors = ArrayList<String>()
         if (!isUsablePattern(gfPattern)) errors += "รูปแบบเลขออเดอร์ไม่ถูกต้อง (ว่าง, ผิดรูปแบบ หรือจับข้อความว่างได้)"
         if (targetPackages.isEmpty()) errors += "ต้องมีแอปเป้าหมายอย่างน้อย 1 แอป"
-        if (pressTriggers.isEmpty() && capturePress) errors += "ต้องมีคำของปุ่มอย่างน้อย 1 คำ (หรือปิดการแคปตอนกดปุ่ม)"
-        if (readyAny.isEmpty() && captureReady) errors += "ต้องมีคำสถานะ READY อย่างน้อย 1 คำ (หรือปิดการแคป READY)"
+        if (readyTabLabels.isEmpty() && captureReady) errors += "ต้องมีชื่อแท็บ Ready อย่างน้อย 1 คำ (หรือปิดการแคปแท็บ Ready)"
+        if (pressTriggers.isEmpty() && (capturePress || remindReadyTab)) errors += "ต้องมีคำบนปุ่มอย่างน้อย 1 คำ (หรือปิดการเตือน/การแคปตอนกดปุ่ม)"
         if (jpegQuality !in 30..100) errors += "คุณภาพภาพต้องอยู่ระหว่าง 30–100"
         if (retentionDays !in 1..365) errors += "จำนวนวันที่เก็บภาพต้องอยู่ระหว่าง 1–365"
         if (readyRepeatMinutes !in 1..1440) errors += "เวลาแคป READY ซ้ำต้องอยู่ระหว่าง 1–1440 นาที"
@@ -85,21 +97,27 @@ data class Config(
 }
 
 object ConfigCodec {
+    /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
+    const val VERSION = 2
+
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
-            "v" to 1,
+            "v" to VERSION,
             "enabled" to c.enabled,
             "targetPackages" to c.targetPackages,
             "gfPattern" to c.gfPattern,
             "gfPrefix" to c.gfPrefix,
-            "capturePress" to c.capturePress,
-            "pressTriggers" to c.pressTriggers,
-            "pressExcludeHints" to c.pressExcludeHints,
-            "countdownKeywords" to c.countdownKeywords,
+            "tabLabels" to c.tabLabels,
+            "readyTabLabels" to c.readyTabLabels,
             "captureReady" to c.captureReady,
             "readyAny" to c.readyAny,
             "readyNone" to c.readyNone,
             "readyRepeatMinutes" to c.readyRepeatMinutes,
+            "pressTriggers" to c.pressTriggers,
+            "pressExcludeHints" to c.pressExcludeHints,
+            "countdownKeywords" to c.countdownKeywords,
+            "remindReadyTab" to c.remindReadyTab,
+            "capturePress" to c.capturePress,
             "captureDelay" to c.captureDelay,
             "doneAny" to c.doneAny,
             "delayAny" to c.delayAny,
@@ -115,19 +133,22 @@ object ConfigCodec {
     fun decode(text: String): Config {
         val m = Json.parseObject(text)
         val d = Config.DEFAULT
-        return Config(
+        val c = Config(
             enabled = m.bool("enabled") ?: d.enabled,
             targetPackages = m.strList("targetPackages") ?: d.targetPackages,
             gfPattern = m.str("gfPattern") ?: d.gfPattern,
             gfPrefix = m.str("gfPrefix") ?: d.gfPrefix,
-            capturePress = m.bool("capturePress") ?: d.capturePress,
-            pressTriggers = m.strList("pressTriggers") ?: d.pressTriggers,
-            pressExcludeHints = m.strList("pressExcludeHints") ?: d.pressExcludeHints,
-            countdownKeywords = m.strList("countdownKeywords") ?: d.countdownKeywords,
+            tabLabels = m.strList("tabLabels") ?: d.tabLabels,
+            readyTabLabels = m.strList("readyTabLabels") ?: d.readyTabLabels,
             captureReady = m.bool("captureReady") ?: d.captureReady,
             readyAny = m.strList("readyAny") ?: d.readyAny,
             readyNone = m.strList("readyNone") ?: d.readyNone,
             readyRepeatMinutes = m.int("readyRepeatMinutes") ?: d.readyRepeatMinutes,
+            pressTriggers = m.strList("pressTriggers") ?: d.pressTriggers,
+            pressExcludeHints = m.strList("pressExcludeHints") ?: d.pressExcludeHints,
+            countdownKeywords = m.strList("countdownKeywords") ?: d.countdownKeywords,
+            remindReadyTab = m.bool("remindReadyTab") ?: d.remindReadyTab,
+            capturePress = m.bool("capturePress") ?: d.capturePress,
             captureDelay = m.bool("captureDelay") ?: d.captureDelay,
             doneAny = m.strList("doneAny") ?: d.doneAny,
             delayAny = m.strList("delayAny") ?: d.delayAny,
@@ -136,6 +157,26 @@ object ConfigCodec {
             jpegQuality = m.int("jpegQuality") ?: d.jpegQuality,
             retentionDays = m.int("retentionDays") ?: d.retentionDays,
             diagnostics = m.bool("diagnostics") ?: d.diagnostics,
+        )
+        return migrate(c, m.int("v") ?: 1)
+    }
+
+    /**
+     * v1 only knew the Thai screens and screenshotted every button tap. Saved v1 settings get the
+     * English words added (nothing the user typed is removed) and the tap screenshot turned off.
+     */
+    fun migrate(c: Config, from: Int): Config {
+        if (from >= 2) return c
+        val d = Config.DEFAULT
+        fun merge(saved: List<String>, defaults: List<String>) = (saved + defaults).distinct()
+        return c.copy(
+            pressTriggers = merge(c.pressTriggers, d.pressTriggers),
+            countdownKeywords = merge(c.countdownKeywords, d.countdownKeywords),
+            readyAny = merge(c.readyAny, d.readyAny),
+            readyNone = merge(c.readyNone, d.readyNone),
+            doneAny = merge(c.doneAny, d.doneAny),
+            delayAny = merge(c.delayAny, d.delayAny),
+            capturePress = false,
         )
     }
 
@@ -157,11 +198,13 @@ fun Config.sanitized(): Config {
     return copy(
         targetPackages = targetPackages.cleanList().ifEmpty { d.targetPackages },
         gfPattern = if (Config.isUsablePattern(gfPattern)) gfPattern else d.gfPattern,
+        tabLabels = tabLabels.cleanList(),
+        readyTabLabels = readyTabLabels.cleanList(),
+        readyAny = readyAny.cleanList(),
+        readyNone = readyNone.cleanList(),
         pressTriggers = pressTriggers.cleanList(),
         pressExcludeHints = pressExcludeHints.cleanList(),
         countdownKeywords = countdownKeywords.cleanList(),
-        readyAny = readyAny.cleanList(),
-        readyNone = readyNone.cleanList(),
         doneAny = doneAny.cleanList(),
         delayAny = delayAny.cleanList(),
         jpegQuality = jpegQuality.coerceIn(30, 100),

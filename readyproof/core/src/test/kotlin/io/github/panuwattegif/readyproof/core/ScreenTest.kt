@@ -13,9 +13,83 @@ class ScreenTest {
 
     private fun ofType(a: ScreenAnalysis, type: ObsType) = a.items.filter { it.type == type }
 
+    // ---- English screens (the shop's phone today) ------------------------------------------
+
     @Test
-    fun readyTabFindsEveryOrderWaitingForOrWithDriver() {
+    fun englishReadyTabCountsEveryListedOrderButNotTheBanner() {
+        val a = analyze(Trees.readyTabEn())
+        assertEquals(true, a.readyTab)
+        assertEquals(listOf("GF-941", "GF-231", "GF-439"), a.visible)
+        val ready = ofType(a, ObsType.READY)
+        assertEquals(listOf("GF-231", "GF-439"), ready.map { it.gf })
+        assertEquals(listOf("Finding a driver...", "Finding a driver..."), ready.map { it.status })
+        assertEquals(listOf("GF-231", "Finding a driver...", "1 item"), ready[0].card)
+    }
+
+    @Test
+    fun englishPreparingTabIsNeverReadyEvenWithDriverText() {
+        val a = analyze(Trees.preparingTabEn())
+        assertEquals(false, a.readyTab)
+        assertTrue(a.items.isEmpty(), "unexpected ${a.items}")
+    }
+
+    @Test
+    fun englishHistoryReadsCompletedAndDelayedButNotCancelled() {
+        val a = analyze(Trees.historyTabEn())
+        assertEquals(false, a.readyTab)
+        assertEquals(
+            listOf("GF-613" to "11:47", "GF-028" to "12:06", "GF-944" to "11:44", "GF-120" to "13:05"),
+            ofType(a, ObsType.DONE).map { it.gf to it.doneAt },
+        )
+        assertEquals(listOf("GF-613" to 4, "GF-120" to 1), ofType(a, ObsType.DELAY).map { it.gf to it.delayMin })
+        assertTrue(ofType(a, ObsType.READY).isEmpty())
+    }
+
+    @Test
+    fun englishReadyButtonTapFindsItsOrder() {
+        val p = ScreenAnalyzer.analyzePress(listOf(Trees.preparingTabEn(pressOn = "GF-861")), cfg)
+        assertEquals("GF-861", p.gf)
+        assertEquals("9:32", p.countdown)
+    }
+
+    @Test
+    fun readyTabCountsOrdersWhateverTheirStatusSays() {
+        val root = Trees.n(
+            cls = "android.widget.FrameLayout",
+            kids = listOf(
+                Trees.box(Trees.tab("Preparing", null), Trees.tab("Ready", "1", selected = true)),
+                Trees.list(Trees.box(Trees.n("GF-500"), Trees.n("Waiting for pickup"), Trees.n("3 items"))),
+            ),
+        )
+        assertEquals(listOf("GF-500"), ofType(analyze(root), ObsType.READY).map { it.gf })
+    }
+
+    @Test
+    fun tabLabels() {
+        assertTrue(TabDetector.isLabel("Ready", "Ready"))
+        assertTrue(TabDetector.isLabel("Ready 2", "Ready"))
+        assertTrue(TabDetector.isLabel("Ready (2)", "Ready"))
+        assertTrue(TabDetector.isLabel("ready, 2", "Ready"))
+        assertTrue(TabDetector.isLabel("พร้อมจัดส่ง 3", "พร้อมจัดส่ง"))
+        assertFalse(TabDetector.isLabel("Ready in: 9:32 min", "Ready"))
+        assertFalse(TabDetector.isLabel("พร้อมจัดส่งใน: 5:53 นาที", "พร้อมจัดส่ง"))
+        assertFalse(TabDetector.isLabel("Already", "Ready"))
+        assertFalse(TabDetector.isLabel("Ready", ""))
+    }
+
+    // ---- Thai screens (earlier evidence) ---------------------------------------------------
+
+    @Test
+    fun thaiReadyTabWithSelectionReported() {
+        val a = analyze(Trees.readyTab(selectionReported = true))
+        assertEquals(true, a.readyTab)
+        assertEquals(listOf("GF-396", "GF-521", "GF-613"), ofType(a, ObsType.READY).map { it.gf })
+    }
+
+    @Test
+    fun withoutSelectionTheStatusWordsDecide() {
         val a = analyze(Trees.readyTab())
+        assertNull(a.readyTab)
         assertEquals(listOf("GF-396", "GF-521", "GF-613"), a.visible)
         val ready = ofType(a, ObsType.READY)
         assertEquals(listOf("GF-396", "GF-521", "GF-613"), ready.map { it.gf })
@@ -91,12 +165,13 @@ class ScreenTest {
     }
 
     @Test
-    fun visibleItemsForManualCapture() {
-        val a = analyze(Trees.readyTab())
-        val items = ScreenAnalyzer.visibleItems(a, cfg)
-        assertEquals(listOf("GF-396", "GF-521", "GF-613"), items.map { it.gf })
-        assertTrue(items.all { it.type == ObsType.VISIBLE })
-        assertEquals("กำลังค้นหาคนขับ...", items[0].status)
+    fun manualCaptureKeepsWhatTheScreenProves() {
+        val ready = ScreenAnalyzer.manualItems(analyze(Trees.readyTabEn()), cfg)
+        // READY for the listed orders, VISIBLE for the banner's order number
+        assertEquals(listOf("GF-231" to ObsType.READY, "GF-439" to ObsType.READY, "GF-941" to ObsType.VISIBLE), ready.map { it.gf to it.type })
+        val preparing = ScreenAnalyzer.manualItems(analyze(Trees.preparingTabEn()), cfg)
+        assertTrue(preparing.all { it.type == ObsType.VISIBLE })
+        assertEquals("Ready in: 9:32 min", preparing.first { it.gf == "GF-861" }.status)
     }
 
     @Test
@@ -105,6 +180,7 @@ class ScreenTest {
         val finder = CardFinder(cfg.gfExtractor(), root)
         val cards = finder.cards()
         assertEquals(3, cards.size)
+        assertTrue(cards.all { it.inList })
         assertTrue(cards.none { c -> c.texts.any { it.startsWith("GF-") && it != c.gf } })
     }
 

@@ -24,15 +24,17 @@ import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
 import io.github.panuwattegif.readyproof.core.UiNode
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Watches the target app (GrabMerchant) and takes proof screenshots:
- *  - PRESS  : the "พร้อมจัดส่ง" button is tapped (shot + which order + countdown left)
- *  - READY  : an order card shows a waiting-for/with-driver status (once per order)
- *  - DELAY  : the history list shows "ล่าช้าไป X นาที" (once per order)
+ *  - READY  : orders listed in the Ready tab ("พร้อมจัดส่ง") = pressed ready (once per order)
+ *  - DELAY  : the History list shows "Delayed by X mins" / "ล่าช้าไป X นาที" (once per order)
  *  - MANUAL : the accessibility shortcut button, or the test button in the app
+ *  - PRESS  : the "Ready" button tap is logged (text only) and, if no READY shot follows,
+ *             a reminder to open the Ready tab is shown
  * It only reads the screen; it never taps anything in the target app.
  */
 class ProofService : AccessibilityService() {
@@ -57,6 +59,7 @@ class ProofService : AccessibilityService() {
         private const val SCROLL_SETTLE_MS = 600L
         private const val TEXT_ONLY_SCAN_INTERVAL_MS = 5_000L
         private const val PRESS_DEBOUNCE_MS = 600L
+        private const val READY_REMINDER_MS = 20_000L
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
     }
 
@@ -67,6 +70,9 @@ class ProofService : AccessibilityService() {
     private val deduper = Deduper()
     private val scanPending = AtomicBoolean(false)
     private val seq = AtomicInteger()
+
+    /** Last time each order was seen in the Ready tab (for the reminder). */
+    private val readySeenAt = ConcurrentHashMap<String, Long>()
 
     @Volatile
     private var config: Config = Config.DEFAULT
@@ -174,34 +180,42 @@ class ProofService : AccessibilityService() {
             roleDesc = src?.extras?.getCharSequence(ROLE_DESCRIPTION_KEY)?.toString(),
         )
         val now = System.currentTimeMillis()
-        val matched = cfg.capturePress && ClickMatcher.matches(info, cfg) && now - lastPressAt > PRESS_DEBOUNCE_MS
-        worker.post { ClickLog.add(this, ClickLog.Entry(now, info.label(), info.className, info.viewId, matched)) }
-        if (!matched) return
+        val isPress = ClickMatcher.matches(info, cfg) && now - lastPressAt > PRESS_DEBOUNCE_MS
+        worker.post { ClickLog.add(this, ClickLog.Entry(now, info.label(), info.className, info.viewId, isPress)) }
+        if (!isPress) return
         lastPressAt = now
 
-        val job = CaptureJob(RecordKind.PRESS, now)
-        capture.submit(job) // shoot first; work out which order it was while the shot is taken
+        // The evidence is the Ready tab shot; a shot of the tap itself is optional (off by default).
+        val job = if (cfg.capturePress) CaptureJob(RecordKind.PRESS, now).also { capture.submit(it) } else null
         worker.post {
             val label = info.label()
-            val meta = try {
+            val p = try {
                 val roots = listOfNotNull(src?.window?.root ?: rootInActiveWindow)
                 val snaps = roots.map { NodeSnapshot.capture(it, MAX_NODES, src) }
                 if (cfg.diagnostics) Diagnostics.dump(this, "PRESS $label", snaps, force = true)
-                val p = ScreenAnalyzer.analyzePress(snaps, cfg)
-                val items = p.gf?.let { listOf(Item(it, ObsType.PRESS, status = label, countdown = p.countdown, card = p.card)) }
-                    ?: emptyList()
-                CaptureMeta(
-                    items = items,
-                    visible = p.visible,
-                    click = label,
-                    toast = "📸 ${p.gf ?: "ไม่พบเลข GF"} กดพร้อมจัดส่ง" + (p.countdown?.let { " (เหลือ $it)" } ?: ""),
-                )
+                ScreenAnalyzer.analyzePress(snaps, cfg)
             } catch (e: Exception) {
                 Diagnostics.error(this, "press", e)
-                CaptureMeta(click = label, toast = "📸 กดพร้อมจัดส่ง (อ่านเลข GF ไม่ได้)")
+                null
             }
-            job.setMeta(meta)
+            val gf = p?.gf
+            val items = if (gf != null) listOf(Item(gf, ObsType.PRESS, status = label, countdown = p.countdown, card = p.card)) else emptyList()
+            val visible = p?.visible ?: emptyList()
+            if (job != null) {
+                job.setMeta(CaptureMeta(items = items, visible = visible, click = label, toast = "📸 ${gf ?: "ไม่พบเลข GF"} กด Ready"))
+            } else {
+                RecordStore.append(this, Record(id = "$now-p${seq.incrementAndGet()}", t = now, kind = RecordKind.PRESS, items = items, visible = visible, click = label))
+            }
+            if (cfg.remindReadyTab && gf != null) worker.postDelayed({ remindIfNoReadyShot(gf, now) }, READY_REMINDER_MS)
         }
+    }
+
+    /** The order was tapped ready but never appeared in a Ready tab shot: nudge whoever is at the phone. */
+    private fun remindIfNoReadyShot(gf: String, pressedAt: Long) {
+        val cfg = config
+        if (!cfg.enabled || !cfg.captureReady) return
+        if ((readySeenAt[gf] ?: 0L) >= pressedAt) return
+        toast("⏰ $gf ยังไม่มีภาพในแท็บ Ready — เปิดแท็บ Ready ใน Grab 1 ครั้ง")
     }
 
     // ---- READY / DELAY / DONE: watching what is on screen -------------------------------------
@@ -237,8 +251,9 @@ class ProofService : AccessibilityService() {
         if (snaps.isEmpty()) return
         if (cfg.diagnostics) Diagnostics.dump(this, "SCAN", snaps, force = false)
         val analysis = ScreenAnalyzer.analyze(snaps, cfg)
-        if (analysis.items.isEmpty()) return
         val now = System.currentTimeMillis()
+        analysis.items.forEach { if (it.type == ObsType.READY) readySeenAt[it.gf] = now }
+        if (analysis.items.isEmpty()) return
         val fresh = deduper.fresh(analysis.items, now, cfg)
         if (fresh.isEmpty()) return
         val keys = fresh.mapNotNull { Deduper.keyOf(it) }
@@ -315,7 +330,7 @@ class ProofService : AccessibilityService() {
             val analysis = ScreenAnalyzer.analyze(snaps, cfg)
             val shown = analysis.visible.take(3).joinToString(", ")
             CaptureMeta(
-                items = ScreenAnalyzer.visibleItems(analysis, cfg),
+                items = ScreenAnalyzer.manualItems(analysis, cfg),
                 visible = analysis.visible,
                 note = note,
                 toast = "📸 แคปแล้ว" + (if (shown.isNotEmpty()) " $shown" else ""),

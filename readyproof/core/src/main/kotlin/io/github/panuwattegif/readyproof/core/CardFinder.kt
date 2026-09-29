@@ -2,8 +2,11 @@ package io.github.panuwattegif.readyproof.core
 
 import java.util.IdentityHashMap
 
-/** One order card on screen: its order number and every string inside it. */
-class Card(val node: UiNode, val gf: String, val texts: List<String>)
+/**
+ * One order card on screen: its order number and every string inside it.
+ * [inList] is false for things outside the order list, e.g. a notification banner naming an order.
+ */
+class Card(val node: UiNode, val gf: String, val texts: List<String>, val inList: Boolean = false)
 
 /**
  * Groups on-screen texts into order cards without knowing the target app's layout:
@@ -52,9 +55,19 @@ class CardFinder(private val gfx: GfExtractor, root: UiNode) {
             if (own[n]!!.size != 1) continue
             val cardNode = cardFor(n) ?: continue
             if (seen.put(cardNode, true) != null) continue
-            out += Card(cardNode, gfsIn(cardNode).first(), textsOf(cardNode, n))
+            out += Card(cardNode, gfsIn(cardNode).first(), textsOf(cardNode, n), inList(cardNode))
         }
         return out
+    }
+
+    /** True when [node] sits inside a list container (the order list, not a banner or header). */
+    fun inList(node: UiNode): Boolean {
+        var p = node.parent
+        while (p != null) {
+            if (isListContainer(p)) return true
+            p = p.parent
+        }
+        return false
     }
 
     /** Strings of a card; falls back to reading order when the app flattens its cards. */

@@ -1,6 +1,6 @@
 package io.github.panuwattegif.readyproof.core
 
-/** Test trees modelled on real GrabMerchant (Thai) screenshots from the shop's evidence folder. */
+/** Test trees modelled on real GrabMerchant screenshots (Thai and English) from the shop. */
 object Trees {
     const val RECYCLER = "androidx.recyclerview.widget.RecyclerView"
 
@@ -11,13 +11,14 @@ object Trees {
         clickable: Boolean = false,
         collection: Boolean = false,
         scrollable: Boolean = false,
+        selected: Boolean = false,
         marked: Boolean = false,
         id: String? = null,
         kids: List<UiNode> = emptyList(),
     ): UiNode {
         val node = UiNode(
             text = text, desc = desc, viewId = id, className = cls, clickable = clickable,
-            scrollable = scrollable, collection = collection, marked = marked,
+            scrollable = scrollable, collection = collection, selected = selected, marked = marked,
         )
         kids.forEach { node.add(it) }
         return node
@@ -31,27 +32,40 @@ object Trees {
     fun button(text: String, marked: Boolean = false) =
         n(text, cls = "android.widget.Button", clickable = true, marked = marked)
 
-    fun tab(label: String, badge: String?) = n(
-        cls = "androidx.appcompat.app.ActionBar.Tab", clickable = true,
-        kids = listOfNotNull(n(label), badge?.let { n(it) }),
+    /** Material tab: "selected" is set on the tab and passed down to its label, as Android does. */
+    fun tab(label: String, badge: String?, selected: Boolean = false) = n(
+        cls = "androidx.appcompat.app.ActionBar.Tab", clickable = true, selected = selected,
+        kids = listOfNotNull(n(label, selected = selected), badge?.let { n(it, selected = selected) }),
     )
 
-    private fun header(ready: String?, preparing: String?) = box(
+    /** Thai header; [selectedTab] = index of the open tab, null = app does not report selection. */
+    private fun header(ready: String?, preparing: String?, selectedTab: Int? = null) = box(
         n("คำสั่งซื้อ"),
         n("เปิดถึง 7:00 หลังเที่ยง"),
         box(
-            tab("กำลังเตรียม", preparing), tab("พร้อมจัดส่ง", ready),
-            tab("ที่กำลังจะถึง", null), tab("ประวัติ", null),
+            tab("กำลังเตรียม", preparing, selectedTab == 0), tab("พร้อมจัดส่ง", ready, selectedTab == 1),
+            tab("ที่กำลังจะถึง", null, selectedTab == 2), tab("ประวัติ", null, selectedTab == 3),
+        ),
+    )
+
+    private fun headerEn(selected: String) = box(
+        n("Orders"),
+        n("Open until 7:00 PM"),
+        box(
+            tab("Preparing", "1", selected == "Preparing"), tab("Ready", "2", selected == "Ready"),
+            tab("Upcoming", null, selected == "Upcoming"), tab("History", null, selected == "History"),
         ),
     )
 
     private fun bottomNav() = box(n("หน้าแรก"), n("คำสั่งซื้อ"), n("เมนู"), n("แคชเชียร์"), n("เพิ่มเติม"))
 
-    /** GF-613_READY.jpg: the "พร้อมจัดส่ง" tab at 11:01. */
-    fun readyTab(): UiNode = n(
+    private fun bottomNavEn() = box(n("Home"), n("Orders", selected = true), n("Menu"), n("Cashier"), n("More"))
+
+    /** GF-613_READY.jpg (Thai): the "พร้อมจัดส่ง" tab at 11:01. */
+    fun readyTab(selectionReported: Boolean = false): UiNode = n(
         cls = "android.widget.FrameLayout",
         kids = listOf(
-            header(ready = "3", preparing = "1"),
+            header(ready = "3", preparing = "1", selectedTab = if (selectionReported) 1 else null),
             list(
                 box(n("GF-396"), n("กำลังค้นหาคนขับ..."), n("2 รายการ"), clickable = true),
                 box(n("GF-521"), n("คนขับจะมารับใน 0 นาที"), n("2 รายการ"), clickable = true),
@@ -103,6 +117,51 @@ object Trees {
                 box(n("GF-024"), n("เสร็จสมบูรณ์เมื่อ 12:19 PM"), n("195.00")),
             ),
             bottomNav(),
+        ),
+    )
+
+    /** The shop's English screenshot (14:27): "Ready" tab with two orders finding a driver. */
+    fun readyTabEn(withBanner: Boolean = true): UiNode = n(
+        cls = "android.widget.FrameLayout",
+        kids = listOfNotNull(
+            // In-app banner naming another order: must not count as being in the Ready tab.
+            if (withBanner) box(n("แก้ไขปัญหาคำสั่งซื้อ GF-941 เรียบร้อยแล้ว"), n("แตะที่นี่เพื่อดูรายละเอียด"), clickable = true) else null,
+            headerEn(selected = "Ready"),
+            list(
+                box(n("GF-231"), n("Finding a driver..."), n("1 item"), clickable = true),
+                box(n("GF-439"), n("Finding a driver..."), n("2 items"), clickable = true),
+            ),
+            bottomNavEn(),
+        ),
+    )
+
+    /** The shop's English screenshot (14:28): "Preparing" tab with the "Ready" button. */
+    fun preparingTabEn(pressOn: String? = null): UiNode = n(
+        cls = "android.widget.FrameLayout",
+        kids = listOf(
+            box(n("แก้ไขปัญหาคำสั่งซื้อ GF-941 เรียบร้อยแล้ว"), n("แตะที่นี่เพื่อดูรายละเอียด"), clickable = true),
+            headerEn(selected = "Preparing"),
+            list(
+                box(n("GF-861"), n("Ready in: 9:32 min"), n("2 items"), button("Ready", marked = pressOn == "GF-861"), clickable = true),
+                box(n("GF-862"), n("Ready in: 3:10 min"), n("Driver arriving in 2 mins"), n("1 item"), button("Ready"), clickable = true),
+            ),
+            bottomNavEn(),
+        ),
+    )
+
+    /** GF-613_DELAY.jpg (English): the History tab. */
+    fun historyTabEn(): UiNode = n(
+        cls = "android.widget.FrameLayout",
+        kids = listOf(
+            headerEn(selected = "History"),
+            list(
+                box(n("GF-555"), n("Cancelled at 1:34 AM")),
+                box(n("New customer"), n("Ads"), n("GF-613"), n("Completed at 11:47 AM"), n("1,167.00"), n("Delayed by 4 mins")),
+                box(n("New customer"), n("Ads"), n("GF-028"), n("Completed at 12:06 PM")),
+                box(n("Ads"), n("GF-944"), n("Completed at 11:44 AM"), n("173.00")),
+                box(n("GF-120"), n("Completed at 1:05 PM"), n("Delayed by 1 min")),
+            ),
+            bottomNavEn(),
         ),
     )
 

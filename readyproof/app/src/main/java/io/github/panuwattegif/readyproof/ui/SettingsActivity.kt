@@ -18,11 +18,14 @@ import java.time.ZoneId
 /** Every setting on one page; nothing changes until "บันทึก" passes validation. */
 class SettingsActivity : Activity() {
     private lateinit var sPress: Switch
+    private lateinit var sRemind: Switch
     private lateinit var sReady: Switch
     private lateinit var sDelay: Switch
     private lateinit var sToast: Switch
     private lateinit var sDiag: Switch
     private lateinit var fTriggers: EditText
+    private lateinit var fTabs: EditText
+    private lateinit var fReadyTabs: EditText
     private lateinit var fRetention: EditText
     private lateinit var fQuality: EditText
     private lateinit var fReadyAny: EditText
@@ -46,13 +49,15 @@ class SettingsActivity : Activity() {
 
         val timing = Ui.card(col)
         Ui.text(timing, "แคปเมื่อไหร่", 17f, bold = true)
-        sPress = Ui.switch(timing, "ตอนกดปุ่ม \"พร้อมจัดส่ง\"", cfg.capturePress) {}
-        sReady = Ui.switch(timing, "เมื่อเห็นออเดอร์ \"กำลังค้นหาคนขับ / คนขับจะมารับ\" (READY)", cfg.captureReady) {}
-        sDelay = Ui.switch(timing, "เมื่อเห็น \"ล่าช้าไป X นาที\" ในหน้าประวัติ", cfg.captureDelay) {}
+        sReady = Ui.switch(timing, "แท็บ Ready (พร้อมจัดส่ง) เปิดอยู่ → แคปทุกออเดอร์ในแท็บ (ออเดอร์ละครั้ง)", cfg.captureReady) {}
+        sDelay = Ui.switch(timing, "หน้า History เจอ \"Delayed by / ล่าช้าไป\" → แคป", cfg.captureDelay) {}
+        sRemind = Ui.switch(timing, "กด Ready แล้ว 20 วิ ยังไม่มีภาพในแท็บ Ready → เตือน", cfg.remindReadyTab) {}
+        sPress = Ui.switch(timing, "แคปตอนกดปุ่ม Ready ด้วย (ไม่จำเป็น)", cfg.capturePress) {}
         sToast = Ui.switch(timing, "แสดงข้อความเด้งหลังแคป", cfg.showToast) {}
 
         val button = Ui.card(col)
-        Ui.text(button, "ปุ่มที่หมายถึง \"อาหารพร้อม\"", 17f, bold = true)
+        Ui.text(button, "ปุ่ม Ready บนการ์ดออเดอร์", 17f, bold = true)
+        Ui.text(button, "ใช้แค่เพื่อเตือนให้เปิดแท็บ Ready (หลักฐานคือภาพในแท็บ Ready)", 13f, Ui.MUTED)
         fTriggers = Ui.field(
             button, "คำบนปุ่ม (บรรทัดละ 1 คำ)", cfg.pressTriggers.joinToString("\n"),
             help = "ต้องตรงทั้งคำ · ใส่ * ท้ายคำ = ขึ้นต้นด้วยคำนี้ · id:ชื่อ = รหัสปุ่ม", multiLine = true,
@@ -66,12 +71,17 @@ class SettingsActivity : Activity() {
 
         val adv = Ui.card(col)
         Ui.text(adv, "ขั้นสูง (ปกติไม่ต้องแก้)", 17f, bold = true)
-        fReadyAny = Ui.field(adv, "ข้อความสถานะที่นับเป็น READY", cfg.readyAny.joinToString("\n"), multiLine = true)
-        fReadyNone = Ui.field(adv, "ถ้าการ์ดมีข้อความเหล่านี้ ไม่นับเป็น READY", cfg.readyNone.joinToString("\n"),
-            help = "กันไม่ให้ออเดอร์ที่ยังเตรียมอยู่ถูกนับว่าพร้อม", multiLine = true)
+        fReadyTabs = Ui.field(adv, "ชื่อแท็บ Ready", cfg.readyTabLabels.joinToString("\n"),
+            help = "ทุกออเดอร์ในแท็บนี้ = กดเสร็จแล้ว", multiLine = true)
+        fTabs = Ui.field(adv, "ชื่อแท็บทั้งหมด", cfg.tabLabels.joinToString("\n"),
+            help = "ใช้ดูว่าตอนนี้เปิดแท็บไหนอยู่", multiLine = true)
+        fReadyAny = Ui.field(adv, "สำรอง: คำสถานะที่ถือว่าอยู่ในแท็บ Ready", cfg.readyAny.joinToString("\n"),
+            help = "ใช้เฉพาะเมื่อเครื่องบอกไม่ได้ว่าเปิดแท็บไหน", multiLine = true)
+        fReadyNone = Ui.field(adv, "สำรอง: ถ้าการ์ดมีคำเหล่านี้ ไม่นับเป็น Ready", cfg.readyNone.joinToString("\n"),
+            help = "กันออเดอร์ที่ยังเตรียมอยู่หรือเสร็จไปแล้ว", multiLine = true)
         fRepeat = Ui.field(adv, "แคป READY ออเดอร์เดิมซ้ำได้ทุกกี่นาที", cfg.readyRepeatMinutes.toString(), number = true)
-        fDoneAny = Ui.field(adv, "คำว่า \"เสร็จสมบูรณ์\" ในหน้าประวัติ", cfg.doneAny.joinToString("\n"), multiLine = true)
-        fDelayAny = Ui.field(adv, "คำว่า \"ล่าช้า\" ในหน้าประวัติ", cfg.delayAny.joinToString("\n"), multiLine = true)
+        fDoneAny = Ui.field(adv, "คำว่า \"เสร็จสมบูรณ์\" ในหน้า History", cfg.doneAny.joinToString("\n"), multiLine = true)
+        fDelayAny = Ui.field(adv, "คำว่า \"ล่าช้า\" ในหน้า History", cfg.delayAny.joinToString("\n"), multiLine = true)
         fWindow = Ui.field(adv, "จับคู่หลักฐานย้อนหลังกี่ชั่วโมงก่อนเวลาเสร็จ", cfg.evidenceWindowHours.toString(), number = true)
         fPattern = Ui.field(adv, "รูปแบบเลขออเดอร์ (regex)", cfg.gfPattern)
         fPrefix = Ui.field(adv, "คำนำหน้าเลขออเดอร์", cfg.gfPrefix)
@@ -92,7 +102,7 @@ class SettingsActivity : Activity() {
         Ui.text(help, "แก้ปัญหา", 17f, bold = true)
         Ui.text(
             help,
-            "ถ้าแอปจับปุ่มหรือเลข GF ไม่ได้: เปิด \"เก็บข้อมูลหน้าจอเพื่อแก้ปัญหา\" → บันทึก → ใช้แอป Grab ตามปกติให้ผ่านแท็บ กำลังเตรียม / พร้อมจัดส่ง / ประวัติ → กลับมากดปุ่มด้านล่าง แล้วส่งไฟล์ให้ผู้ดูแลแอป",
+            "ถ้าแอปไม่แคปแท็บ Ready หรืออ่านเลข GF ไม่ได้: เปิด \"เก็บข้อมูลหน้าจอเพื่อแก้ปัญหา\" → บันทึก → ใช้แอป Grab ตามปกติให้ผ่านแท็บ Preparing / Ready / History → กลับมากดปุ่มด้านล่าง แล้วส่งไฟล์ให้ผู้ดูแลแอป",
             13f, Ui.MUTED,
         )
         Ui.button(help, "📤 ส่งออกไฟล์ช่วยแก้ปัญหา", filled = false) {
@@ -146,7 +156,10 @@ class SettingsActivity : Activity() {
         fun num(e: EditText) = e.text.toString().trim().toIntOrNull() ?: -1
         val cfg = ConfigStore.get(this).copy(
             capturePress = sPress.isChecked,
+            remindReadyTab = sRemind.isChecked,
             captureReady = sReady.isChecked,
+            tabLabels = lines(fTabs),
+            readyTabLabels = lines(fReadyTabs),
             captureDelay = sDelay.isChecked,
             showToast = sToast.isChecked,
             diagnostics = sDiag.isChecked,

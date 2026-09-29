@@ -26,6 +26,9 @@ object Naming {
         return UNSAFE.replace("${head}_${stamp(at)}", "_") + ".jpg"
     }
 
+    /** Name inside an evidence set: "GF-613_READY.jpg", "GF-613_DELAY.jpg". */
+    fun setName(gfTag: String, kind: String): String = UNSAFE.replace("${gfTag}_$kind", "_") + ".jpg"
+
     /** 2026-09-28_11-01-30 */
     fun stamp(at: LocalDateTime): String =
         "${at.year}-${Parsers.pad2(at.monthValue)}-${Parsers.pad2(at.dayOfMonth)}_" +

@@ -35,6 +35,12 @@
             android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.GuideActivity" android:exported="false" />
 
+        <provider
+            android:name=".EvidenceProvider"
+            android:authorities="io.github.panuwattegif.readyproof.evidence"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <service
             android:name=".ProofService"
             android:exported="true"

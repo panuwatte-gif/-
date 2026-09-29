@@ -6,6 +6,7 @@ import io.github.panuwattegif.readyproof.ConfigStore
 import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
+import io.github.panuwattegif.readyproof.core.ObsType
 import io.github.panuwattegif.readyproof.core.RecordKind
 import io.github.panuwattegif.readyproof.core.ReportText
 import java.time.LocalDate
@@ -81,15 +82,26 @@ class MainActivity : Activity() {
         // --- today ---
         val today = LocalDate.now()
         val records = RecordStore.load(this, today)
-        fun count(kind: RecordKind) = records.count { it.kind == kind && it.uri != null }
+        fun gfs(type: ObsType, withImage: Boolean) =
+            records.filter { !withImage || it.uri != null }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
+        val ready = gfs(ObsType.READY, withImage = true)
+        val pressedNoShot = gfs(ObsType.PRESS, withImage = false) - ready
         val day = Ui.card(col)
         Ui.text(day, "วันนี้ " + ReportText.date(today), 17f, bold = true)
         Ui.text(
             day,
-            "กดพร้อมจัดส่ง ${count(RecordKind.PRESS)} · READY ${count(RecordKind.READY)} · " +
-                "ล่าช้า ${count(RecordKind.DELAY)} · แคปเอง ${count(RecordKind.MANUAL)} ภาพ",
+            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · ภาพหน้า History ${records.count { it.kind == RecordKind.DELAY && it.uri != null }} · " +
+                "แคปเอง ${records.count { it.kind == RecordKind.MANUAL && it.uri != null }}",
             15f, topDp = 4,
         )
+        if (pressedNoShot.isNotEmpty()) {
+            Ui.text(
+                day,
+                "⏰ กด Ready แล้วแต่ยังไม่มีภาพในแท็บ Ready: " + pressedNoShot.take(6).joinToString(", ") +
+                    (if (pressedNoShot.size > 6) " …" else "") + " → เปิดแท็บ Ready ใน Grab 1 ครั้ง",
+                14f, Ui.AMBER, topDp = 4,
+            )
+        }
         ProofService.lastCaptureText?.let { Ui.text(day, "ล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
         Ui.button(day, "📋 รายงานออเดอร์ล่าช้า + จับคู่หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
         Ui.button(day, "🖼️ ภาพที่แคปไว้ / ค้นหาเลข GF", filled = false) { startActivity(Intent(this, CapturesActivity::class.java)) }

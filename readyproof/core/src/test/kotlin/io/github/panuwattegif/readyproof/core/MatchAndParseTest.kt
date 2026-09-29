@@ -35,6 +35,25 @@ class MatchAndParseTest {
     }
 
     @Test
+    fun englishReadyButtonMatchesButItsTabDoesNot() {
+        assertTrue(ClickMatcher.matches(ClickInfo(ownText = "Ready", className = "android.widget.Button"), cfg))
+        assertFalse(ClickMatcher.matches(ClickInfo(eventTexts = listOf("Ready", "2"), className = "androidx.appcompat.app.ActionBar.Tab"), cfg))
+        assertFalse(ClickMatcher.matches(ClickInfo(ownText = "Ready", className = "androidx.appcompat.app.ActionBar.Tab"), cfg))
+        assertFalse(ClickMatcher.matches(ClickInfo(ownText = "Ready in: 9:32 min", className = "android.widget.TextView"), cfg))
+    }
+
+    @Test
+    fun englishHistoryWording() {
+        assertEquals(4, Parsers.delayMinutes("Delayed by 4 mins", cfg.delayAny))
+        assertEquals(1, Parsers.delayMinutes("Delayed by 1 min", cfg.delayAny))
+        assertEquals(65, Parsers.delayMinutes("Delayed by 1 hr 5 mins", cfg.delayAny))
+        assertEquals("11:47", Parsers.doneAt("Completed at 11:47 AM", cfg.doneAny))
+        assertEquals("13:05", Parsers.doneAt("Completed at 1:05 PM", cfg.doneAny))
+        assertNull(Parsers.doneAt("Cancelled at 1:34 AM", cfg.doneAny))
+        assertEquals("9:32", Parsers.countdown("Ready in: 9:32 min", cfg.countdownKeywords))
+    }
+
+    @Test
     fun triggerSyntax() {
         val c = listOf("mark as ready")
         assertTrue(ClickMatcher.matchTrigger("Mark as ready", c, ""))

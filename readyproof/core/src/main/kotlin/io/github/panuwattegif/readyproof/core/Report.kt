@@ -25,53 +25,54 @@ object TimeResolve {
     fun toMillis(t: LocalDateTime, zone: ZoneId): Long = t.atZone(zone).toInstant().toEpochMilli()
 }
 
-/** One screenshot that supports "the food was ready" for an order. */
-data class Evidence(
-    val record: Record,
-    /** READY (seen waiting for driver), PRESS (button tap) or VISIBLE (hand capture). */
-    val type: ObsType,
-    val status: String?,
-    val countdown: String?,
-) {
+/** A screenshot showing the order inside the Ready tab, i.e. already pressed ready. */
+data class Evidence(val record: Record, val status: String?) {
     val t: Long get() = record.t
 }
 
-/** An order Grab marked as delayed, with whatever evidence was found for it. */
+/** An order Grab marked as delayed, with the evidence found for it. */
 data class DelayCase(
     val gf: String,
     val delayMin: Int?,
     val doneAt: LocalDateTime?,
     val firstSeen: Long,
+    /** READY shots taken before the order finished, earliest first. */
     val evidence: List<Evidence>,
-    /** History screenshots that show Grab's "ล่าช้าไป X นาที" for this order. */
+    /** History screenshots that show this order as delayed, latest first. */
     val delayShots: List<Record>,
+    /** Logged taps on the ready button for this order (text only, for reference). */
+    val presses: List<Long> = emptyList(),
 ) {
     val hasEvidence: Boolean get() = evidence.isNotEmpty()
 
-    /**
-     * The representative shot of one kind: the first READY seen (closest to the moment it became
-     * ready) but the LAST button tap, because an earlier "tap" can only be a mis-read (e.g. the
-     * tab of the same name) while the real press is the one right before the order moved on.
-     */
-    fun pick(type: ObsType): Evidence? {
-        val of = evidence.filter { it.type == type }
-        return if (type == ObsType.PRESS) of.maxByOrNull { it.t } else of.minByOrNull { it.t }
-    }
+    /** The earliest READY shot: closest to the press, most likely still "Finding a driver...". */
+    val readyShot: Evidence? get() = evidence.firstOrNull()
 
-    /** At most one READY and one PRESS (or hand capture) shot: enough to prove the case. */
-    fun bestShots(): List<Record> =
-        listOfNotNull(pick(ObsType.READY), pick(ObsType.PRESS) ?: pick(ObsType.VISIBLE))
-            .map { it.record }.distinctBy { it.id }
+    val delayShot: Record? get() = delayShots.firstOrNull()
+
+    /** Last logged tap before the order finished. */
+    val pressedAt: Long? get() = presses.maxOrNull()
 }
+
+/** The files handed to Grab for one order, named the way the shop already files them. */
+data class EvidenceSet(
+    val case: DelayCase,
+    val ready: Record,
+    val readyName: String,
+    val delay: Record?,
+    val delayName: String?,
+)
 
 data class DailyReport(
     val date: LocalDate,
     /** Finished orders seen in the history list for this date. */
     val completedSeen: Int,
     val cases: List<DelayCase>,
-    /** Distinct order numbers whose button tap was captured this date. */
+    /** Distinct order numbers whose ready button tap was logged this date. */
     val pressedOrders: Int,
-    /** Distinct order numbers photographed in a ready state this date. */
+    /** How many of those also got a READY shot this date. */
+    val pressedWithReady: Int,
+    /** Distinct order numbers photographed in the Ready tab this date. */
     val readyOrders: Int,
 ) {
     val delayed: Int get() = cases.size
@@ -81,10 +82,28 @@ data class DailyReport(
     /** Percentage of [completedSeen], or null when nothing was seen. */
     fun pct(n: Int): Double? = if (completedSeen > 0) n * 100.0 / completedSeen else null
 
-    /** Screenshots to hand over: the history shots plus the best evidence of every proven case. */
-    fun shareRecords(): List<Record> =
-        (cases.flatMap { it.delayShots } + withEvidence.flatMap { it.bestShots() })
-            .filter { it.uri != null }.distinctBy { it.id }
+    /**
+     * One set per proven order: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same order number
+     * was used twice that day, the finish time is added ("GF-613_1147_READY.jpg").
+     */
+    fun sets(): List<EvidenceSet> {
+        val repeated = cases.groupingBy { it.gf }.eachCount().filterValues { it > 1 }.keys
+        return withEvidence.map { c ->
+            val tag = if (c.gf in repeated && c.doneAt != null) {
+                c.gf + "_" + Parsers.pad2(c.doneAt.hour) + Parsers.pad2(c.doneAt.minute)
+            } else {
+                c.gf
+            }
+            val delay = c.delayShot
+            EvidenceSet(
+                case = c,
+                ready = c.readyShot!!.record,
+                readyName = Naming.setName(tag, "READY"),
+                delay = delay,
+                delayName = delay?.let { Naming.setName(tag, "DELAY") },
+            )
+        }
+    }
 }
 
 object ReportBuilder {
@@ -115,15 +134,14 @@ object ReportBuilder {
                 if (item.type == ObsType.DELAY) {
                     a.delayed = true
                     item.delayMin?.let { m -> a.delayMin = maxOf(a.delayMin ?: 0, m) }
-                    if (r.kind == RecordKind.DELAY && r.uri != null && a.delayShots.none { it.id == r.id }) a.delayShots += r
+                    if (r.uri != null && a.delayShots.none { it.id == r.id }) a.delayShots += r
                 }
             }
         }
 
         val onDate = acc.values.filter { it.date == date }
-        val evidenceRecords = sorted.filter {
-            it.uri != null && (it.kind == RecordKind.PRESS || it.kind == RecordKind.READY || it.kind == RecordKind.MANUAL)
-        }
+        val readyShots = sorted.filter { r -> r.uri != null && r.items.any { it.type == ObsType.READY } }
+        val presses = sorted.filter { r -> r.items.any { it.type == ObsType.PRESS } }
         val windowMs = cfg.evidenceWindowHours * 3600_000L
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
         val dayEnd = TimeResolve.toMillis(date.plusDays(1).atStartOfDay(), zone)
@@ -132,43 +150,19 @@ object ReportBuilder {
             val doneMs = a.doneAt?.let { TimeResolve.toMillis(it, zone) }
             val from = if (doneMs != null) doneMs - windowMs else dayStart
             val to = if (doneMs != null) doneMs + 5 * 60_000L else a.firstSeen
-            val ev = evidenceRecords.asSequence()
-                .filter { it.t in from..to }
-                .mapNotNull { evidenceFor(it, a.gf) }
-                .sortedWith(compareBy<Evidence>({ rank(it.type) }, { it.t }))
-                .toList()
-            DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots)
+            val ev = readyShots.filter { it.t in from..to }.mapNotNull { r ->
+                r.items.firstOrNull { it.gf == a.gf && it.type == ObsType.READY }?.let { Evidence(r, it.status) }
+            }
+            val taps = presses.filter { it.t in from..to && it.items.any { i -> i.gf == a.gf && i.type == ObsType.PRESS } }.map { it.t }
+            DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps)
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
 
-        val dayRecords = sorted.filter { it.t in dayStart until dayEnd }
-        val pressed = dayRecords.filter { it.kind == RecordKind.PRESS }
-            .flatMap { r -> r.items.filter { it.type == ObsType.PRESS }.map { it.gf } }.distinct().size
-        val ready = dayRecords.filter { it.kind == RecordKind.READY }
-            .flatMap { r -> r.items.filter { it.type == ObsType.READY }.map { it.gf } }.distinct().size
+        fun gfsOf(rs: List<Record>, type: ObsType) =
+            rs.filter { it.t in dayStart until dayEnd }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
+        val pressed = gfsOf(presses, ObsType.PRESS)
+        val ready = gfsOf(readyShots, ObsType.READY)
 
-        return DailyReport(date, onDate.size, cases, pressed, ready)
-    }
-
-    private fun evidenceFor(r: Record, gf: String): Evidence? {
-        val item = r.items.firstOrNull { it.gf == gf }
-        return when (r.kind) {
-            RecordKind.PRESS -> item?.takeIf { it.type == ObsType.PRESS }
-                ?.let { Evidence(r, ObsType.PRESS, r.click ?: it.status, it.countdown) }
-            RecordKind.READY -> item?.takeIf { it.type == ObsType.READY }
-                ?.let { Evidence(r, ObsType.READY, it.status, null) }
-            RecordKind.MANUAL -> if (item != null || r.visible.contains(gf)) {
-                Evidence(r, ObsType.VISIBLE, item?.status, null)
-            } else {
-                null
-            }
-            else -> null
-        }
-    }
-
-    private fun rank(type: ObsType): Int = when (type) {
-        ObsType.READY -> 0
-        ObsType.PRESS -> 1
-        else -> 2
+        return DailyReport(date, onDate.size, cases, pressed.size, pressed.count { it in ready }, ready.size)
     }
 }
 
@@ -184,11 +178,9 @@ object ReportText {
         append("สรุปออเดอร์ล่าช้า วันที่ ").append(date(r.date)).append('\n')
         append("• ออเดอร์ที่เห็นในหน้าประวัติ: ").append(r.completedSeen).append('\n')
         append("• Grab ระบุล่าช้า: ").append(r.delayed).append(" (").append(pct(r.pct(r.delayed))).append(")\n")
-        append("• มีหลักฐานว่ากดพร้อมจัดส่งแล้ว: ").append(r.withEvidence.size).append('\n')
-        append("• ไม่มีหลักฐาน: ").append(r.withoutEvidence.size)
+        append("• มีภาพในแท็บ Ready (กดเสร็จแล้ว): ").append(r.withEvidence.size).append('\n')
+        append("• ไม่มีภาพ: ").append(r.withoutEvidence.size)
             .append(" → ล่าช้าจริง ").append(pct(r.pct(r.withoutEvidence.size))).append('\n')
-        append("• วันนี้กดพร้อมจัดส่ง ").append(r.pressedOrders).append(" ออเดอร์ · มีภาพ READY ")
-            .append(r.readyOrders).append(" ออเดอร์\n")
         if (r.withEvidence.isNotEmpty()) {
             append("\n✅ มีหลักฐาน\n")
             r.withEvidence.forEach { append(caseLine(it, zone)).append('\n') }
@@ -203,35 +195,29 @@ object ReportText {
         append(c.gf)
         append(" ล่าช้า ").append(c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
         c.doneAt?.let { append(" (เสร็จ ").append(Parsers.hhmm(it.toLocalTime())).append(')') }
-        val parts = ArrayList<String>()
-        c.pick(ObsType.READY)?.let { e ->
-            parts += "READY " + time(e.t, zone) + (e.status?.let { " \"$it\"" } ?: "")
+        c.readyShot?.let { e ->
+            append(" — อยู่ในแท็บ Ready ตั้งแต่ ").append(time(e.t, zone))
+            e.status?.let { append(" \"").append(it).append('"') }
         }
-        c.pick(ObsType.PRESS)?.let { e ->
-            parts += "กดพร้อมจัดส่ง " + time(e.t, zone) + (e.countdown?.let { " (เหลือ $it)" } ?: "")
-        }
-        if (parts.isEmpty()) c.pick(ObsType.VISIBLE)?.let { e -> parts += "แคปเอง " + time(e.t, zone) }
-        if (parts.isNotEmpty()) append(" — ").append(parts.joinToString(" · "))
     }
 
     fun csv(r: DailyReport, zone: ZoneId): String = buildString {
         append('﻿') // BOM so Excel shows Thai correctly; Google Sheets ignores it
-        append("date,gf,delay_min,done_at,has_evidence,ready_time,ready_status,press_time,press_countdown,files\n")
+        append("date,gf,delay_min,done_at,has_ready_shot,ready_time,ready_status,pressed_at_log,ready_file,delay_file\n")
+        val sets = r.sets().associateBy { it.case }
         for (c in r.cases) {
-            val ready = c.pick(ObsType.READY)
-            val press = c.pick(ObsType.PRESS)
-            val files = c.bestShots().mapNotNull { it.file } + c.delayShots.mapNotNull { it.file }
+            val set = sets[c]
             val row = listOf(
                 r.date.toString(),
                 c.gf,
                 c.delayMin?.toString().orEmpty(),
                 c.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
                 if (c.hasEvidence) "yes" else "no",
-                ready?.let { time(it.t, zone) }.orEmpty(),
-                ready?.status.orEmpty(),
-                press?.let { time(it.t, zone) }.orEmpty(),
-                press?.countdown.orEmpty(),
-                files.distinct().joinToString("; "),
+                c.readyShot?.let { time(it.t, zone) }.orEmpty(),
+                c.readyShot?.status.orEmpty(),
+                c.pressedAt?.let { time(it, zone) }.orEmpty(),
+                set?.readyName.orEmpty(),
+                set?.delayName.orEmpty(),
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }
