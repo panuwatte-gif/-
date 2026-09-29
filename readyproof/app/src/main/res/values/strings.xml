@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ReadyProof</string>
+    <string name="service_label">ReadyProof – แคปหลักฐานออเดอร์</string>
+    <string name="service_description">ReadyProof ถ่ายภาพหน้าจอแอป GrabMerchant ให้อัตโนมัติ เมื่อกดปุ่ม \"พร้อมจัดส่ง\" และเมื่อเห็นออเดอร์ในแท็บพร้อมจัดส่ง / ออเดอร์ล่าช้าในหน้าประวัติ เพื่อใช้เป็นหลักฐานยื่นกับ Grab\n\nอ่านหน้าจอเฉพาะแอป GrabMerchant เท่านั้น ไม่กดอะไรแทนคุณ และแอปนี้ไม่มีสิทธิ์ใช้อินเทอร์เน็ต ข้อมูลทั้งหมดอยู่ในเครื่องนี้</string>
+</resources>
