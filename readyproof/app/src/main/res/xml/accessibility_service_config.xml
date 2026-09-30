@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  packageNames is overwritten at runtime from Settings (default: GrabMerchant only),
+  so events from every other app are never delivered to this service.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewClicked|typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestAccessibilityButton|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/service_description"
+    android:isAccessibilityTool="false"
+    android:notificationTimeout="50"
+    android:packageNames="com.grab.merchant"
+    android:settingsActivity="io.github.panuwattegif.readyproof.ui.MainActivity" />

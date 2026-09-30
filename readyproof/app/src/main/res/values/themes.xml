@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FF0F9D58</color>
+
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#FF0F9D58</item>
+        <item name="android:colorAccent">#FF0F9D58</item>
+        <item name="android:windowBackground">#FFF4F5F7</item>
+        <item name="android:statusBarColor">#FFFFFFFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FFFFFFFF</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+</resources>

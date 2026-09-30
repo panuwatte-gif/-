@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ReadyProof</string>
+    <string name="service_label">ReadyProof – แคปหลักฐานออเดอร์</string>
+    <string name="service_description">ReadyProof แคปหน้าจอแอป GrabMerchant ให้อัตโนมัติ: เมื่อเปิดแท็บ Ready (พร้อมจัดส่ง) จะแคปทุกออเดอร์ในแท็บเป็นหลักฐานว่ากดเสร็จแล้ว และแคปหน้า History เมื่อเจอออเดอร์ที่ล่าช้า\n\nอ่านหน้าจอเฉพาะแอป GrabMerchant เท่านั้น ไม่กดอะไรแทนคุณ และแอปนี้ไม่มีสิทธิ์ใช้อินเทอร์เน็ต ข้อมูลทั้งหมดอยู่ในเครื่องนี้</string>
+</resources>
