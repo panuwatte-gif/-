@@ -1,10 +1,11 @@
 name: ReadyProof Android
 
-# Builds the ReadyProof APK on every change under readyproof/ and publishes it as the
-# release "readyproof-latest", so the download link never changes:
-# https://github.com/<owner>/<repo>/releases/download/readyproof-latest/ReadyProof.apk
 on:
   push:
+    paths:
+      - "readyproof/**"
+      - ".github/workflows/readyproof-android.yml"
+  pull_request:
     paths:
       - "readyproof/**"
       - ".github/workflows/readyproof-android.yml"
@@ -33,7 +34,6 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # The Gradle download host sometimes answers 5xx; retry instead of failing the build.
       - name: Download Gradle
         run: |
           for i in 1 2 3 4; do
@@ -61,6 +61,7 @@ jobs:
           path: readyproof/dist/
 
       - name: Publish release "readyproof-latest"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -71,5 +72,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "ReadyProof ${VERSION} (ล่าสุด)" \
-            --notes "ดาวน์โหลด ReadyProof.apk ด้านล่าง แล้วติดตั้งทับของเดิมได้เลย (การตั้งค่าและภาพเดิมไม่หาย) · build ${GITHUB_RUN_NUMBER} · ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}" \
+            --notes "ดาวน์โหลด ReadyProof.apk ด้านล่าง แล้วติดตั้งทับของเดิมได้เลย · build ${GITHUB_RUN_NUMBER} · ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}" \
             --latest
