@@ -116,6 +116,10 @@ class DataAndReportTest {
         assertEquals(1, d.fresh(listOf(Item("GF-1", ObsType.PRESS)), t0, cfg).size)
         val seeded = Deduper().apply { seed(listOf(rec(t0, RecordKind.READY, ready))) }
         assertTrue(seeded.fresh(listOf(ready), t0 + 1000, cfg).isEmpty())
+        // A text-only delayed observation must not block a later valid screenshot.
+        val delayed = Item("GF-900", ObsType.DELAY, delayMin = 3, doneAt = "14:20")
+        val textOnlySeed = Deduper().apply { seed(listOf(rec(t0, RecordKind.SEEN, delayed, uri = null))) }
+        assertEquals(listOf(delayed), textOnlySeed.fresh(listOf(delayed), t0 + 1000, cfg))
     }
 
     @Test
@@ -169,7 +173,7 @@ class DataAndReportTest {
         assertEquals(1, r.pressedOrders)
         assertEquals(1, r.pressedWithReady)
         assertEquals(3, r.readyOrders)
-        assertEquals(80.0, r.pct(r.delayed))
+        assertNull(r.pct(r.delayed))
 
         // one set per proven order, named like the shop's Drive folder
         val sets = r.sets()
@@ -182,7 +186,7 @@ class DataAndReportTest {
         assertTrue(text.contains("วันที่ 28/09/2026"))
         assertTrue(text.contains("GF-613 ล่าช้า 4 นาที (เสร็จ 11:20) — อยู่ในแท็บ Ready ตั้งแต่ 11:01 \"Finding a driver...\""))
         assertTrue(text.contains("❌ ไม่มีหลักฐาน\nGF-888 ล่าช้า 2 นาที (เสร็จ 12:10)\nGF-156 ล่าช้า 6 นาที (เสร็จ 12:40)"))
-        assertTrue(text.contains("(80.0%)"))
+        assertTrue(text.contains("% ล่าช้า: ไม่คำนวณจาก History"))
 
         val csv = ReportText.csv(r, zone)
         assertTrue(csv.startsWith("\uFEFFdate,gf,"))
@@ -213,7 +217,7 @@ class DataAndReportTest {
         val r = ReportBuilder.build(emptyList(), LocalDate.of(2026, 9, 28), zone, cfg)
         assertEquals(0, r.completedSeen)
         assertNull(r.pct(0))
-        assertTrue(ReportText.summary(r, zone).contains("(-)"))
+        assertTrue(ReportText.summary(r, zone).contains("History ที่แอปสแกนเห็น: 0 ออเดอร์"))
     }
 
     @Test
