@@ -56,6 +56,7 @@ class ProofService : AccessibilityService() {
         private const val PRESS_DEBOUNCE_MS = 650L
         private const val OPEN_READY_DELAY_MS = 750L
         private const val AUTO_SCROLL_DELAY_MS = 450L
+        private const val MAX_SWEEP_SCROLLS = 250
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
     }
 
@@ -81,6 +82,8 @@ class ProofService : AccessibilityService() {
     @Volatile private var returnToPreparingAfterReady = false
     private var lastSweepSignature = ""
     private var repeatedSweepSignature = 0
+    private var sweepScrolls = 0
+    private var historyTabWasSelected = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -244,6 +247,15 @@ class ProofService : AccessibilityService() {
 
         var analysis = ScreenAnalyzer.analyze(snaps, cfg)
 
+        // Detect History from the selected tab itself. Some Grab builds emit a click event from
+        // the tab container with no text, so relying only on TYPE_VIEW_CLICKED can miss the sweep.
+        val historyTabSelected = selectedTabOpen(snaps, listOf("History", "ประวัติ"))
+        if (historyTabSelected && !historyTabWasSelected && !forcedReadySweep) {
+            forcedHistorySweep = true
+            resetSweepLoop()
+        }
+        historyTabWasSelected = historyTabSelected
+
         // If we successfully clicked Ready ourselves but Grab does not expose tab-selected state,
         // the current list is still known to be Ready. Mark every listed GF as READY evidence.
         if (forcedReadySweep && analysis.readyTab != false) {
@@ -259,11 +271,17 @@ class ProofService : AccessibilityService() {
             analysis = analysis.copy(items = (readyItems + existing).distinctBy { Triple(it.gf, it.type, it.doneAt) })
         }
 
-        val historyMode = forcedHistorySweep || analysis.items.any { it.type == ObsType.DONE || it.type == ObsType.DELAY }
+        val historyMode = forcedHistorySweep || historyTabSelected || analysis.items.any { it.type == ObsType.DONE || it.type == ObsType.DELAY }
         val readyMode = forcedReadySweep || analysis.readyTab == true
         val sweepMode = readyMode || historyMode
 
-        if (sweepMode) updateSweepSignature(analysis.visible)
+        if (sweepMode) {
+            // Include card positions, not just GF numbers. Grab often scrolls by less than a full
+            // card, so the visible GF set can stay identical for several successful scrolls.
+            val signature = analysis.cards.filter { it.inList }
+                .joinToString("|") { "${it.gf}@${it.node.top}:${it.node.bottom}" }
+            updateSweepSignature(signature.ifEmpty { analysis.visible.joinToString("|") })
+        }
 
         val now = System.currentTimeMillis()
         val fresh = deduper.fresh(analysis.items, now, cfg)
@@ -314,8 +332,7 @@ class ProofService : AccessibilityService() {
 
     // ---- automatic scrolling ------------------------------------------------------------------
 
-    private fun updateSweepSignature(visible: List<String>) {
-        val signature = visible.joinToString("|")
+    private fun updateSweepSignature(signature: String) {
         if (signature.isNotEmpty() && signature == lastSweepSignature) {
             repeatedSweepSignature++
         } else {
@@ -327,14 +344,18 @@ class ProofService : AccessibilityService() {
     private fun resetSweepLoop() {
         lastSweepSignature = ""
         repeatedSweepSignature = 0
+        sweepScrolls = 0
     }
 
     private fun continueSweep(readyMode: Boolean? = null) {
         worker.postDelayed({
             main.post {
-                // A repeated viewport is a second safety net for apps that claim a scroll succeeded at the end.
-                val moved = repeatedSweepSignature < 2 && scrollOrderListForward()
+                // Stop only when the viewport truly stops moving several times or the safety cap
+                // is reached. The old GF-only signature could stop while the list was still moving.
+                val canContinue = repeatedSweepSignature < 4 && sweepScrolls < MAX_SWEEP_SCROLLS
+                val moved = canContinue && scrollOrderListForward()
                 if (moved) {
+                    sweepScrolls++
                     lastScrollAt = SystemClock.uptimeMillis()
                     worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
                 } else {
@@ -367,12 +388,38 @@ class ProofService : AccessibilityService() {
         for (root in roots) collectScrollable(root, candidates, 0)
         if (candidates.isEmpty()) return false
 
-        // Prefer Recycler/List widgets over an outer ScrollView.
-        val node = candidates.firstOrNull {
-            val c = it.className?.toString().orEmpty()
-            c.contains("Recycler", ignoreCase = true) || c.contains("ListView", ignoreCase = true)
-        } ?: candidates.first()
-        return runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }.getOrDefault(false)
+        // Prefer the scrollable container that actually contains the most visible GF order IDs.
+        // This avoids accidentally scrolling the tab strip or an outer container on Grab builds
+        // where several widgets report isScrollable=true.
+        val ordered = candidates.sortedWith(
+            compareByDescending<AccessibilityNodeInfo> { visibleGfCount(it) }
+                .thenByDescending {
+                    val c = it.className?.toString().orEmpty()
+                    if (c.contains("Recycler", ignoreCase = true) || c.contains("ListView", ignoreCase = true)) 1 else 0
+                }
+        )
+        for (node in ordered) {
+            val moved = runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }.getOrDefault(false)
+            if (moved) return true
+        }
+        return false
+    }
+
+    private fun visibleGfCount(root: AccessibilityNodeInfo): Int {
+        val extractor = config.gfExtractor()
+        val found = LinkedHashSet<String>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 600) {
+            val n = queue.removeFirst()
+            n.text?.toString()?.let { found += extractor.extract(it) }
+            n.contentDescription?.toString()?.let { found += extractor.extract(it) }
+            for (i in 0 until n.childCount) {
+                runCatching { n.getChild(i) }.getOrNull()?.let(queue::addLast)
+            }
+        }
+        return found.size
     }
 
     private fun collectScrollable(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>, depth: Int) {
@@ -382,6 +429,27 @@ class ProofService : AccessibilityService() {
             val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
             collectScrollable(child, out, depth + 1)
         }
+    }
+
+    /** True only when one of the requested tab labels is selected in Accessibility. */
+    private fun selectedTabOpen(roots: List<UiNode>, labels: List<String>): Boolean {
+        val wanted = labels.map(TextNorm::key).filter { it.isNotEmpty() }
+        for (root in roots) {
+            for (node in root.walk()) {
+                val hit = node.ownStrings().any { raw ->
+                    val t = TextNorm.key(raw)
+                    wanted.any { w -> t == w || t.startsWith("$w ") || t.startsWith("$w(") }
+                }
+                if (!hit) continue
+                var cur: UiNode? = node
+                repeat(4) {
+                    val n = cur ?: return@repeat
+                    if (n.selected) return true
+                    cur = n.parent
+                }
+            }
+        }
+        return false
     }
 
     // ---- tab navigation -----------------------------------------------------------------------
