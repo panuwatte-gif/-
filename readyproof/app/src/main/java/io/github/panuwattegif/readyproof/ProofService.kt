@@ -20,7 +20,9 @@ import io.github.panuwattegif.readyproof.core.ObsType
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.RecordKind
 import io.github.panuwattegif.readyproof.core.ReportText
+import io.github.panuwattegif.readyproof.core.ScreenAnalysis
 import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
+import io.github.panuwattegif.readyproof.core.StatusRules
 import io.github.panuwattegif.readyproof.core.TextNorm
 import io.github.panuwattegif.readyproof.core.UiNode
 import java.time.LocalDate
@@ -57,6 +59,8 @@ class ProofService : AccessibilityService() {
         private const val OPEN_READY_DELAY_MS = 750L
         private const val AUTO_SCROLL_DELAY_MS = 450L
         private const val MAX_SWEEP_SCROLLS = 250
+        private const val MAX_DELAY_REPOSITION_ATTEMPTS = 2
+        private const val PAGE_DUPLICATE_WINDOW_MS = 30L * 60_000L
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
     }
 
@@ -84,6 +88,9 @@ class ProofService : AccessibilityService() {
     private var repeatedSweepSignature = 0
     private var sweepScrolls = 0
     private var historyTabWasSelected = false
+    private var delayRepositionKey: String? = null
+    private var delayRepositionAttempts = 0
+    private val recentPageCaptures = LinkedHashMap<String, Long>()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -285,21 +292,55 @@ class ProofService : AccessibilityService() {
 
         val now = System.currentTimeMillis()
         val fresh = deduper.fresh(analysis.items, now, cfg)
-        val keys = fresh.mapNotNull { Deduper.keyOf(it) }
-        if (keys.isNotEmpty()) deduper.mark(keys, now)
 
-        val ready = cfg.captureReady && fresh.any { it.type == ObsType.READY }
-        val delay = cfg.captureDelay && fresh.any { it.type == ObsType.DELAY }
+        // A History row is valid screenshot evidence only when the GF label is actually inside the
+        // visible screen and the completed time was parsed. Accessibility can expose a clipped row
+        // whose "Delayed" line is visible while GF-xxx has already moved above the screenshot.
+        val unproofableDelays = fresh.filter { it.type == ObsType.DELAY && !delayProofable(it, analysis, cfg) }
+        val clippedAbove = unproofableDelays.firstOrNull { item ->
+            val card = matchingDelayCard(item, analysis, cfg)
+            card != null && card.node.top < 0
+        }
+        if (historyMode && clippedAbove != null && tryRepositionDelay(clippedAbove)) return
+
+        val captureItems = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
+        val captureKeys = captureItems.mapNotNull { Deduper.keyOf(it) }
+        val ready = cfg.captureReady && captureItems.any { it.type == ObsType.READY }
+        val delay = cfg.captureDelay && captureItems.any { it.type == ObsType.DELAY }
+
+        // Keep unproofable delayed rows as text-only observations so the report knows they exist,
+        // but do not seed screenshot dedupe from them. A later sweep can still capture proper proof.
+        if (unproofableDelays.isNotEmpty()) {
+            RecordStore.append(
+                this,
+                Record(
+                    id = "$now-u${seq.incrementAndGet()}",
+                    t = now,
+                    kind = RecordKind.SEEN,
+                    items = unproofableDelays,
+                    visible = analysis.visible,
+                )
+            )
+        }
 
         if (ready || delay) {
             val kind = if (ready) RecordKind.READY else RecordKind.DELAY
+            val pageKey = pageCaptureKey(kind, captureItems, analysis.visible)
+            if (pageKey.isNotEmpty() && pageCapturedRecently(pageKey, now)) {
+                // Same page after staff switches tabs: suppress a second identical screenshot.
+                if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
+                if (sweepMode) continueSweep(readyMode)
+                return
+            }
+            if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
+            rememberPageCapture(pageKey, now)
             val job = CaptureJob(kind, now)
             job.setMeta(
                 CaptureMeta(
-                    items = fresh,
+                    items = captureItems,
                     visible = analysis.visible,
-                    dedupeKeys = keys,
-                    toast = toastFor(kind, fresh),
+                    dedupeKeys = captureKeys,
+                    toast = toastFor(kind, captureItems),
                 )
             )
             capture.submit(job)
@@ -307,7 +348,11 @@ class ProofService : AccessibilityService() {
             return
         }
 
-        // History rows without a delay are kept as text-only observations. No screenshot.
+        // History rows without a screenshot are kept as text-only observations. DELAY items whose
+        // screenshot was not proofable are deliberately not marked in the screenshot deduper.
+        val markable = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
+        val markableKeys = markable.mapNotNull { Deduper.keyOf(it) }
+        if (markableKeys.isNotEmpty()) deduper.mark(markableKeys, now)
         if (fresh.any { it.type == ObsType.DONE || it.type == ObsType.DELAY }) {
             RecordStore.append(
                 this,
@@ -322,6 +367,58 @@ class ProofService : AccessibilityService() {
         }
 
         if (sweepMode) continueSweep(readyMode)
+    }
+
+    private fun matchingDelayCard(item: Item, analysis: ScreenAnalysis, cfg: Config) =
+        analysis.cards.firstOrNull { card ->
+            if (card.gf != item.gf) return@firstOrNull false
+            StatusRules(cfg).evaluate(card).any { seen ->
+                seen.type == ObsType.DELAY && (item.doneAt == null || seen.doneAt == item.doneAt)
+            }
+        }
+
+    private fun delayProofable(item: Item, analysis: ScreenAnalysis, cfg: Config): Boolean {
+        if (item.doneAt == null) return false
+        val card = matchingDelayCard(item, analysis, cfg) ?: return false
+        // Negative top means the card/GF has already slid above the screenshot. Zero-sized bounds
+        // are also not trustworthy evidence.
+        return card.node.top >= 0 && card.node.bottom > card.node.top
+    }
+
+    private fun tryRepositionDelay(item: Item): Boolean {
+        val key = Deduper.keyOf(item) ?: return false
+        if (delayRepositionKey != key) {
+            delayRepositionKey = key
+            delayRepositionAttempts = 0
+        }
+        if (delayRepositionAttempts >= MAX_DELAY_REPOSITION_ATTEMPTS) return false
+        delayRepositionAttempts++
+        main.post {
+            val moved = scrollOrderListBackward()
+            if (moved) lastScrollAt = SystemClock.uptimeMillis()
+            worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+        }
+        return true
+    }
+
+    private fun pageCaptureKey(kind: RecordKind, items: List<Item>, visible: List<String>): String {
+        val type = if (kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
+        val target = items.filter { it.type == type }
+            .map { Deduper.keyOf(it) ?: "${it.type}|${it.gf}" }
+            .sorted()
+        if (target.isEmpty()) return ""
+        return kind.name + "|" + target.joinToString(";") + "|" + visible.joinToString(",")
+    }
+
+    private fun pageCapturedRecently(key: String, now: Long): Boolean {
+        val last = recentPageCaptures[key] ?: return false
+        return now - last < PAGE_DUPLICATE_WINDOW_MS
+    }
+
+    private fun rememberPageCapture(key: String, now: Long) {
+        if (key.isEmpty()) return
+        recentPageCaptures[key] = now
+        recentPageCaptures.entries.removeAll { now - it.value > PAGE_DUPLICATE_WINDOW_MS }
     }
 
     private fun toastFor(kind: RecordKind, items: List<Item>): String = when (kind) {
@@ -345,6 +442,8 @@ class ProofService : AccessibilityService() {
         lastSweepSignature = ""
         repeatedSweepSignature = 0
         sweepScrolls = 0
+        delayRepositionKey = null
+        delayRepositionAttempts = 0
     }
 
     private fun continueSweep(readyMode: Boolean? = null) {
@@ -382,7 +481,12 @@ class ProofService : AccessibilityService() {
     }
 
     /** Scroll the most likely order-list widget by one page. */
-    private fun scrollOrderListForward(): Boolean {
+    private fun scrollOrderListForward(): Boolean = scrollOrderList(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+
+    /** Used only to bring a clipped delayed card back down so GF-xxx is visible in the screenshot. */
+    private fun scrollOrderListBackward(): Boolean = scrollOrderList(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+
+    private fun scrollOrderList(action: Int): Boolean {
         val roots = targetRoots(config)
         val candidates = ArrayList<AccessibilityNodeInfo>()
         for (root in roots) collectScrollable(root, candidates, 0)
@@ -399,7 +503,7 @@ class ProofService : AccessibilityService() {
                 }
         )
         for (node in ordered) {
-            val moved = runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }.getOrDefault(false)
+            val moved = runCatching { node.performAction(action) }.getOrDefault(false)
             if (moved) return true
         }
         return false
