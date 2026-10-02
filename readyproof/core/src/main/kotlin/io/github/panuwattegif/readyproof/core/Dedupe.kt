@@ -28,6 +28,9 @@ class Deduper {
     @Synchronized
     fun seed(records: List<Record>) {
         for (r in records) for (item in r.items) {
+            // A DELAY saved in a text-only SEEN record is not valid screenshot evidence. Do not
+            // let it suppress a later chance to capture the same order with GF + delay visible.
+            if (item.type == ObsType.DELAY && r.uri == null) continue
             val key = keyOf(item) ?: continue
             val prev = seen[key]
             if (prev == null || prev < r.t) seen[key] = r.t

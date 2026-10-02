@@ -94,10 +94,12 @@ class ReportActivity : Activity() {
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
         val s = Ui.card(col)
-        Ui.text(s, "ออเดอร์ที่เห็นในหน้า History: ${r.completedSeen}", 15f)
-        Ui.text(s, "Grab ระบุล่าช้า: ${r.delayed} (${ReportText.pct(r.pct(r.delayed))})", 16f, bold = true, topDp = 2)
+        Ui.text(s, "History ที่แอปสแกนเห็น: ${r.completedSeen} ออเดอร์", 15f)
+        Ui.text(s, "ใช้ตัวเลขนี้ตรวจว่าสแกนครบหรือไม่เท่านั้น — ไม่ใช่ยอดออเดอร์รวมจริง", 13f, Ui.AMBER, topDp = 2)
+        Ui.text(s, "Grab ระบุล่าช้า: ${r.delayed}", 16f, bold = true, topDp = 6)
         Ui.text(s, "✅ มีภาพในแท็บ Ready (กดเสร็จแล้ว): ${r.withEvidence.size}", 15f, Ui.GREEN, topDp = 2)
-        Ui.text(s, "❌ ไม่มีภาพ: ${r.withoutEvidence.size} → ล่าช้าจริง ${ReportText.pct(r.pct(r.withoutEvidence.size))}", 15f, Ui.RED, topDp = 2)
+        Ui.text(s, "❌ ไม่มีภาพ Ready / เหลือล่าช้าตามหลักฐาน: ${r.withoutEvidence.size}", 15f, Ui.RED, topDp = 2)
+        Ui.text(s, "% ล่าช้าจะไม่คำนวณจาก History อีก — ให้ใช้ยอดออเดอร์รวมจริงใน Sheet", 13f, Ui.AMBER, topDp = 4)
         Ui.text(
             s,
             if (r.pressedOrders > 0) "กด Ready ${r.pressedOrders} ออเดอร์ · มีภาพในแท็บ Ready ${r.pressedWithReady} ออเดอร์"
@@ -107,7 +109,7 @@ class ReportActivity : Activity() {
         if (r.completedSeen == 0) {
             Ui.text(
                 s,
-                "ยังไม่มีข้อมูลจากหน้า History ของวันนี้ → เปิด Grab → Orders → History แล้วเลื่อนดูออเดอร์ของวันนี้ให้ครบ (เลื่อนช้าๆ) แอปจะแคปออเดอร์ที่ Delayed ให้เอง แล้วกลับมาหน้านี้",
+                "ยังไม่มีข้อมูลจากหน้า History ของวันนี้ → เปิด Grab → Orders → History แล้วให้แอปเลื่อนสแกนรายการของวันนี้",
                 13f, Ui.AMBER, topDp = 8,
             )
             Ui.button(s, "เปิดแอป Grab", filled = false) { ServiceStatus.openApp(this, ConfigStore.get(this).targetPackages.first()) }

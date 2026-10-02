@@ -65,7 +65,7 @@ data class EvidenceSet(
 
 data class DailyReport(
     val date: LocalDate,
-    /** Finished orders seen in the history list for this date. */
+    /** Finished orders the scanner happened to see in History. This is NOT the true total orders. */
     val completedSeen: Int,
     val cases: List<DelayCase>,
     /** Distinct order numbers whose ready button tap was logged this date. */
@@ -79,8 +79,11 @@ data class DailyReport(
     val withEvidence: List<DelayCase> get() = cases.filter { it.hasEvidence }
     val withoutEvidence: List<DelayCase> get() = cases.filter { !it.hasEvidence }
 
-    /** Percentage of [completedSeen], or null when nothing was seen. */
-    fun pct(n: Int): Double? = if (completedSeen > 0) n * 100.0 / completedSeen else null
+    /**
+     * Deliberately disabled. The History scanner is a cross-check, not the authoritative total
+     * number of orders. Percentages must use the shop's real total order count (Sheet / user input).
+     */
+    fun pct(@Suppress("UNUSED_PARAMETER") n: Int): Double? = null
 
     /**
      * One set per proven order: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same order number
@@ -176,11 +179,11 @@ object ReportText {
 
     fun summary(r: DailyReport, zone: ZoneId): String = buildString {
         append("สรุปออเดอร์ล่าช้า วันที่ ").append(date(r.date)).append('\n')
-        append("• ออเดอร์ที่เห็นในหน้าประวัติ: ").append(r.completedSeen).append('\n')
-        append("• Grab ระบุล่าช้า: ").append(r.delayed).append(" (").append(pct(r.pct(r.delayed))).append(")\n")
+        append("• History ที่แอปสแกนเห็น: ").append(r.completedSeen).append(" ออเดอร์ (ใช้ตรวจการสแกน ไม่ใช่ยอดรวมจริง)\n")
+        append("• Grab ระบุล่าช้า: ").append(r.delayed).append('\n')
         append("• มีภาพในแท็บ Ready (กดเสร็จแล้ว): ").append(r.withEvidence.size).append('\n')
-        append("• ไม่มีภาพ: ").append(r.withoutEvidence.size)
-            .append(" → ล่าช้าจริง ").append(pct(r.pct(r.withoutEvidence.size))).append('\n')
+        append("• ไม่มีภาพ Ready / เหลือล่าช้าตามหลักฐาน: ").append(r.withoutEvidence.size).append('\n')
+        append("• % ล่าช้า: ไม่คำนวณจาก History — ต้องใช้ยอดออเดอร์รวมจริงจาก Sheet/ยอดร้าน\n")
         if (r.withEvidence.isNotEmpty()) {
             append("\n✅ มีหลักฐาน\n")
             r.withEvidence.forEach { append(caseLine(it, zone)).append('\n') }
