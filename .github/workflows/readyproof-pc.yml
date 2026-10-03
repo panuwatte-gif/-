@@ -36,10 +36,10 @@ jobs:
       - name: Tests
         run: |
           python -m unittest discover -s tests -v
-          python -m py_compile core.py grab_worker.py main.py
+          python -m py_compile core.py grab_worker.py grab_worker_fixed.py main.py launcher.py
       - name: Build EXE
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name ReadyProofPC --collect-all playwright main.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name ReadyProofPC --collect-all playwright launcher.py
           New-Item -ItemType Directory -Force -Path dist-package | Out-Null
           Copy-Item dist/ReadyProofPC.exe dist-package/ReadyProofPC.exe
           Get-FileHash dist-package/ReadyProofPC.exe -Algorithm SHA256 | Format-List | Out-File -Encoding utf8 dist-package/ReadyProofPC.sha256.txt
