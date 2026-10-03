@@ -157,8 +157,9 @@ class ReportActivity : Activity() {
 
     private fun delayName(report: DailyReport, c: DelayCase): String {
         val repeated = report.cases.count { it.gf == c.gf } > 1
-        val tag = if (repeated && c.doneAt != null) {
-            c.gf + "_" + Parsers.pad2(c.doneAt.hour) + Parsers.pad2(c.doneAt.minute)
+        val doneAt = c.doneAt
+        val tag = if (repeated && doneAt != null) {
+            c.gf + "_" + Parsers.pad2(doneAt.hour) + Parsers.pad2(doneAt.minute)
         } else {
             c.gf
         }
