@@ -17,6 +17,7 @@ import io.github.panuwattegif.readyproof.ServiceStatus
 import io.github.panuwattegif.readyproof.core.DailyReport
 import io.github.panuwattegif.readyproof.core.DelayCase
 import io.github.panuwattegif.readyproof.core.EvidenceSet
+import io.github.panuwattegif.readyproof.core.Naming
 import io.github.panuwattegif.readyproof.core.Parsers
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.ReportBuilder
@@ -26,7 +27,8 @@ import java.time.ZoneId
 
 /**
  * End of day: Grab's delayed orders (read from the History list) matched with the Ready tab
- * screenshots, sent as one set per order (GF-xxx_READY.jpg + GF-xxx_DELAY.jpg).
+ * screenshots. Delayed orders without a READY match remain first-class report cases and their
+ * DELAY screenshot is still exported, so a real shop delay can never disappear from the report.
  */
 class ReportActivity : Activity() {
     private var date: LocalDate = LocalDate.now()
@@ -88,7 +90,7 @@ class ReportActivity : Activity() {
             Ui.text(c, if (report.completedSeen == 0) "ยังไม่มีข้อมูลออเดอร์ล่าช้าของวันนี้" else "ไม่มีออเดอร์ล่าช้า 🎉", 15f, bold = true)
         } else {
             val sets = report.sets().associateBy { it.case }
-            report.cases.forEach { caseCard(col, it, sets[it], zone) }
+            report.cases.forEach { caseCard(col, it, sets[it], report, zone) }
         }
     }
 
@@ -114,18 +116,31 @@ class ReportActivity : Activity() {
             )
             Ui.button(s, "เปิดแอป Grab", filled = false) { ServiceStatus.openApp(this, ConfigStore.get(this).targetPackages.first()) }
         }
+
         val sets = r.sets()
-        val files = sets.sumOf { if (it.delay != null) 2L else 1L }
-        Ui.button(s, "📤 ส่งหลักฐาน ${sets.size} ชุด ($files ไฟล์) เข้า Drive") { shareSets(sets) }
-        if (sets.any { it.delay == null }) {
-            Ui.text(s, "⚠ บางชุดยังไม่มีภาพหน้า History — เลื่อนหน้า History ใน Grab ให้ผ่านออเดอร์นั้นอีกครั้ง", 13f, Ui.AMBER, topDp = 4)
+        val unmatchedDelayFiles = r.withoutEvidence.count { it.delayShot != null }
+        val files = sets.sumOf { if (it.delay != null) 2L else 1L } + unmatchedDelayFiles
+        Ui.button(s, "📤 ส่งหลักฐาน ${r.cases.size} เคส ($files ไฟล์) เข้า Drive") { shareEvidence(r, sets) }
+
+        if (r.withoutEvidence.any { it.delayShot != null }) {
+            Ui.text(
+                s,
+                "⚠ เคสที่ไม่มีภาพ Ready จะส่งภาพ DELAY ขาเดียวไปด้วย และยังนับเป็น Grab Delayed ตามเดิม",
+                13f, Ui.AMBER, topDp = 4,
+            )
+        }
+        if (r.cases.any { it.delayShot == null }) {
+            Ui.text(s, "⚠ บางเคสยังไม่มีภาพหน้า History — เลื่อนหน้า History ใน Grab ให้ผ่านออเดอร์นั้นอีกครั้ง", 13f, Ui.AMBER, topDp = 4)
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
     }
 
-    /** Each set = GF-xxx_READY.jpg + GF-xxx_DELAY.jpg, named for Drive without copying the images. */
-    private fun shareSets(sets: List<EvidenceSet>) {
+    /**
+     * Send every delayed case that has an image. Matched cases contribute READY + DELAY; unmatched
+     * cases still contribute DELAY alone instead of being silently dropped from the Drive handoff.
+     */
+    private fun shareEvidence(report: DailyReport, sets: List<EvidenceSet>) {
         val uris = ArrayList<Uri>()
         for (set in sets) {
             evidenceUri(set.ready, set.readyName)?.let { uris += it }
@@ -133,7 +148,22 @@ class ReportActivity : Activity() {
             val name = set.delayName
             if (delay != null && name != null) evidenceUri(delay, name)?.let { uris += it }
         }
-        Share.images(this, uris, "ส่งหลักฐาน ${sets.size} ชุด")
+        for (case in report.withoutEvidence) {
+            val delay = case.delayShot ?: continue
+            evidenceUri(delay, delayName(report, case))?.let { uris += it }
+        }
+        Share.images(this, uris, "ส่งหลักฐาน ${report.cases.size} เคส")
+    }
+
+    private fun delayName(report: DailyReport, c: DelayCase): String {
+        val repeated = report.cases.count { it.gf == c.gf } > 1
+        val doneAt = c.doneAt
+        val tag = if (repeated && doneAt != null) {
+            c.gf + "_" + Parsers.pad2(doneAt.hour) + Parsers.pad2(doneAt.minute)
+        } else {
+            c.gf
+        }
+        return Naming.setName(tag, "DELAY")
     }
 
     private fun evidenceUri(r: Record, name: String): Uri? = try {
@@ -142,7 +172,7 @@ class ReportActivity : Activity() {
         null
     }
 
-    private fun caseCard(col: LinearLayout, c: DelayCase, set: EvidenceSet?, zone: ZoneId) {
+    private fun caseCard(col: LinearLayout, c: DelayCase, set: EvidenceSet?, report: DailyReport, zone: ZoneId) {
         val card = Ui.card(col)
         val head = (if (c.hasEvidence) "✅ " else "❌ ") + c.gf + " ล่าช้า " + (c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
         Ui.text(card, head, 16f, if (c.hasEvidence) Ui.GREEN else Ui.RED, bold = true)
@@ -151,11 +181,11 @@ class ReportActivity : Activity() {
             Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.time(it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
         }
         c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
-        if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ", 13f, Ui.MUTED, topDp = 2)
+        if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ — เก็บเคสนี้ไว้ ไม่ตัดออก", 13f, Ui.RED, topDp = 2)
         if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้า History ของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
         val shots = ArrayList<Pair<Record, String>>()
         c.readyShot?.let { shots += it.record to (set?.readyName ?: "READY") }
-        c.delayShot?.let { shots += it to (set?.delayName ?: "DELAY") }
+        c.delayShot?.let { shots += it to (set?.delayName ?: delayName(report, c)) }
         thumbRow(card, shots)
     }
 
