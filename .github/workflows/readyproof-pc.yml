@@ -1,0 +1,61 @@
+name: ReadyProof PC Windows
+
+on:
+  push:
+    paths:
+      - "readyproof-pc/**"
+      - ".github/workflows/readyproof-pc.yml"
+  pull_request:
+    paths:
+      - "readyproof-pc/**"
+      - ".github/workflows/readyproof-pc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: readyproof-pc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: readyproof-pc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Tests
+        run: |
+          python -m unittest discover -s tests -v
+          python -m py_compile core.py grab_worker.py grab_worker_fixed.py main.py launcher.py
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name ReadyProofPC --collect-all playwright launcher.py
+          New-Item -ItemType Directory -Force -Path dist-package | Out-Null
+          Copy-Item dist/ReadyProofPC.exe dist-package/ReadyProofPC.exe
+          Get-FileHash dist-package/ReadyProofPC.exe -Algorithm SHA256 | Format-List | Out-File -Encoding utf8 dist-package/ReadyProofPC.sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReadyProofPC-windows
+          path: readyproof-pc/dist-package/
+      - name: Publish latest PC release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete readyproof-pc-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          sleep 3
+          gh release create readyproof-pc-latest dist-package/ReadyProofPC.exe dist-package/ReadyProofPC.sha256.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "ReadyProof PC build ${GITHUB_RUN_NUMBER} (ล่าสุด)" \
+            --notes "Windows · 2 Chrome profiles · กะเพรา + ลูกสาวทำเอง · READY/DETAIL/HISTORY/DELAY"
