@@ -103,6 +103,8 @@ class ProofService : AccessibilityService() {
     private var delayRepositionKey: String? = null
     private var delayRepositionAttempts = 0
     private val recentPageCaptures = LinkedHashMap<String, Long>()
+    private var readySeenDate: LocalDate = LocalDate.now()
+    private val readySeenToday = LinkedHashSet<String>()
 
     @Volatile private var autoHistoryInProgress = false
     @Volatile private var autoHistoryTargetDate: LocalDate? = null
@@ -120,7 +122,12 @@ class ProofService : AccessibilityService() {
         worker.post {
             try {
                 val today = LocalDate.now()
-                deduper.seed(RecordStore.loadRange(this, today.minusDays(1), today))
+                val startupRecords = RecordStore.loadRange(this, today.minusDays(1), today)
+                deduper.seed(startupRecords)
+                readySeenDate = today
+                startupRecords.filter { RecordStore.dateOf(it.t) == today }.forEach { r ->
+                    r.items.filter { it.type == ObsType.READY }.forEach { readySeenToday += it.gf }
+                }
                 Cleanup.runIfDue(this, config)
             } catch (e: Exception) {
                 Diagnostics.error(this, "startup", e)
@@ -375,7 +382,33 @@ class ProofService : AccessibilityService() {
             updateSweepSignature(signature.ifEmpty { analysis.visible.joinToString("|") })
         }
 
+        val today = LocalDate.now()
+        if (today != readySeenDate) {
+            readySeenDate = today
+            readySeenToday.clear()
+        }
         val now = System.currentTimeMillis()
+
+        // Coverage ledger is written before screenshotting. If Android misses a bitmap we still
+        // know exactly which GF reached Ready, while the screenshot deduper keeps it eligible.
+        if (readyMode) {
+            val newlySeen = analysis.items.filter { it.type == ObsType.READY }
+                .filter { readySeenToday.add(it.gf) }
+            if (newlySeen.isNotEmpty()) {
+                RecordStore.append(
+                    this,
+                    Record(
+                        id = "$now-rs${seq.incrementAndGet()}",
+                        t = now,
+                        kind = RecordKind.SEEN,
+                        items = newlySeen,
+                        visible = analysis.visible,
+                        note = "READY_SEEN_PENDING_UNTIL_IMAGE",
+                    )
+                )
+            }
+        }
+
         val fresh = deduper.fresh(analysis.items, now, cfg)
 
         // A History row is valid screenshot evidence only when the GF label is actually inside the
@@ -588,7 +621,9 @@ class ProofService : AccessibilityService() {
                 val missingDelayProof = report.cases.count { it.delayShot == null }
                 val complete = report.readyVsCompletedMatch && missingDelayProof == 0
                 val result = buildString {
-                    append("Ready ").append(report.readyOrders)
+                    append("Ready seen ").append(report.readySeenOrders)
+                    append(" / Ready proof ").append(report.readyOrders)
+                    append(" / Pending ").append(report.pendingReadyProof)
                     append(" / Completed ").append(report.completedSeen)
                     append(" / Cancelled ").append(report.cancelledSeen)
                     append(" / History total ").append(report.historyOrders)
