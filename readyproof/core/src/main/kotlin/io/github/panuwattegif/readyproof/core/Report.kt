@@ -76,13 +76,16 @@ data class DailyReport(
     val readyOrders: Int,
     /** Cancelled order instances observed during the History sweep. */
     val cancelledSeen: Int = 0,
+    /** Distinct GF numbers observed in Ready, including targets still waiting for a valid bitmap. */
+    val readySeenOrders: Int = readyOrders,
 ) {
     val delayed: Int get() = cases.size
     val withEvidence: List<DelayCase> get() = cases.filter { it.hasEvidence }
     val withoutEvidence: List<DelayCase> get() = cases.filter { !it.hasEvidence }
     val historyOrders: Int get() = completedSeen + cancelledSeen
     val actualDelayed: Int get() = withoutEvidence.size
-    val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen
+    val pendingReadyProof: Int get() = maxOf(readySeenOrders - readyOrders, 0)
+    val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen && pendingReadyProof == 0
 
     /** Provisional percentage based on the History orders the scanner has actually counted. */
     fun pct(n: Int): Double? = historyOrders.takeIf { it > 0 }?.let { n * 100.0 / it }
@@ -149,6 +152,7 @@ object ReportBuilder {
 
         val onDate = acc.values.filter { it.date == date }
         val readyShots = sorted.filter { r -> r.uri != null && r.items.any { it.type == ObsType.READY } }
+        val readySeenRecords = sorted.filter { r -> r.items.any { it.type == ObsType.READY } }
         val presses = sorted.filter { r -> r.items.any { it.type == ObsType.PRESS } }
         val windowMs = cfg.evidenceWindowHours * 3600_000L
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
@@ -169,6 +173,7 @@ object ReportBuilder {
             rs.filter { it.t in dayStart until dayEnd }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
         val pressed = gfsOf(presses, ObsType.PRESS)
         val ready = gfsOf(readyShots, ObsType.READY)
+        val readySeen = gfsOf(readySeenRecords, ObsType.READY)
 
         val completedSeen = onDate.count { !it.cancelled }
         val cancelledSeen = onDate.count { it.cancelled }
@@ -180,6 +185,7 @@ object ReportBuilder {
             pressedWithReady = pressed.count { it in ready },
             readyOrders = ready.size,
             cancelledSeen = cancelledSeen,
+            readySeenOrders = readySeen.size,
         )
     }
 }
@@ -197,7 +203,10 @@ object ReportText {
         append("• History ที่แอปสแกนเห็น: ").append(r.historyOrders)
             .append(" ออเดอร์ (เสร็จ ").append(r.completedSeen)
             .append(" / ยกเลิก ").append(r.cancelledSeen).append(")\n")
-        append("• ภาพ Ready: ").append(r.readyOrders)
+        append("• Ready เห็น ").append(r.readySeenOrders)
+            .append(" / มีภาพ ").append(r.readyOrders)
+            .append(" / Pending ").append(r.pendingReadyProof).append('\n')
+        append("• Ready proof ").append(r.readyOrders)
             .append(" / Completed: ").append(r.completedSeen)
             .append(if (r.readyVsCompletedMatch) " — MATCH\n" else " — MISMATCH\n")
         append("• Grab ระบุล่าช้า: ").append(r.delayed).append('\n')
