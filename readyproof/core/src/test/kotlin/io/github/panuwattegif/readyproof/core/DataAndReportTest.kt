@@ -173,7 +173,7 @@ class DataAndReportTest {
         assertEquals(1, r.pressedOrders)
         assertEquals(1, r.pressedWithReady)
         assertEquals(3, r.readyOrders)
-        assertNull(r.pct(r.delayed))
+        assertEquals(80.0, r.pct(r.delayed))
 
         // one set per proven order, named like the shop's Drive folder
         val sets = r.sets()
@@ -186,7 +186,8 @@ class DataAndReportTest {
         assertTrue(text.contains("วันที่ 28/09/2026"))
         assertTrue(text.contains("GF-613 ล่าช้า 4 นาที (เสร็จ 11:20) — อยู่ในแท็บ Ready ตั้งแต่ 11:01 \"Finding a driver...\""))
         assertTrue(text.contains("❌ ไม่มีหลักฐาน\nGF-888 ล่าช้า 2 นาที (เสร็จ 12:10)\nGF-156 ล่าช้า 6 นาที (เสร็จ 12:40)"))
-        assertTrue(text.contains("% ล่าช้า: ไม่คำนวณจาก History"))
+        assertTrue(text.contains("% Grab จาก History: 80.0%"))
+        assertTrue(text.contains("% Actual จากหลักฐาน: 40.0%"))
 
         val csv = ReportText.csv(r, zone)
         assertTrue(csv.startsWith("\uFEFFdate,gf,"))
