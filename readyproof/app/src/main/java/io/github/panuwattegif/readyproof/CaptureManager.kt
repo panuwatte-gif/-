@@ -23,6 +23,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** What gets stored next to a screenshot; for taps it is filled in while the shot is being taken. */
 data class CaptureMeta(
@@ -90,9 +91,18 @@ class CaptureManager(
     private fun request(job: CaptureJob) {
         var attempt = 1
         while (attempt <= MAX_ATTEMPTS) {
-            if ((job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) && !evidenceTargetsStillVisible(job)) {
+            val meta = job.awaitMeta(0)
+            val wantedType = if (job.kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
+            val requestedTargets = meta.items.filter { it.type == wantedType }
+            val before = if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
+                visibleEvidenceTargets(job.kind, requestedTargets)
+            } else {
+                requestedTargets
+            }
+
+            if ((job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) && before.isEmpty()) {
                 if (attempt >= MAX_ATTEMPTS) {
-                    onDone(job, null, "ไม่บันทึกภาพ ${job.kind}: GF/หลักฐานเป้าหมายไม่อยู่ในเฟรม")
+                    onDone(job, null, "ยังถ่ายหลักฐาน ${job.kind} ไม่ได้ — จะคงออเดอร์ไว้เพื่อสแกนซ้ำ")
                     return
                 }
                 Thread.sleep(TARGET_RETRY_DELAY_MS)
@@ -111,14 +121,30 @@ class CaptureManager(
                 service.takeScreenshot(Display.DEFAULT_DISPLAY, io, object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                         try {
-                            // Validate again after Android produced the bitmap. If Grab moved the
-                            // row during the request, do not attach the old GF metadata to this shot.
-                            if ((job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) && !evidenceTargetsStillVisible(job)) {
-                                runCatching { screenshot.hardwareBuffer.close() }
-                                retry.set(true)
-                                return
+                            if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
+                                // One bitmap may prove many orders. Keep only targets that are still
+                                // visibly present after Android produced the bitmap. Any target that
+                                // dropped out remains pending in ProofService and is retried; it is
+                                // never silently marked as having proof.
+                                val after = visibleEvidenceTargets(job.kind, before)
+                                if (after.isEmpty()) {
+                                    runCatching { screenshot.hardwareBuffer.close() }
+                                    retry.set(true)
+                                    return
+                                }
+                                val afterKeys = after.mapNotNull { io.github.panuwattegif.readyproof.core.Deduper.keyOf(it) }
+                                save(
+                                    job,
+                                    screenshot,
+                                    meta.copy(
+                                        items = after,
+                                        dedupeKeys = afterKeys,
+                                        toast = toastForValidated(job.kind, after),
+                                    ),
+                                )
+                            } else {
+                                save(job, screenshot, meta)
                             }
-                            save(job, screenshot)
                         } finally {
                             callbackDelivered.set(true)
                             finished.countDown()
@@ -150,7 +176,7 @@ class CaptureManager(
             if (!retry.get()) return
 
             if (attempt >= MAX_ATTEMPTS) {
-                onDone(job, null, "ไม่บันทึกภาพ ${job.kind}: หน้าจอเปลี่ยนระหว่างแคปหลายครั้ง")
+                onDone(job, null, "หน้าจอเปลี่ยนระหว่างแคป — จะคงออเดอร์ไว้เพื่อสแกนซ้ำ")
                 return
             }
             Thread.sleep(RETRY_DELAY_MS)
@@ -159,17 +185,13 @@ class CaptureManager(
     }
 
     /**
-     * Strict proof check for DELAY screenshots. NodeSnapshot contains only nodes Android says are
-     * visible, and we additionally require positive on-screen bounds for both the GF label and the
-     * delayed label inside the same order card.
+     * Return the subset of [targets] that are visibly provable on the current Grab screen.
+     * READY only requires the target GF to be visible in the selected Ready tab. DELAY requires
+     * the same card to show both the target GF and Grab's delayed text.
      */
-    private fun evidenceTargetsStillVisible(job: CaptureJob): Boolean {
-        val meta = job.awaitMeta(0)
-        val wantedType = if (job.kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
-        val targets = meta.items.filter { it.type == wantedType }
-        if (targets.size != 1) return false
-
-        val ok = AtomicBoolean(false)
+    private fun visibleEvidenceTargets(kind: RecordKind, targets: List<Item>): List<Item> {
+        if (targets.isEmpty()) return emptyList()
+        val result = AtomicReference<List<Item>>(emptyList())
         val done = CountDownLatch(1)
         main.post {
             try {
@@ -195,42 +217,53 @@ class CaptureManager(
                 val analysis = ScreenAnalyzer.analyze(snaps, cfg)
                 val rules = StatusRules(cfg)
                 val extractor = cfg.gfExtractor()
-                val target = targets.single()
-                val card = analysis.cards.firstOrNull { card -> card.inList && card.gf == target.gf }
-                    ?: return@post
+                val wantedType = if (kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
+                val good = ArrayList<Item>()
 
-                val gfVisible = card.node.walk().any { n ->
-                    n.top >= 0 && n.bottom > n.top && n.ownStrings().any { s -> target.gf in extractor.extract(s) }
-                }
-                if (!gfVisible) return@post
+                for (target in targets.filter { it.type == wantedType }) {
+                    val card = analysis.cards.firstOrNull { c -> c.inList && c.gf == target.gf } ?: continue
+                    val gfVisible = card.node.walk().any { n ->
+                        n.top >= 0 && n.bottom > n.top &&
+                            n.ownStrings().any { raw -> target.gf in extractor.extract(raw) }
+                    }
+                    if (!gfVisible) continue
 
-                if (wantedType == ObsType.READY) {
-                    // The selected Ready tab itself is the READY proof. Do not depend on wording
-                    // inside the card; simply reject History/Delayed cards and require this GF onscreen.
-                    val historyLike = rules.evaluate(card).any { seen ->
-                        seen.type == ObsType.DONE || seen.type == ObsType.DELAY
+                    if (wantedType == ObsType.READY) {
+                        val historyLike = rules.evaluate(card).any { seen ->
+                            seen.type == ObsType.DONE || seen.type == ObsType.DELAY || seen.type == ObsType.CANCELLED
+                        }
+                        if (!historyLike && analysis.readyTab != false) good += target
+                    } else {
+                        val delayMatch = rules.evaluate(card).any { seen ->
+                            seen.type == ObsType.DELAY &&
+                                (target.doneAt == null || seen.doneAt == target.doneAt)
+                        }
+                        val delayVisible = card.node.walk().any { n ->
+                            n.top >= 0 && n.bottom > n.top &&
+                                n.ownStrings().any { raw -> TextNorm.containsAny(raw, cfg.delayAny) }
+                        }
+                        if (delayMatch && delayVisible) good += target
                     }
-                    ok.set(!historyLike && analysis.readyTab != false)
-                } else {
-                    val delayMatch = rules.evaluate(card).any { seen ->
-                        seen.type == ObsType.DELAY &&
-                            (target.doneAt == null || seen.doneAt == target.doneAt)
-                    }
-                    val delayVisible = card.node.walk().any { n ->
-                        n.top >= 0 && n.bottom > n.top && n.ownStrings().any { s -> TextNorm.containsAny(s, cfg.delayAny) }
-                    }
-                    ok.set(delayMatch && delayVisible)
                 }
+                result.set(good)
             } catch (_: Exception) {
-                ok.set(false)
+                result.set(emptyList())
             } finally {
                 done.countDown()
             }
         }
-        return done.await(VALIDATION_TIMEOUT_MS, TimeUnit.MILLISECONDS) && ok.get()
+        return if (done.await(VALIDATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) result.get() else emptyList()
     }
 
-    private fun save(job: CaptureJob, shot: AccessibilityService.ScreenshotResult) {
+    private fun toastForValidated(kind: RecordKind, items: List<Item>): String = when (kind) {
+        RecordKind.READY -> "📸 READY: " + items.joinToString(", ") { it.gf }
+        RecordKind.DELAY -> "📸 ล่าช้า: " + items.joinToString(", ") {
+            it.gf + (it.delayMin?.let { m -> " ($m นาที)" } ?: "")
+        }
+        else -> "📸 บันทึกแล้ว"
+    }
+
+    private fun save(job: CaptureJob, shot: AccessibilityService.ScreenshotResult, validatedMeta: CaptureMeta? = null) {
         var bitmap: Bitmap? = null
         try {
             val buffer = shot.hardwareBuffer
@@ -242,7 +275,7 @@ class CaptureManager(
                 onDone(job, null, "แปลงภาพหน้าจอไม่สำเร็จ")
                 return
             }
-            val meta = job.awaitMeta(META_TIMEOUT_MS)
+            val meta = validatedMeta ?: job.awaitMeta(META_TIMEOUT_MS)
             val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(job.t), ZoneId.systemDefault())
             val name = Naming.fileName(job.kind, meta.items, meta.visible, at)
             val uri = MediaSaver.saveJpeg(service, bitmap, name, job.t, ConfigStore.get(service).jpegQuality)
