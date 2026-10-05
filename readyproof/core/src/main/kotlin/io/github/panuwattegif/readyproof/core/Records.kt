@@ -15,7 +15,7 @@ enum class RecordKind(val label: String) {
 }
 
 /** What was observed about one order. */
-enum class ObsType { PRESS, READY, DELAY, DONE, VISIBLE }
+enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE }
 
 data class Item(
     val gf: String,
