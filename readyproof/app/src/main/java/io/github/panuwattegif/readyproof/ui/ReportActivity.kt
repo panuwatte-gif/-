@@ -96,31 +96,54 @@ class ReportActivity : Activity() {
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
         val s = Ui.card(col)
-        Ui.text(s, "History ที่แอปสแกนเห็น: ${r.completedSeen} ออเดอร์", 15f)
-        Ui.text(s, "ใช้ตัวเลขนี้ตรวจว่าสแกนครบหรือไม่เท่านั้น — ไม่ใช่ยอดออเดอร์รวมจริง", 13f, Ui.AMBER, topDp = 2)
+        Ui.text(
+            s,
+            "History: ${r.historyOrders} ออเดอร์ · เสร็จ ${r.completedSeen} · ยกเลิก ${r.cancelledSeen}",
+            15f,
+            bold = true,
+        )
+        Ui.text(
+            s,
+            "Ready proof ${r.readyOrders} / Completed ${r.completedSeen}: " +
+                (if (r.readyVsCompletedMatch) "MATCH" else "MISMATCH"),
+            14f,
+            if (r.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
+            topDp = 2,
+        )
         Ui.text(s, "Grab ระบุล่าช้า: ${r.delayed}", 16f, bold = true, topDp = 6)
         Ui.text(s, "✅ มีภาพในแท็บ Ready (กดเสร็จแล้ว): ${r.withEvidence.size}", 15f, Ui.GREEN, topDp = 2)
         Ui.text(s, "❌ ไม่มีภาพ Ready / เหลือล่าช้าตามหลักฐาน: ${r.withoutEvidence.size}", 15f, Ui.RED, topDp = 2)
-        Ui.text(s, "% ล่าช้าจะไม่คำนวณจาก History อีก — ให้ใช้ยอดออเดอร์รวมจริงใน Sheet", 13f, Ui.AMBER, topDp = 4)
+        Ui.text(
+            s,
+            "Delay% จาก History: Grab ${ReportText.pct(r.pct(r.delayed))} · Actual ${ReportText.pct(r.pct(r.actualDelayed))}",
+            14f,
+            Ui.MUTED,
+            topDp = 4,
+        )
         Ui.text(
             s,
             if (r.pressedOrders > 0) "กด Ready ${r.pressedOrders} ออเดอร์ · มีภาพในแท็บ Ready ${r.pressedWithReady} ออเดอร์"
             else "มีภาพในแท็บ Ready ${r.readyOrders} ออเดอร์",
             13f, Ui.MUTED, topDp = 4,
         )
-        if (r.completedSeen == 0) {
+        if (r.historyOrders == 0) {
             Ui.text(
                 s,
-                "ยังไม่มีข้อมูลจากหน้า History ของวันนี้ → เปิด Grab → Orders → History แล้วให้แอปเลื่อนสแกนรายการของวันนี้",
+                "ยังไม่มีข้อมูลจาก History ของวันนี้ — ระบบจะเข้า History เองหลังปิดร้าน หรือกด "กวาด History ตอนนี้" ที่หน้าหลักเพื่อทดสอบ",
                 13f, Ui.AMBER, topDp = 8,
             )
-            Ui.button(s, "เปิดแอป Grab", filled = false) { ServiceStatus.openApp(this, ConfigStore.get(this).targetPackages.first()) }
+        } else if (!r.readyVsCompletedMatch) {
+            Ui.text(
+                s,
+                "⚠ จำนวน Ready กับ Completed ยังไม่ตรงกัน ระบบสิ้นวันจะถือว่างานยังไม่ครบและสแกนซ้ำ",
+                13f, Ui.AMBER, topDp = 6,
+            )
         }
 
         val sets = r.sets()
         val unmatchedDelayFiles = r.withoutEvidence.count { it.delayShot != null }
         val files = sets.sumOf { if (it.delay != null) 2L else 1L } + unmatchedDelayFiles
-        Ui.button(s, "📤 ส่งหลักฐาน ${r.cases.size} เคส ($files ไฟล์) เข้า Drive") { shareEvidence(r, sets) }
+        Ui.button(s, "📤 แชร์หลักฐาน ${r.cases.size} เคส ($files ไฟล์)") { shareEvidence(r, sets) }
 
         if (r.withoutEvidence.any { it.delayShot != null }) {
             Ui.text(
@@ -130,7 +153,7 @@ class ReportActivity : Activity() {
             )
         }
         if (r.cases.any { it.delayShot == null }) {
-            Ui.text(s, "⚠ บางเคสยังไม่มีภาพหน้า History — เลื่อนหน้า History ใน Grab ให้ผ่านออเดอร์นั้นอีกครั้ง", 13f, Ui.AMBER, topDp = 4)
+            Ui.text(s, "⚠ บางเคสยังไม่มีภาพ DELAY ที่ใช้ได้ — ระบบจะกวาด History ซ้ำอัตโนมัติ", 13f, Ui.AMBER, topDp = 4)
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
