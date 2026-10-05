@@ -104,8 +104,8 @@ class ReportActivity : Activity() {
         )
         Ui.text(
             s,
-            "Ready proof ${r.readyOrders} / Completed ${r.completedSeen}: " +
-                (if (r.readyVsCompletedMatch) "MATCH" else "MISMATCH"),
+            "Ready เห็น ${r.readySeenOrders} · มีภาพ ${r.readyOrders} · Pending ${r.pendingReadyProof} · " +
+                "Completed ${r.completedSeen}: " + (if (r.readyVsCompletedMatch) "MATCH" else "MISMATCH"),
             14f,
             if (r.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
             topDp = 2,
