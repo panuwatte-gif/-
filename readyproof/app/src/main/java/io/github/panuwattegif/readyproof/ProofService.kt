@@ -53,12 +53,14 @@ class ProofService : AccessibilityService() {
         private const val MAX_NODES = 1500
         private const val SCAN_DELAY_MS = 450L
         private const val SCAN_MIN_INTERVAL_MS = 900L
+        private const val READY_WATCH_INTERVAL_MS = 1_500L
         private const val SCROLL_SETTLE_MS = 650L
         private const val TEXT_ONLY_SCAN_INTERVAL_MS = 5_000L
         private const val PRESS_DEBOUNCE_MS = 650L
         private const val OPEN_READY_DELAY_MS = 750L
         private const val AUTO_SCROLL_DELAY_MS = 450L
         private const val MAX_SWEEP_SCROLLS = 250
+        private const val MAX_RETURN_TO_TOP_SCROLLS = 250
         private const val MAX_DELAY_REPOSITION_ATTEMPTS = 2
         private const val PAGE_DUPLICATE_WINDOW_MS = 30L * 60_000L
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
@@ -87,6 +89,8 @@ class ProofService : AccessibilityService() {
     private var lastSweepSignature = ""
     private var repeatedSweepSignature = 0
     private var sweepScrolls = 0
+    @Volatile private var returningReadyToTop = false
+    private var returnToTopScrolls = 0
     private var historyTabWasSelected = false
     private var delayRepositionKey: String? = null
     private var delayRepositionAttempts = 0
@@ -109,6 +113,7 @@ class ProofService : AccessibilityService() {
             } catch (e: Exception) {
                 Diagnostics.error(this, "startup", e)
             }
+            worker.postDelayed(readyWatchRunnable, READY_WATCH_INTERVAL_MS)
         }
     }
 
@@ -221,6 +226,19 @@ class ProofService : AccessibilityService() {
 
     // ---- scanning -----------------------------------------------------------------------------
 
+    /** Independent poller: the dedicated proof phone may receive Ready changes from another
+     * device without any useful Accessibility event. Never rely on a same-device Ready tap. */
+    private val readyWatchRunnable = object : Runnable {
+        override fun run() {
+            if (!::worker.isInitialized) return
+            try {
+                if (config.enabled && !returningReadyToTop) scheduleScan()
+            } finally {
+                runCatching { worker.postDelayed(this, READY_WATCH_INTERVAL_MS) }
+            }
+        }
+    }
+
     private fun scheduleScan() {
         if (!scanPending.compareAndSet(false, true)) return
         val sinceLast = SystemClock.uptimeMillis() - lastScanAt
@@ -245,6 +263,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun scan() {
+        if (returningReadyToTop) return
         val cfg = config
         if (!cfg.enabled) return
         val roots = targetRoots(cfg)
@@ -303,10 +322,20 @@ class ProofService : AccessibilityService() {
         }
         if (historyMode && clippedAbove != null && tryRepositionDelay(clippedAbove)) return
 
-        val captureItems = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
+        val captureCandidates = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
+        // One evidence file = one target order. A page can contain many GFs, but an order is not
+        // considered captured until its own GF is visible and validated in its own screenshot job.
+        val targetItem = when {
+            cfg.captureReady -> captureCandidates.firstOrNull { it.type == ObsType.READY }
+            else -> null
+        } ?: when {
+            cfg.captureDelay -> captureCandidates.firstOrNull { it.type == ObsType.DELAY }
+            else -> null
+        }
+        val captureItems = listOfNotNull(targetItem)
         val captureKeys = captureItems.mapNotNull { Deduper.keyOf(it) }
-        val ready = cfg.captureReady && captureItems.any { it.type == ObsType.READY }
-        val delay = cfg.captureDelay && captureItems.any { it.type == ObsType.DELAY }
+        val ready = targetItem?.type == ObsType.READY
+        val delay = targetItem?.type == ObsType.DELAY
 
         // Keep unproofable delayed rows as text-only observations so the report knows they exist,
         // but do not seed screenshot dedupe from them. A later sweep can still capture proper proof.
@@ -327,9 +356,9 @@ class ProofService : AccessibilityService() {
             val kind = if (ready) RecordKind.READY else RecordKind.DELAY
             val pageKey = pageCaptureKey(kind, captureItems, analysis.visible)
             if (pageKey.isNotEmpty() && pageCapturedRecently(pageKey, now)) {
-                // Same page after staff switches tabs: suppress a second identical screenshot.
+                // Item-level dedupe owns correctness. Do not scroll away from an uncaptured target.
                 if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
-                if (sweepMode) continueSweep(readyMode)
+                scheduleScan()
                 return
             }
             if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
@@ -470,14 +499,44 @@ class ProofService : AccessibilityService() {
             resetSweepLoop()
             if (returnToPreparingAfterReady) {
                 returnToPreparingAfterReady = false
-                // Return to the working tab so the automated proof collection does not interrupt staff.
+                // Legacy same-device flow: return only when ReadyProof opened Ready itself.
                 main.postDelayed({ clickTab(listOf("Preparing", "กำลังเตรียม")) }, 250L)
+            } else {
+                // Dedicated proof phone stays on Ready. Sweep back to the top so an order inserted
+                // above the current viewport cannot be missed between Accessibility events.
+                startReturnReadyToTop()
+                return
             }
         }
         if (forcedHistorySweep) {
             forcedHistorySweep = false
             resetSweepLoop()
         }
+    }
+
+    private fun startReturnReadyToTop() {
+        if (returningReadyToTop) return
+        returningReadyToTop = true
+        returnToTopScrolls = 0
+        continueReturnReadyToTop()
+    }
+
+    private fun continueReturnReadyToTop() {
+        worker.postDelayed({
+            main.post {
+                val canContinue = returnToTopScrolls < MAX_RETURN_TO_TOP_SCROLLS
+                val moved = canContinue && scrollOrderListBackward()
+                if (moved) {
+                    returnToTopScrolls++
+                    lastScrollAt = SystemClock.uptimeMillis()
+                    continueReturnReadyToTop()
+                } else {
+                    returningReadyToTop = false
+                    returnToTopScrolls = 0
+                    worker.postDelayed({ scheduleScan() }, READY_WATCH_INTERVAL_MS)
+                }
+            }
+        }, AUTO_SCROLL_DELAY_MS)
     }
 
     /** Scroll the most likely order-list widget by one page. */
@@ -670,9 +729,10 @@ class ProofService : AccessibilityService() {
             val now = SystemClock.uptimeMillis()
             if (now - lastFailToastAt > 30_000L) {
                 lastFailToastAt = now
-                toast("⚠️ ${error ?: "แคปไม่สำเร็จ"} — ถ้าเป็นบ่อยให้ถ่ายหน้าจอเองไปก่อน")
+                toast("⚠️ ${error ?: "แคปไม่สำเร็จ"} — ค้างเฟรมนี้และจะลองใหม่ ไม่ข้ามออเดอร์")
             }
-            if (forcedReadySweep || forcedHistorySweep) continueSweep(forcedReadySweep)
+            // Fail closed: never advance the list after a proof failure. Re-read the same viewport.
+            scheduleScan()
             return
         }
 
@@ -681,8 +741,9 @@ class ProofService : AccessibilityService() {
         if (config.showToast) toast(meta.toast ?: "📸 บันทึกแล้ว")
 
         if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
-            if (forcedReadySweep || forcedHistorySweep) continueSweep(forcedReadySweep)
-            else scheduleScan()
+            // Re-scan the SAME viewport first. This captures every visible order one-by-one before
+            // the sweep is allowed to move to the next page.
+            scheduleScan()
         }
     }
 
