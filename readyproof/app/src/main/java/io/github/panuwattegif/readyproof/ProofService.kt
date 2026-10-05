@@ -600,7 +600,7 @@ class ProofService : AccessibilityService() {
                     .putString(AUTO_HISTORY_PREF_LAST_RESULT, result)
                 if (complete) {
                     edit.putString(AUTO_HISTORY_PREF_COMPLETE_DATE, day.toString())
-                    nextAutoHistoryAttemptAt = Long.MAX_VALUE
+                    nextAutoHistoryAttemptAt = 0L
                 } else {
                     edit.remove(AUTO_HISTORY_PREF_COMPLETE_DATE)
                     nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
