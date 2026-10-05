@@ -54,12 +54,13 @@ class Deduper {
             ObsType.READY -> "READY|${item.gf}"
             ObsType.DELAY -> "DELAY|${item.gf}|${item.doneAt ?: "-"}"
             ObsType.DONE -> "DONE|${item.gf}|${item.doneAt ?: "-"}"
+            ObsType.CANCELLED -> "CANCELLED|${item.gf}|${item.doneAt ?: "-"}"
             ObsType.PRESS, ObsType.VISIBLE -> null
         }
 
         fun windowMs(type: ObsType, cfg: Config): Long = when (type) {
             ObsType.READY -> cfg.readyRepeatMinutes * 60_000L
-            ObsType.DELAY, ObsType.DONE -> 36L * 3600_000
+            ObsType.DELAY, ObsType.DONE, ObsType.CANCELLED -> 36L * 3600_000
             ObsType.PRESS, ObsType.VISIBLE -> 0L
         }
     }
