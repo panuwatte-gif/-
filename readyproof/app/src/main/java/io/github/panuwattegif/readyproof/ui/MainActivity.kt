@@ -8,6 +8,7 @@ import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
 import io.github.panuwattegif.readyproof.core.ObsType
 import io.github.panuwattegif.readyproof.core.RecordKind
+import io.github.panuwattegif.readyproof.core.ReportBuilder
 import io.github.panuwattegif.readyproof.core.ReportText
 import java.time.LocalDate
 import java.time.ZoneId
@@ -82,6 +83,12 @@ class MainActivity : Activity() {
         // --- today ---
         val today = LocalDate.now()
         val records = RecordStore.load(this, today)
+        val report = ReportBuilder.build(
+            RecordStore.loadRange(this, today.minusDays(1), today.plusDays(1)),
+            today,
+            zone,
+            cfg,
+        )
         fun gfs(type: ObsType, withImage: Boolean) =
             records.filter { !withImage || it.uri != null }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
         val ready = gfs(ObsType.READY, withImage = true)
@@ -90,17 +97,29 @@ class MainActivity : Activity() {
         Ui.text(day, "วันนี้ " + ReportText.date(today), 17f, bold = true)
         Ui.text(
             day,
-            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · ภาพหน้า History ${records.count { it.kind == RecordKind.DELAY && it.uri != null }} · " +
-                "แคปเอง ${records.count { it.kind == RecordKind.MANUAL && it.uri != null }}",
+            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · History ${report.historyOrders} ออเดอร์ " +
+                "(เสร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen}) · " +
+                "Delayed ${report.delayed}",
             15f, topDp = 4,
+        )
+        Ui.text(
+            day,
+            "ตรวจจำนวน Ready ${report.readyOrders} / Completed ${report.completedSeen}: " +
+                (if (report.readyVsCompletedMatch) "MATCH" else "MISMATCH"),
+            14f,
+            if (report.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
+            topDp = 3,
         )
         if (pressedNoShot.isNotEmpty()) {
             Ui.text(
                 day,
                 "⏰ กด Ready แล้วแต่ยังไม่มีภาพในแท็บ Ready: " + pressedNoShot.take(6).joinToString(", ") +
-                    (if (pressedNoShot.size > 6) " …" else "") + " → เปิดแท็บ Ready ใน Grab 1 ครั้ง",
+                    (if (pressedNoShot.size > 6) " …" else "") + " → ระบบจะคงเป็น PENDING และสแกนซ้ำ",
                 14f, Ui.AMBER, topDp = 4,
             )
+        }
+        ConfigStore.prefs(this).getString("auto_history_last_result", null)?.let {
+            Ui.text(day, "History ล่าสุด: $it", 13f, Ui.MUTED, topDp = 2)
         }
         ProofService.lastCaptureText?.let { Ui.text(day, "ล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
         Ui.button(day, "📋 รายงานออเดอร์ล่าช้า + จับคู่หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
@@ -108,6 +127,15 @@ class MainActivity : Activity() {
 
         // --- tools ---
         val tools = Ui.card(col)
+        Ui.button(tools, "🔄 กวาด History ตอนนี้", filled = false) {
+            val service = ProofService.instance
+            if (service == null) {
+                Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
+            } else {
+                service.requestHistorySweepNow()
+                Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
+            }
+        }
         Ui.button(tools, "🧪 ทดสอบ: แคปหน้าจอใน 5 วินาที", filled = false) {
             val service = ProofService.instance
             if (service == null) {
