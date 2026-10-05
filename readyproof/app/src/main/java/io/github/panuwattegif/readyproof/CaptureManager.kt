@@ -90,9 +90,9 @@ class CaptureManager(
     private fun request(job: CaptureJob) {
         var attempt = 1
         while (attempt <= MAX_ATTEMPTS) {
-            if (job.kind == RecordKind.DELAY && !delayTargetsStillVisible(job)) {
+            if ((job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) && !evidenceTargetsStillVisible(job)) {
                 if (attempt >= MAX_ATTEMPTS) {
-                    onDone(job, null, "ไม่บันทึกภาพ DELAY: GF/ข้อความล่าช้าไม่อยู่ในเฟรมเดียวกัน")
+                    onDone(job, null, "ไม่บันทึกภาพ ${job.kind}: GF/หลักฐานเป้าหมายไม่อยู่ในเฟรม")
                     return
                 }
                 Thread.sleep(TARGET_RETRY_DELAY_MS)
@@ -113,7 +113,7 @@ class CaptureManager(
                         try {
                             // Validate again after Android produced the bitmap. If Grab moved the
                             // row during the request, do not attach the old GF metadata to this shot.
-                            if (job.kind == RecordKind.DELAY && !delayTargetsStillVisible(job)) {
+                            if ((job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) && !evidenceTargetsStillVisible(job)) {
                                 runCatching { screenshot.hardwareBuffer.close() }
                                 retry.set(true)
                                 return
@@ -150,7 +150,7 @@ class CaptureManager(
             if (!retry.get()) return
 
             if (attempt >= MAX_ATTEMPTS) {
-                onDone(job, null, "ไม่บันทึกภาพ DELAY: หน้าจอเปลี่ยนระหว่างแคปหลายครั้ง")
+                onDone(job, null, "ไม่บันทึกภาพ ${job.kind}: หน้าจอเปลี่ยนระหว่างแคปหลายครั้ง")
                 return
             }
             Thread.sleep(RETRY_DELAY_MS)
@@ -163,10 +163,11 @@ class CaptureManager(
      * visible, and we additionally require positive on-screen bounds for both the GF label and the
      * delayed label inside the same order card.
      */
-    private fun delayTargetsStillVisible(job: CaptureJob): Boolean {
+    private fun evidenceTargetsStillVisible(job: CaptureJob): Boolean {
         val meta = job.awaitMeta(0)
-        val targets = meta.items.filter { it.type == ObsType.DELAY }
-        if (targets.isEmpty()) return false
+        val wantedType = if (job.kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
+        val targets = meta.items.filter { it.type == wantedType }
+        if (targets.size != 1) return false
 
         val ok = AtomicBoolean(false)
         val done = CountDownLatch(1)
@@ -194,24 +195,32 @@ class CaptureManager(
                 val analysis = ScreenAnalyzer.analyze(snaps, cfg)
                 val rules = StatusRules(cfg)
                 val extractor = cfg.gfExtractor()
+                val target = targets.single()
+                val card = analysis.cards.firstOrNull { card -> card.inList && card.gf == target.gf }
+                    ?: return@post
 
-                ok.set(targets.all { target ->
-                    val card = analysis.cards.firstOrNull { card ->
-                        if (!card.inList || card.gf != target.gf) return@firstOrNull false
-                        rules.evaluate(card).any { seen ->
-                            seen.type == ObsType.DELAY &&
-                                (target.doneAt == null || seen.doneAt == target.doneAt)
-                        }
-                    } ?: return@all false
+                val gfVisible = card.node.walk().any { n ->
+                    n.top >= 0 && n.bottom > n.top && n.ownStrings().any { s -> target.gf in extractor.extract(s) }
+                }
+                if (!gfVisible) return@post
 
-                    val gfVisible = card.node.walk().any { n ->
-                        n.top >= 0 && n.bottom > n.top && n.ownStrings().any { s -> target.gf in extractor.extract(s) }
+                if (wantedType == ObsType.READY) {
+                    // The selected Ready tab itself is the READY proof. Do not depend on wording
+                    // inside the card; simply reject History/Delayed cards and require this GF onscreen.
+                    val historyLike = rules.evaluate(card).any { seen ->
+                        seen.type == ObsType.DONE || seen.type == ObsType.DELAY
+                    }
+                    ok.set(!historyLike && analysis.readyTab != false)
+                } else {
+                    val delayMatch = rules.evaluate(card).any { seen ->
+                        seen.type == ObsType.DELAY &&
+                            (target.doneAt == null || seen.doneAt == target.doneAt)
                     }
                     val delayVisible = card.node.walk().any { n ->
                         n.top >= 0 && n.bottom > n.top && n.ownStrings().any { s -> TextNorm.containsAny(s, cfg.delayAny) }
                     }
-                    gfVisible && delayVisible
-                })
+                    ok.set(delayMatch && delayVisible)
+                }
             } catch (_: Exception) {
                 ok.set(false)
             } finally {
