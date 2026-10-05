@@ -97,8 +97,8 @@ class MainActivity : Activity() {
         Ui.text(day, "วันนี้ " + ReportText.date(today), 17f, bold = true)
         Ui.text(
             day,
-            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · History ${report.historyOrders} ออเดอร์ " +
-                "(เสร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen}) · " +
+            "Ready เห็น ${report.readySeenOrders} · มีภาพ ${report.readyOrders} · Pending ${report.pendingReadyProof} · " +
+                "History ${report.historyOrders} (เสร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen}) · " +
                 "Delayed ${report.delayed}",
             15f, topDp = 4,
         )
