@@ -311,7 +311,7 @@ class ProofService : AccessibilityService() {
                 return@post
             }
             val labels = if (gate.tab == ClosingTab.READY) config.readyTabLabels else gate.tab.labels
-            val clicked = clickTab(labels)
+            val clicked = runCatching { clickTab(labels) }.getOrDefault(false)
             worker.postDelayed({
                 if (closingGate !== gate) return@postDelayed
                 if (!clicked) retryClosing(gate, "เปิด ${gate.tab.name} ไม่สำเร็จ / ต้องเปิด Grab ค้างไว้")
@@ -327,10 +327,7 @@ class ProofService : AccessibilityService() {
             return
         }
         // Only inspect the active Grab window: an overlay, locked phone or another app is UNKNOWN.
-        val active = rootInActiveWindow
-        val roots = if (active?.packageName?.toString() in config.targetPackages) {
-            listOf(NodeSnapshot.capture(active!!, MAX_NODES))
-        } else emptyList()
+        val roots = activeGrabSnapshots()
         val state = ClosingQueueAnalyzer.inspect(roots, config, gate.tab, navigationAccepted = true)
         when (gate.observe(state, SystemClock.uptimeMillis())) {
             ClosingHistoryGate.Result.NEXT_TAB -> navigateClosingTab(gate, day)
@@ -372,7 +369,7 @@ class ProofService : AccessibilityService() {
         autoHistoryTargetDate = day
         sweepShopId = ShopStore.get(this)?.id
         main.post {
-            val clicked = clickTab(listOf("History", "ประวัติ"))
+            val clicked = runCatching { clickTab(listOf("History", "ประวัติ")) }.getOrDefault(false)
             if (clicked) {
                 worker.postDelayed({ confirmHistoryPage(day, SystemClock.uptimeMillis()) }, 1_500L)
             } else {
@@ -383,9 +380,7 @@ class ProofService : AccessibilityService() {
 
     private fun confirmHistoryPage(day: LocalDate, startedAt: Long) {
         if (!autoHistoryInProgress || autoHistoryTargetDate != day || forcedHistorySweep) return
-        val active = rootInActiveWindow
-        val snaps = if (active?.packageName?.toString() in config.targetPackages)
-            listOf(NodeSnapshot.capture(active!!, MAX_NODES)) else emptyList()
+        val snaps = activeGrabSnapshots()
         val analysis = ScreenAnalyzer.analyze(snaps, config)
         val selected = selectedTabOpen(snaps, listOf("History", "ประวัติ"))
         val otherSelected = ClosingQueueAnalyzer.selected(snaps,
@@ -412,6 +407,15 @@ class ProofService : AccessibilityService() {
         closingStatus("ยังเปิดหรือยืนยันหน้า History ไม่สำเร็จ: จะตรวจและลองใหม่ใน 1 นาที")
         main.post { if (config.enabled) clickTab(config.readyTabLabels) }
         toast("⚠️ เปิด History อัตโนมัติไม่สำเร็จ — จะลองใหม่")
+    }
+
+    private fun activeGrabSnapshots(): List<UiNode> = try {
+        val active = rootInActiveWindow
+        if (active != null && active.packageName?.toString() in config.targetPackages)
+            listOf(NodeSnapshot.capture(active, MAX_NODES)) else emptyList()
+    } catch (e: Exception) {
+        Diagnostics.error(this, "closingNavigationSnapshot", e)
+        emptyList()
     }
 
     private fun scheduleScan() {
@@ -906,6 +910,13 @@ class ProofService : AccessibilityService() {
     // ---- tab navigation -----------------------------------------------------------------------
 
     private fun clickTab(labels: List<String>): Boolean {
+        return try { clickTabUnchecked(labels) } catch (e: Exception) {
+            Diagnostics.error(this, "tabNavigation", e)
+            false
+        }
+    }
+
+    private fun clickTabUnchecked(labels: List<String>): Boolean {
         // Never navigate a Grab window behind another app or a permission dialog.
         val active = rootInActiveWindow ?: return false
         if (active.packageName?.toString() !in config.targetPackages) return false
