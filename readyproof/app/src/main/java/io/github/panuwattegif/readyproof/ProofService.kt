@@ -267,7 +267,9 @@ class ProofService : AccessibilityService() {
             try {
                 if (config.enabled) {
                     maybeStartAutomaticHistory()
-                    if (!autoHistoryInProgress && !returningReadyToTop) scheduleScan()
+                    // Poll History as well as Ready: a transient empty accessibility root or
+                    // omitted event must recover without a human touching the phone.
+                    if (!returningReadyToTop && !returningHistoryToTop && !captureInFlight) scheduleScan()
                 }
             } finally {
                 runCatching { worker.postDelayed(this, READY_WATCH_INTERVAL_MS) }
