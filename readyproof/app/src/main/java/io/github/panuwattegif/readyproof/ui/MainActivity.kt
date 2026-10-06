@@ -131,6 +131,10 @@ class MainActivity : Activity() {
         ConfigStore.prefs(this).getString("auto_history_last_result", null)?.let {
             Ui.text(day, "History ล่าสุด: $it", 13f, Ui.MUTED, topDp = 2)
         }
+        Ui.text(day, "ปิดร้าน 19:00 → ตรวจ Ready + Preparing → ว่างทั้งสองหน้าจึงเปิด History เอง", 13f, Ui.MUTED, topDp = 4)
+        ConfigStore.prefs(this).getString("closing_history_status", null)?.let {
+            Ui.text(day, it, 13f, Ui.MUTED, topDp = 2)
+        }
         ProofService.lastCaptureText?.let { Ui.text(day, "ล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
         Ui.button(day, "📋 รายงานออเดอร์ล่าช้า + จับคู่หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
         Ui.button(day, "🖼️ ภาพที่แคปไว้ / ค้นหาเลข GF", filled = false) { startActivity(Intent(this, CapturesActivity::class.java)) }
@@ -142,6 +146,7 @@ class MainActivity : Activity() {
             if (service == null) {
                 Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
             } else {
+                ServiceStatus.openApp(this, target)
                 service.requestHistorySweepNow()
                 Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
             }
