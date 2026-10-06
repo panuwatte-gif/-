@@ -124,4 +124,18 @@ class EndToEndTest {
         assertTrue(ProofValidation.targets(RecordKind.MANUAL, listOf(target),
             listOf(screen("GF-001" to "Ready in: 5:00 min")), Config.DEFAULT).isEmpty())
     }
+
+    @Test fun cancelledDelayedAndDelayedWithoutTerminalTextRemainFirstClassCases() {
+        val root = screen("GF-001" to "Cancelled at 11:00 AM Delayed by 3 mins", "GF-002" to "Delayed by 4 mins")
+        val analysis = ScreenAnalyzer.analyze(listOf(root), Config.DEFAULT)
+        assertEquals(2, analysis.items.count { it.type == ObsType.DELAY })
+        val r = report(listOf(record("seen", 20, 0, *analysis.items.toTypedArray(), image = false)))
+        assertEquals(2, r.delayed)
+        assertEquals(1, r.cancelledSeen)
+        assertEquals(1, r.historyOrders) // only the known Cancelled terminal; the other is UNKNOWN
+        assertNull(r.pct(r.delayed)) // do not divide all delayed flags by a partial contradictory total
+        assertEquals("UNKNOWN_INSTANCE", r.cases.single { it.gf == "GF-002" }.matchStatus)
+        val proven = ProofValidation.targets(RecordKind.DELAY, analysis.items.filter { it.type == ObsType.DELAY }, listOf(root), Config.DEFAULT)
+        assertEquals(listOf("GF-001"), proven.map { it.item.gf })
+    }
 }

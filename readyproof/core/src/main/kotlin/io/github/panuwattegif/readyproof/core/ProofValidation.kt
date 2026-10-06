@@ -28,7 +28,7 @@ object ProofValidation {
                     (analysis.readyTab == true || (analysis.readyTab == null && observed.any { it.type == ObsType.READY }))
                 ObsType.DELAY -> target.doneAt != null && nodes.any { n -> onScreen(n) &&
                     n.ownStrings().any { TextNorm.containsAny(it, cfg.delayAny) } } &&
-                    nodes.any { n -> onScreen(n) && n.ownStrings().any { Parsers.doneAt(it, cfg.doneAny) == target.doneAt } }
+                    nodes.any { n -> onScreen(n) && n.ownStrings().any { Parsers.doneAt(it, cfg.doneAny + cfg.cancelAny) == target.doneAt } }
                 ObsType.DONE, ObsType.CANCELLED -> target.doneAt != null && nodes.any { n -> onScreen(n) &&
                     n.ownStrings().any { Parsers.doneAt(it, if (target.type == ObsType.DONE) cfg.doneAny else cfg.cancelAny) == target.doneAt } }
                 else -> false

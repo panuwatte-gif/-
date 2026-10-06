@@ -359,7 +359,7 @@ class ProofService : AccessibilityService() {
         if (snaps.isEmpty()) return
         if (cfg.diagnostics) Diagnostics.dump(this, "SCAN", snaps, force = false)
 
-        var analysis = ScreenAnalyzer.analyze(snaps, cfg)
+        var analysis = ScreenAnalyzer.analyze(snaps, cfg, allowUnknownDelayed = forcedHistorySweep)
 
         // Detect History from the selected tab itself. Some Grab builds emit a click event from
         // the tab container with no text, so relying only on TYPE_VIEW_CLICKED can miss the sweep.

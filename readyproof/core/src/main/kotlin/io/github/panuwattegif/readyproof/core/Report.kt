@@ -100,7 +100,7 @@ data class DailyReport(
     val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen && pendingReadyProof == 0
 
     /** Provisional percentage based on the History orders the scanner has actually counted. */
-    fun pct(n: Int): Double? = historyOrders.takeIf { it > 0 }?.let { n * 100.0 / it }
+    fun pct(n: Int): Double? = historyOrders.takeIf { it > 0 && delayed <= it }?.let { n * 100.0 / it }
 
     /**
      * One set per proven order: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same order number
@@ -135,6 +135,7 @@ object ReportBuilder {
     ) {
         var delayed = false
         var cancelled = false
+        var completed = false
         var delayMin: Int? = null
         val delayShots = ArrayList<Record>()
     }
@@ -155,6 +156,7 @@ object ReportBuilder {
                 val day = doneAt?.toLocalDate() ?: seen.toLocalDate()
                 val key = "${item.gf}|${doneAt ?: "$day|${item.card.joinToString("|")}"}"
                 val a = acc.getOrPut(key) { Acc(item.gf, doneAt, day, r.t) }
+                if (item.type == ObsType.DONE || (item.type == ObsType.DELAY && doneAt != null)) a.completed = true
                 if (item.type == ObsType.CANCELLED) a.cancelled = true
                 if (item.type == ObsType.DELAY) {
                     a.delayed = true
@@ -206,7 +208,7 @@ object ReportBuilder {
         val seenInstances = collectReadyInstances(readySeenRecords)
         val pendingGfs = seenInstances - readyInstances
 
-        val completedSeen = onDate.count { !it.cancelled }
+        val completedSeen = onDate.count { !it.cancelled && it.completed }
         val cancelledSeen = onDate.count { it.cancelled }
         fun tag(a: Acc) = a.gf + "@" + (a.doneAt?.toLocalTime()?.toString() ?: "UNKNOWN")
         val missingReady = onDate.filter { !it.cancelled }.filter { a ->
