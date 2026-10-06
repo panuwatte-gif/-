@@ -11,9 +11,17 @@ import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Tasks
 import io.github.panuwattegif.readyproof.core.Shop
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
+        // Immediate and periodic workers have different unique names. Serialize only uploads,
+        // never capture/staging, so both cannot allocate different IDs for the same pending entry.
+        if (!uploadLock.tryLock()) return Result.retry()
+        return try { uploadPending() } finally { uploadLock.unlock() }
+    }
+
+    private fun uploadPending(): Result {
         val ctx = applicationContext
         val prefs = ConfigStore.prefs(ctx)
         if (!prefs.getBoolean("drive_enabled", false)) return Result.success()
@@ -67,6 +75,8 @@ class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) 
             return Result.retry()
         }
     }
+
+    companion object { private val uploadLock = ReentrantLock() }
 }
 
 object DriveAuth {
