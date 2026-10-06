@@ -27,10 +27,13 @@ import io.github.panuwattegif.readyproof.core.StatusRules
 import io.github.panuwattegif.readyproof.core.TextNorm
 import io.github.panuwattegif.readyproof.core.UiNode
 import io.github.panuwattegif.readyproof.core.HistoryDates
-import java.time.DayOfWeek
+import io.github.panuwattegif.readyproof.core.ClosingHistoryGate
+import io.github.panuwattegif.readyproof.core.ClosingQueueAnalyzer
+import io.github.panuwattegif.readyproof.core.ClosingTab
+import io.github.panuwattegif.readyproof.core.QueueState
+import io.github.panuwattegif.readyproof.core.TabDetector
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.time.LocalTime
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -42,8 +45,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * When the merchant taps the real Ready button, ReadyProof briefly opens the Ready tab,
  * scrolls the whole list by itself, captures any new order(s), then returns to Preparing.
- * When the merchant opens History at closing time, ReadyProof scrolls the list by itself and
- * screenshots delayed rows only. Preparing-button presses are NOT stored as evidence.
+ * After 19:00, ReadyProof checks Ready and Preparing, opens History when both are confirmed
+ * empty, and captures all terminal rows. Preparing-button presses are NOT stored as evidence.
  */
 class ProofService : AccessibilityService() {
 
@@ -121,6 +124,7 @@ class ProofService : AccessibilityService() {
     @Volatile private var autoHistoryInProgress = false
     @Volatile private var autoHistoryTargetDate: LocalDate? = null
     @Volatile private var nextAutoHistoryAttemptAt = 0L
+    @Volatile private var closingGate: ClosingHistoryGate? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -203,15 +207,17 @@ class ProofService : AccessibilityService() {
 
         // If the user opens History, start an automatic History sweep.
         if (matchesAny(label, listOf("History", "ประวัติ"))) {
-            autoHistoryTargetDate = LocalDate.now()
-            sweepShopId = ShopStore.get(this)?.id
-            forcedHistorySweep = true
-            forcedReadySweep = false
-            returnToPreparingAfterReady = false
-            resetSweepLoop()
-            worker.post { startHistoryAtTop() }
+            // Our own navigation emits this event too. Wait for page confirmation, not just
+            // ACTION_CLICK's return value, before starting any History scrolling.
+            if (autoHistoryInProgress) return
+            worker.post {
+                closingGate = null
+                startHistorySweep(LocalDate.now(), force = true)
+            }
             return
         }
+
+        if (closingGate != null || autoHistoryInProgress) return
 
         val now = System.currentTimeMillis()
         val isFoodReady = ClickMatcher.matches(info, cfg) && now - lastPressAt > PRESS_DEBOUNCE_MS
@@ -223,7 +229,9 @@ class ProofService : AccessibilityService() {
     }
 
     private fun openReadyTabForSweep(cfg: Config) {
+        if (closingGate != null || autoHistoryInProgress) return
         main.post {
+            if (closingGate != null || autoHistoryInProgress) return@post
             val clicked = clickTab(cfg.readyTabLabels)
             if (clicked) {
                 forcedReadySweep = true
@@ -277,33 +285,81 @@ class ProofService : AccessibilityService() {
         }
     }
 
-    /**
-     * Shop close workflow. The proof phone normally stays on Ready all day. At close + 15 minutes
-     * ReadyProof opens History itself, sweeps the full list, counts terminal orders and captures
-     * every delayed row. If Ready-vs-Completed or DELAY proof coverage is incomplete it returns to
-     * Ready and retries History later; the user does not have to change tabs.
-     */
+    /** Closing never interrupts pending orders: recheck both queues before each automatic pass. */
     private fun maybeStartAutomaticHistory() {
-        if (autoHistoryInProgress || forcedHistorySweep || forcedReadySweep || returningReadyToTop) return
+        if (closingGate != null || captureInFlight || autoHistoryInProgress || forcedHistorySweep ||
+            forcedReadySweep || returningReadyToTop || returningHistoryToTop) return
         val now = LocalDateTime.now()
-        val due = when (now.dayOfWeek) {
-            DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
-            DayOfWeek.THURSDAY, DayOfWeek.FRIDAY -> LocalTime.of(19, 15)
-            DayOfWeek.SATURDAY -> LocalTime.of(16, 15)
-            DayOfWeek.SUNDAY -> null
-        } ?: return
-        if (now.toLocalTime().isBefore(due)) return
+        if (!ClosingHistoryGate.isDue(now.toLocalTime())) return
         if (System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
         val day = now.toLocalDate()
-        val completed = ConfigStore.prefs(this).getString(AUTO_HISTORY_PREF_COMPLETE_DATE, null)
-        // Revisit completed passes too: Grab can add late terminal rows after the first close sweep.
-        startHistorySweep(day)
+        val gate = ClosingHistoryGate(SystemClock.uptimeMillis())
+        closingGate = gate
+        navigateClosingTab(gate, day)
+    }
+
+    private fun closingStatus(text: String) {
+        ConfigStore.prefs(this).edit().putString("closing_history_status", text).apply()
+    }
+
+    private fun navigateClosingTab(gate: ClosingHistoryGate, day: LocalDate) {
+        closingStatus("หลัง 19:00: กำลังตรวจ ${gate.tab.name} ว่ามีออเดอร์ค้างหรือไม่")
+        main.post {
+            if (closingGate !== gate) return@post
+            if (!config.enabled) {
+                worker.post { retryClosing(gate, "พักการตรวจ: ปิดแคปอัตโนมัติอยู่") }
+                return@post
+            }
+            val labels = if (gate.tab == ClosingTab.READY) config.readyTabLabels else gate.tab.labels
+            val clicked = runCatching { clickTab(labels) }.getOrDefault(false)
+            worker.postDelayed({
+                if (closingGate !== gate) return@postDelayed
+                if (!clicked) retryClosing(gate, "เปิด ${gate.tab.name} ไม่สำเร็จ / ต้องเปิด Grab ค้างไว้")
+                else pollClosingTab(gate, day)
+            }, 1_500L)
+        }
+    }
+
+    private fun pollClosingTab(gate: ClosingHistoryGate, day: LocalDate) {
+        if (closingGate !== gate) return
+        if (!config.enabled || day != LocalDate.now()) {
+            retryClosing(gate, "พักการตรวจ / วันเปลี่ยนแล้ว")
+            return
+        }
+        // Only inspect the active Grab window: an overlay, locked phone or another app is UNKNOWN.
+        val roots = activeGrabSnapshots()
+        val state = ClosingQueueAnalyzer.inspect(roots, config, gate.tab, navigationAccepted = true)
+        when (gate.observe(state, SystemClock.uptimeMillis())) {
+            ClosingHistoryGate.Result.NEXT_TAB -> navigateClosingTab(gate, day)
+            ClosingHistoryGate.Result.OPEN_HISTORY -> {
+                closingGate = null
+                closingStatus("Ready และ Preparing ว่าง: กำลังเปิด History อัตโนมัติ")
+                startHistorySweep(day)
+            }
+            ClosingHistoryGate.Result.RETRY -> retryClosing(gate, if (state == QueueState.BUSY)
+                "ยังมีออเดอร์ค้างใน ${gate.tab.name}: รอและตรวจใหม่ใน 1 นาที"
+                else "ยังยืนยันหน้า ${gate.tab.name} ว่างไม่ได้: จะตรวจใหม่ใน 1 นาที")
+            ClosingHistoryGate.Result.WAIT -> worker.postDelayed({ pollClosingTab(gate, day) }, 1_500L)
+        }
+    }
+
+    private fun retryClosing(gate: ClosingHistoryGate, reason: String) {
+        if (closingGate !== gate) return
+        closingGate = null
+        nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
+        closingStatus(reason)
+        // Continue capturing Ready evidence during the wait; never leave the monitor in Preparing.
+        main.post { if (config.enabled) clickTab(config.readyTabLabels) }
+        scheduleScan()
     }
 
     /** Manual hook used by the UI for testing; automatic end-of-day scanning uses the same path. */
     fun requestHistorySweepNow() {
         if (!::worker.isInitialized) return
-        worker.post { startHistorySweep(LocalDate.now(), force = true) }
+        worker.postDelayed({
+            closingGate = null
+            startHistorySweep(LocalDate.now(), force = true)
+        }, 2_500L)
     }
 
     private fun startHistorySweep(day: LocalDate, force: Boolean = false) {
@@ -313,20 +369,53 @@ class ProofService : AccessibilityService() {
         autoHistoryTargetDate = day
         sweepShopId = ShopStore.get(this)?.id
         main.post {
-            val clicked = clickTab(listOf("History", "ประวัติ"))
+            val clicked = runCatching { clickTab(listOf("History", "ประวัติ")) }.getOrDefault(false)
             if (clicked) {
-                forcedHistorySweep = true
-                forcedReadySweep = false
-                returnToPreparingAfterReady = false
-                resetSweepLoop()
-                worker.post { startHistoryAtTop() }
+                worker.postDelayed({ confirmHistoryPage(day, SystemClock.uptimeMillis()) }, 1_500L)
             } else {
-                autoHistoryInProgress = false
-                autoHistoryTargetDate = null
-                nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
-                toast("⚠️ เปิด History อัตโนมัติไม่สำเร็จ — จะลองใหม่")
+                worker.post { historyNavigationFailed() }
             }
         }
+    }
+
+    private fun confirmHistoryPage(day: LocalDate, startedAt: Long) {
+        if (!autoHistoryInProgress || autoHistoryTargetDate != day || forcedHistorySweep) return
+        val snaps = activeGrabSnapshots()
+        val analysis = ScreenAnalyzer.analyze(snaps, config)
+        val selected = selectedTabOpen(snaps, listOf("History", "ประวัติ"))
+        val otherSelected = ClosingQueueAnalyzer.selected(snaps,
+            config.readyTabLabels + ClosingTab.PREPARING.labels + listOf("Upcoming", "ที่กำลังจะถึง"))
+        // When selection is omitted, terminal-row content confirms History, never an empty tree.
+        val terminal = analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.CANCELLED, ObsType.DELAY) }
+        if (config.enabled && !otherSelected && (selected || terminal)) {
+            forcedHistorySweep = true
+            forcedReadySweep = false
+            returnToPreparingAfterReady = false
+            historyTabWasSelected = selected
+            resetSweepLoop()
+            closingStatus("เปิด History แล้ว: กำลังกวาดรายการทั้งวัน")
+            startHistoryAtTop()
+        } else if (!config.enabled || SystemClock.uptimeMillis() - startedAt >= 10_000L) {
+            historyNavigationFailed()
+        } else worker.postDelayed({ confirmHistoryPage(day, startedAt) }, 700L)
+    }
+
+    private fun historyNavigationFailed() {
+        autoHistoryInProgress = false
+        autoHistoryTargetDate = null
+        nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
+        closingStatus("ยังเปิดหรือยืนยันหน้า History ไม่สำเร็จ: จะตรวจและลองใหม่ใน 1 นาที")
+        main.post { if (config.enabled) clickTab(config.readyTabLabels) }
+        toast("⚠️ เปิด History อัตโนมัติไม่สำเร็จ — จะลองใหม่")
+    }
+
+    private fun activeGrabSnapshots(): List<UiNode> = try {
+        val active = rootInActiveWindow
+        if (active != null && active.packageName?.toString() in config.targetPackages)
+            listOf(NodeSnapshot.capture(active, MAX_NODES)) else emptyList()
+    } catch (e: Exception) {
+        Diagnostics.error(this, "closingNavigationSnapshot", e)
+        emptyList()
     }
 
     private fun scheduleScan() {
@@ -353,6 +442,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun scan() {
+        if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
         if (returningReadyToTop || returningHistoryToTop || captureInFlight) return
         val cfg = config
         if (!cfg.enabled) return
@@ -603,6 +693,7 @@ class ProofService : AccessibilityService() {
     private fun continueSweep(readyMode: Boolean? = null) {
         worker.postDelayed({
             main.post {
+                if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return@post
                 // Stop only when the viewport truly stops moving several times or the safety cap
                 // is reached. The old GF-only signature could stop while the list was still moving.
                 val canContinue = repeatedSweepSignature < 4 && sweepScrolls < MAX_SWEEP_SCROLLS
@@ -621,6 +712,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun finishSweep(wasReady: Boolean) {
+        if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
         if (wasReady || forcedReadySweep) {
             forcedReadySweep = false
             resetSweepLoop()
@@ -671,6 +763,7 @@ class ProofService : AccessibilityService() {
                     nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
                 }
                 edit.apply()
+                closingStatus(if (complete) "กวาด History แล้ว / ครบตามข้อมูลที่อ่านได้" else "กวาด History แล้ว / ยังไม่ครบ จะตรวจซ้ำใน 5 นาที")
                 lastCaptureText = result
                 autoHistoryInProgress = false
                 autoHistoryTargetDate = null
@@ -728,6 +821,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun startReturnReadyToTop() {
+        if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
         if (returningReadyToTop) return
         returningReadyToTop = true
         returnToTopScrolls = 0
@@ -810,29 +904,23 @@ class ProofService : AccessibilityService() {
 
     /** True only when one of the requested tab labels is selected in Accessibility. */
     private fun selectedTabOpen(roots: List<UiNode>, labels: List<String>): Boolean {
-        val wanted = labels.map(TextNorm::key).filter { it.isNotEmpty() }
-        for (root in roots) {
-            for (node in root.walk()) {
-                val hit = node.ownStrings().any { raw ->
-                    val t = TextNorm.key(raw)
-                    wanted.any { w -> t == w || t.startsWith("$w ") || t.startsWith("$w(") }
-                }
-                if (!hit) continue
-                var cur: UiNode? = node
-                repeat(4) {
-                    val n = cur ?: return@repeat
-                    if (n.selected) return true
-                    cur = n.parent
-                }
-            }
-        }
-        return false
+        return ClosingQueueAnalyzer.selected(roots, labels)
     }
 
     // ---- tab navigation -----------------------------------------------------------------------
 
     private fun clickTab(labels: List<String>): Boolean {
-        for (root in targetRoots(config)) {
+        return try { clickTabUnchecked(labels) } catch (e: Exception) {
+            Diagnostics.error(this, "tabNavigation", e)
+            false
+        }
+    }
+
+    private fun clickTabUnchecked(labels: List<String>): Boolean {
+        // Never navigate a Grab window behind another app or a permission dialog.
+        val active = rootInActiveWindow ?: return false
+        if (active.packageName?.toString() !in config.targetPackages) return false
+        for (root in listOf(active)) {
             val target = findNodeByLabels(root, labels) ?: continue
             var clickable: AccessibilityNodeInfo? = target
             repeat(5) {
@@ -847,19 +935,37 @@ class ProofService : AccessibilityService() {
     }
 
     private fun findNodeByLabels(root: AccessibilityNodeInfo, labels: List<String>): AccessibilityNodeInfo? {
-        val wanted = labels.map(TextNorm::key).filter { it.isNotEmpty() }
+        val candidates = ArrayList<Pair<AccessibilityNodeInfo, Int>>()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
         var visited = 0
         while (queue.isNotEmpty() && visited++ < MAX_NODES) {
             val n = queue.removeFirst()
-            val texts = listOfNotNull(n.text?.toString(), n.contentDescription?.toString()).map(TextNorm::key)
-            if (texts.any { t -> wanted.any { w -> t == w || t.contains(w) } }) return n
+            val texts = listOfNotNull(n.text?.toString(), n.contentDescription?.toString())
+            if (n.isVisibleToUser && texts.any { t -> labels.any { TabDetector.isLabel(t, it) } }) {
+                var score = if (n.isSelected) 80 else 0
+                var tabHint = false
+                var cur: AccessibilityNodeInfo? = n
+                repeat(3) {
+                    val node = cur ?: return@repeat
+                    if (node.className?.toString()?.contains("tab", ignoreCase = true) == true ||
+                        node.extras?.getCharSequence(ROLE_DESCRIPTION_KEY)?.toString()?.contains("tab", ignoreCase = true) == true) tabHint = true
+                    cur = node.parent
+                }
+                // A food-ready button has the same label, but its immediate container has a GF.
+                val readyLabel = labels.any { l -> config.readyTabLabels.any { TextNorm.key(it) == TextNorm.key(l) } }
+                val cardButton = readyLabel && !tabHint && n.parent?.let { visibleGfCount(it) > 0 } == true
+                if (!cardButton) {
+                    if (tabHint) score += 100
+                    if (texts.any { Regex("\\d").containsMatchIn(it) }) score += 20
+                    candidates += n to score
+                }
+            }
             for (i in 0 until n.childCount) {
                 runCatching { n.getChild(i) }.getOrNull()?.let(queue::addLast)
             }
         }
-        return null
+        return candidates.maxByOrNull { it.second }?.first
     }
 
     private fun matchesAny(text: String?, labels: List<String>): Boolean {
