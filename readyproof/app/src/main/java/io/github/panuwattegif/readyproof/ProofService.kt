@@ -19,13 +19,17 @@ import io.github.panuwattegif.readyproof.core.Item
 import io.github.panuwattegif.readyproof.core.ObsType
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.RecordKind
+import io.github.panuwattegif.readyproof.core.ReportBuilder
 import io.github.panuwattegif.readyproof.core.ReportText
 import io.github.panuwattegif.readyproof.core.ScreenAnalysis
 import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
 import io.github.panuwattegif.readyproof.core.StatusRules
 import io.github.panuwattegif.readyproof.core.TextNorm
 import io.github.panuwattegif.readyproof.core.UiNode
+import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -54,6 +58,10 @@ class ProofService : AccessibilityService() {
         private const val SCAN_DELAY_MS = 450L
         private const val SCAN_MIN_INTERVAL_MS = 900L
         private const val READY_WATCH_INTERVAL_MS = 1_500L
+        private const val AUTO_HISTORY_RETRY_MS = 5L * 60_000L
+        private const val AUTO_HISTORY_CLICK_RETRY_MS = 60_000L
+        private const val AUTO_HISTORY_PREF_COMPLETE_DATE = "auto_history_complete_date"
+        private const val AUTO_HISTORY_PREF_LAST_RESULT = "auto_history_last_result"
         private const val SCROLL_SETTLE_MS = 650L
         private const val TEXT_ONLY_SCAN_INTERVAL_MS = 5_000L
         private const val PRESS_DEBOUNCE_MS = 650L
@@ -95,6 +103,12 @@ class ProofService : AccessibilityService() {
     private var delayRepositionKey: String? = null
     private var delayRepositionAttempts = 0
     private val recentPageCaptures = LinkedHashMap<String, Long>()
+    private var readySeenDate: LocalDate = LocalDate.now()
+    private val readySeenToday = LinkedHashSet<String>()
+
+    @Volatile private var autoHistoryInProgress = false
+    @Volatile private var autoHistoryTargetDate: LocalDate? = null
+    @Volatile private var nextAutoHistoryAttemptAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -108,7 +122,12 @@ class ProofService : AccessibilityService() {
         worker.post {
             try {
                 val today = LocalDate.now()
-                deduper.seed(RecordStore.loadRange(this, today.minusDays(1), today))
+                val startupRecords = RecordStore.loadRange(this, today.minusDays(1), today)
+                deduper.seed(startupRecords)
+                readySeenDate = today
+                startupRecords.filter { RecordStore.dateOf(it.t) == today }.forEach { r ->
+                    r.items.filter { it.type == ObsType.READY }.forEach { readySeenToday += it.gf }
+                }
                 Cleanup.runIfDue(this, config)
             } catch (e: Exception) {
                 Diagnostics.error(this, "startup", e)
@@ -232,9 +251,63 @@ class ProofService : AccessibilityService() {
         override fun run() {
             if (!::worker.isInitialized) return
             try {
-                if (config.enabled && !returningReadyToTop) scheduleScan()
+                if (config.enabled) {
+                    maybeStartAutomaticHistory()
+                    if (!autoHistoryInProgress && !returningReadyToTop) scheduleScan()
+                }
             } finally {
                 runCatching { worker.postDelayed(this, READY_WATCH_INTERVAL_MS) }
+            }
+        }
+    }
+
+    /**
+     * Shop close workflow. The proof phone normally stays on Ready all day. At close + 15 minutes
+     * ReadyProof opens History itself, sweeps the full list, counts terminal orders and captures
+     * every delayed row. If Ready-vs-Completed or DELAY proof coverage is incomplete it returns to
+     * Ready and retries History later; the user does not have to change tabs.
+     */
+    private fun maybeStartAutomaticHistory() {
+        if (autoHistoryInProgress || forcedHistorySweep || forcedReadySweep || returningReadyToTop) return
+        val now = LocalDateTime.now()
+        val due = when (now.dayOfWeek) {
+            DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
+            DayOfWeek.THURSDAY, DayOfWeek.FRIDAY -> LocalTime.of(19, 15)
+            DayOfWeek.SATURDAY -> LocalTime.of(16, 15)
+            DayOfWeek.SUNDAY -> null
+        } ?: return
+        if (now.toLocalTime().isBefore(due)) return
+        if (System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
+        val day = now.toLocalDate()
+        val completed = ConfigStore.prefs(this).getString(AUTO_HISTORY_PREF_COMPLETE_DATE, null)
+        if (completed == day.toString()) return
+        startHistorySweep(day)
+    }
+
+    /** Manual hook used by the UI for testing; automatic end-of-day scanning uses the same path. */
+    fun requestHistorySweepNow() {
+        if (!::worker.isInitialized) return
+        worker.post { startHistorySweep(LocalDate.now(), force = true) }
+    }
+
+    private fun startHistorySweep(day: LocalDate, force: Boolean = false) {
+        if (autoHistoryInProgress || forcedHistorySweep) return
+        if (!force && System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
+        autoHistoryInProgress = true
+        autoHistoryTargetDate = day
+        main.post {
+            val clicked = clickTab(listOf("History", "ประวัติ"))
+            if (clicked) {
+                forcedHistorySweep = true
+                forcedReadySweep = false
+                returnToPreparingAfterReady = false
+                resetSweepLoop()
+                worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+            } else {
+                autoHistoryInProgress = false
+                autoHistoryTargetDate = null
+                nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
+                toast("⚠️ เปิด History อัตโนมัติไม่สำเร็จ — จะลองใหม่")
             }
         }
     }
@@ -297,7 +370,7 @@ class ProofService : AccessibilityService() {
             analysis = analysis.copy(items = (readyItems + existing).distinctBy { Triple(it.gf, it.type, it.doneAt) })
         }
 
-        val historyMode = forcedHistorySweep || historyTabSelected || analysis.items.any { it.type == ObsType.DONE || it.type == ObsType.DELAY }
+        val historyMode = forcedHistorySweep || historyTabSelected || analysis.items.any { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
         val readyMode = forcedReadySweep || analysis.readyTab == true
         val sweepMode = readyMode || historyMode
 
@@ -309,7 +382,33 @@ class ProofService : AccessibilityService() {
             updateSweepSignature(signature.ifEmpty { analysis.visible.joinToString("|") })
         }
 
+        val today = LocalDate.now()
+        if (today != readySeenDate) {
+            readySeenDate = today
+            readySeenToday.clear()
+        }
         val now = System.currentTimeMillis()
+
+        // Coverage ledger is written before screenshotting. If Android misses a bitmap we still
+        // know exactly which GF reached Ready, while the screenshot deduper keeps it eligible.
+        if (readyMode) {
+            val newlySeen = analysis.items.filter { it.type == ObsType.READY }
+                .filter { readySeenToday.add(it.gf) }
+            if (newlySeen.isNotEmpty()) {
+                RecordStore.append(
+                    this,
+                    Record(
+                        id = "$now-rs${seq.incrementAndGet()}",
+                        t = now,
+                        kind = RecordKind.SEEN,
+                        items = newlySeen,
+                        visible = analysis.visible,
+                        note = "READY_SEEN_PENDING_UNTIL_IMAGE",
+                    )
+                )
+            }
+        }
+
         val fresh = deduper.fresh(analysis.items, now, cfg)
 
         // A History row is valid screenshot evidence only when the GF label is actually inside the
@@ -323,19 +422,22 @@ class ProofService : AccessibilityService() {
         if (historyMode && clippedAbove != null && tryRepositionDelay(clippedAbove)) return
 
         val captureCandidates = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
-        // One evidence file = one target order. A page can contain many GFs, but an order is not
-        // considered captured until its own GF is visible and validated in its own screenshot job.
-        val targetItem = when {
-            cfg.captureReady -> captureCandidates.firstOrNull { it.type == ObsType.READY }
-            else -> null
-        } ?: when {
-            cfg.captureDelay -> captureCandidates.firstOrNull { it.type == ObsType.DELAY }
-            else -> null
+        // One viewport screenshot can prove every visible order. Do not serialize READY by GF:
+        // batch all fresh READY targets currently visible, or all fresh DELAY targets in History.
+        // CaptureManager validates each target and returns only the GFs actually covered by the
+        // bitmap; any dropped target is released from dedupe and remains pending for the next scan.
+        val readyTargets = captureCandidates.filter { it.type == ObsType.READY }
+        val delayTargets = captureCandidates.filter { it.type == ObsType.DELAY }
+        val captureItems = when {
+            readyMode && cfg.captureReady && readyTargets.isNotEmpty() -> readyTargets
+            historyMode && cfg.captureDelay && delayTargets.isNotEmpty() -> delayTargets
+            cfg.captureReady && readyTargets.isNotEmpty() -> readyTargets
+            cfg.captureDelay && delayTargets.isNotEmpty() -> delayTargets
+            else -> emptyList()
         }
-        val captureItems = listOfNotNull(targetItem)
         val captureKeys = captureItems.mapNotNull { Deduper.keyOf(it) }
-        val ready = targetItem?.type == ObsType.READY
-        val delay = targetItem?.type == ObsType.DELAY
+        val ready = captureItems.any { it.type == ObsType.READY }
+        val delay = captureItems.any { it.type == ObsType.DELAY }
 
         // Keep unproofable delayed rows as text-only observations so the report knows they exist,
         // but do not seed screenshot dedupe from them. A later sweep can still capture proper proof.
@@ -354,15 +456,10 @@ class ProofService : AccessibilityService() {
 
         if (ready || delay) {
             val kind = if (ready) RecordKind.READY else RecordKind.DELAY
-            val pageKey = pageCaptureKey(kind, captureItems, analysis.visible)
-            if (pageKey.isNotEmpty() && pageCapturedRecently(pageKey, now)) {
-                // Item-level dedupe owns correctness. Do not scroll away from an uncaptured target.
-                if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
-                scheduleScan()
-                return
-            }
+            // Only a successful screenshot is allowed to make an order stay deduped.
+            // Keys are tentatively marked here to stop duplicate jobs while Android is capturing;
+            // on failure or partial batch coverage onCaptureDone() releases every unsaved key.
             if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
-            rememberPageCapture(pageKey, now)
             val job = CaptureJob(kind, now)
             job.setMeta(
                 CaptureMeta(
@@ -382,7 +479,7 @@ class ProofService : AccessibilityService() {
         val markable = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
         val markableKeys = markable.mapNotNull { Deduper.keyOf(it) }
         if (markableKeys.isNotEmpty()) deduper.mark(markableKeys, now)
-        if (fresh.any { it.type == ObsType.DONE || it.type == ObsType.DELAY }) {
+        if (fresh.any { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }) {
             RecordStore.append(
                 this,
                 Record(
@@ -509,8 +606,56 @@ class ProofService : AccessibilityService() {
             }
         }
         if (forcedHistorySweep) {
+            val target = autoHistoryTargetDate
             forcedHistorySweep = false
             resetSweepLoop()
+            if (target != null) finishAutomaticHistory(target)
+        }
+    }
+
+    private fun finishAutomaticHistory(day: LocalDate) {
+        worker.post {
+            try {
+                val records = RecordStore.loadRange(this, day.minusDays(1), day.plusDays(1))
+                val report = ReportBuilder.build(records, day, ZoneId.systemDefault(), config)
+                val missingDelayProof = report.cases.count { it.delayShot == null }
+                val complete = report.readyVsCompletedMatch && missingDelayProof == 0
+                val result = buildString {
+                    append("Ready seen ").append(report.readySeenOrders)
+                    append(" / Ready proof ").append(report.readyOrders)
+                    append(" / Pending ").append(report.pendingReadyProof)
+                    append(" / Completed ").append(report.completedSeen)
+                    append(" / Cancelled ").append(report.cancelledSeen)
+                    append(" / History total ").append(report.historyOrders)
+                    append(" / Delayed ").append(report.delayed)
+                    append(" / DELAY proof ").append(report.delayed - missingDelayProof).append('/').append(report.delayed)
+                    append(if (complete) " / MATCH" else " / INCOMPLETE")
+                }
+                val edit = ConfigStore.prefs(this).edit()
+                    .putString(AUTO_HISTORY_PREF_LAST_RESULT, result)
+                if (complete) {
+                    edit.putString(AUTO_HISTORY_PREF_COMPLETE_DATE, day.toString())
+                    nextAutoHistoryAttemptAt = 0L
+                } else {
+                    edit.remove(AUTO_HISTORY_PREF_COMPLETE_DATE)
+                    nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
+                }
+                edit.apply()
+                lastCaptureText = result
+                autoHistoryInProgress = false
+                autoHistoryTargetDate = null
+                main.post {
+                    // Return to the dedicated Ready monitor after every History pass. If counts are
+                    // incomplete the scheduled retry will revisit History automatically.
+                    clickTab(config.readyTabLabels)
+                    toast(if (complete) "✓ History ครบ: $result" else "⚠️ History ยังไม่ครบ: $result — จะลองใหม่")
+                }
+            } catch (e: Exception) {
+                autoHistoryInProgress = false
+                autoHistoryTargetDate = null
+                nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
+                Diagnostics.error(this, "finishAutomaticHistory", e)
+            }
         }
     }
 
@@ -729,20 +874,27 @@ class ProofService : AccessibilityService() {
             val now = SystemClock.uptimeMillis()
             if (now - lastFailToastAt > 30_000L) {
                 lastFailToastAt = now
-                toast("⚠️ ${error ?: "แคปไม่สำเร็จ"} — ค้างเฟรมนี้และจะลองใหม่ ไม่ข้ามออเดอร์")
+                toast("⚠️ ${error ?: "แคปไม่สำเร็จ"} — ออเดอร์ยังเป็น PENDING และจะลองใหม่")
             }
             // Fail closed: never advance the list after a proof failure. Re-read the same viewport.
             scheduleScan()
             return
         }
 
+        // Batch captures can save only the subset still visible when Android delivered the bitmap.
+        // Release every requested GF that was not actually attached to this saved image so it is
+        // immediately eligible for another capture instead of disappearing from coverage.
+        val savedKeys = record.items.mapNotNull { Deduper.keyOf(it) }.toSet()
+        val missingKeys = meta.dedupeKeys.filterNot { it in savedKeys }
+        if (missingKeys.isNotEmpty()) deduper.forget(missingKeys)
+
         lastCaptureText = record.kind.label + " " + record.gfs.joinToString(", ").ifEmpty { "-" } +
             " · " + ReportText.time(record.t, ZoneId.systemDefault())
-        if (config.showToast) toast(meta.toast ?: "📸 บันทึกแล้ว")
+        if (config.showToast) toast("📸 " + record.kind.label + ": " + record.gfs.joinToString(", "))
 
         if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
-            // Re-scan the SAME viewport first. This captures every visible order one-by-one before
-            // the sweep is allowed to move to the next page.
+            // Re-read this viewport before scrolling. Any GF not covered by the saved bitmap stays
+            // fresh and is captured again; only when no pending target remains may the sweep move on.
             scheduleScan()
         }
     }

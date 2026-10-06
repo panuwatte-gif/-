@@ -52,6 +52,8 @@ data class Config(
     /** Screenshot the history list when it shows a delayed order. */
     val captureDelay: Boolean = true,
     val doneAny: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
+    /** Cancelled History rows still count toward the day total even though they are not delayed. */
+    val cancelAny: List<String> = listOf("Cancelled", "Canceled", "ยกเลิก"),
     val delayAny: List<String> = listOf("Delayed by", "ล่าช้าไป"),
 
     /** A READY shot counts for a delayed order if taken within this many hours before it finished. */
@@ -98,7 +100,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 2
+    const val VERSION = 3
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -120,6 +122,7 @@ object ConfigCodec {
             "capturePress" to c.capturePress,
             "captureDelay" to c.captureDelay,
             "doneAny" to c.doneAny,
+            "cancelAny" to c.cancelAny,
             "delayAny" to c.delayAny,
             "evidenceWindowHours" to c.evidenceWindowHours,
             "showToast" to c.showToast,
@@ -151,6 +154,7 @@ object ConfigCodec {
             capturePress = m.bool("capturePress") ?: d.capturePress,
             captureDelay = m.bool("captureDelay") ?: d.captureDelay,
             doneAny = m.strList("doneAny") ?: d.doneAny,
+            cancelAny = m.strList("cancelAny") ?: d.cancelAny,
             delayAny = m.strList("delayAny") ?: d.delayAny,
             evidenceWindowHours = m.int("evidenceWindowHours") ?: d.evidenceWindowHours,
             showToast = m.bool("showToast") ?: d.showToast,
@@ -166,18 +170,24 @@ object ConfigCodec {
      * English words added (nothing the user typed is removed) and the tap screenshot turned off.
      */
     fun migrate(c: Config, from: Int): Config {
-        if (from >= 2) return c
         val d = Config.DEFAULT
         fun merge(saved: List<String>, defaults: List<String>) = (saved + defaults).distinct()
-        return c.copy(
-            pressTriggers = merge(c.pressTriggers, d.pressTriggers),
-            countdownKeywords = merge(c.countdownKeywords, d.countdownKeywords),
-            readyAny = merge(c.readyAny, d.readyAny),
-            readyNone = merge(c.readyNone, d.readyNone),
-            doneAny = merge(c.doneAny, d.doneAny),
-            delayAny = merge(c.delayAny, d.delayAny),
-            capturePress = false,
-        )
+        var out = c
+        if (from < 2) {
+            out = out.copy(
+                pressTriggers = merge(out.pressTriggers, d.pressTriggers),
+                countdownKeywords = merge(out.countdownKeywords, d.countdownKeywords),
+                readyAny = merge(out.readyAny, d.readyAny),
+                readyNone = merge(out.readyNone, d.readyNone),
+                doneAny = merge(out.doneAny, d.doneAny),
+                delayAny = merge(out.delayAny, d.delayAny),
+                capturePress = false,
+            )
+        }
+        if (from < 3) {
+            out = out.copy(cancelAny = merge(out.cancelAny, d.cancelAny))
+        }
+        return out
     }
 
     /** Never throws: a corrupt save falls back to defaults instead of breaking the app. */
@@ -206,6 +216,7 @@ fun Config.sanitized(): Config {
         pressExcludeHints = pressExcludeHints.cleanList(),
         countdownKeywords = countdownKeywords.cleanList(),
         doneAny = doneAny.cleanList(),
+        cancelAny = cancelAny.cleanList(),
         delayAny = delayAny.cleanList(),
         jpegQuality = jpegQuality.coerceIn(30, 100),
         retentionDays = retentionDays.coerceIn(1, 365),

@@ -100,6 +100,13 @@ class StatusRules(private val cfg: Config) {
                 out += Item(card.gf, ObsType.DELAY, status = texts[delayIdx], delayMin = delayMin, doneAt = doneAt, card = texts)
             }
             out += Item(card.gf, ObsType.DONE, status = texts[doneIdx], delayMin = delayMin, doneAt = doneAt, card = texts)
+        } else {
+            val cancelIdx = TextNorm.indexOfAny(texts, cfg.cancelAny)
+            if (cancelIdx >= 0) {
+                val cancelledAt = Parsers.doneAt(texts[cancelIdx], cfg.cancelAny)
+                    ?: texts.firstNotNullOfOrNull { Parsers.doneAt(it, cfg.cancelAny) }
+                out += Item(card.gf, ObsType.CANCELLED, status = texts[cancelIdx], doneAt = cancelledAt, card = texts)
+            }
         }
         return out
     }

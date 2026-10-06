@@ -35,7 +35,7 @@ object ScreenAnalyzer {
         val items = ArrayList<Item>()
         for (card in cards) {
             val observed = rules.evaluate(card)
-            val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY }
+            val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
             val ready = when (readyTab) {
                 // Everything listed under the Ready tab has been pressed ready, whatever its status says.
                 true -> if (card.inList && history.isEmpty()) {

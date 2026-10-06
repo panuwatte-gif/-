@@ -65,7 +65,7 @@ data class EvidenceSet(
 
 data class DailyReport(
     val date: LocalDate,
-    /** Finished orders the scanner happened to see in History. This is NOT the true total orders. */
+    /** Completed order instances observed during a full History sweep. */
     val completedSeen: Int,
     val cases: List<DelayCase>,
     /** Distinct order numbers whose ready button tap was logged this date. */
@@ -74,16 +74,21 @@ data class DailyReport(
     val pressedWithReady: Int,
     /** Distinct order numbers photographed in the Ready tab this date. */
     val readyOrders: Int,
+    /** Cancelled order instances observed during the History sweep. */
+    val cancelledSeen: Int = 0,
+    /** Distinct GF numbers observed in Ready, including targets still waiting for a valid bitmap. */
+    val readySeenOrders: Int = readyOrders,
 ) {
     val delayed: Int get() = cases.size
     val withEvidence: List<DelayCase> get() = cases.filter { it.hasEvidence }
     val withoutEvidence: List<DelayCase> get() = cases.filter { !it.hasEvidence }
+    val historyOrders: Int get() = completedSeen + cancelledSeen
+    val actualDelayed: Int get() = withoutEvidence.size
+    val pendingReadyProof: Int get() = maxOf(readySeenOrders - readyOrders, 0)
+    val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen && pendingReadyProof == 0
 
-    /**
-     * Deliberately disabled. The History scanner is a cross-check, not the authoritative total
-     * number of orders. Percentages must use the shop's real total order count (Sheet / user input).
-     */
-    fun pct(@Suppress("UNUSED_PARAMETER") n: Int): Double? = null
+    /** Provisional percentage based on the History orders the scanner has actually counted. */
+    fun pct(n: Int): Double? = historyOrders.takeIf { it > 0 }?.let { n * 100.0 / it }
 
     /**
      * One set per proven order: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same order number
@@ -117,6 +122,7 @@ object ReportBuilder {
         val firstSeen: Long,
     ) {
         var delayed = false
+        var cancelled = false
         var delayMin: Int? = null
         val delayShots = ArrayList<Record>()
     }
@@ -128,12 +134,14 @@ object ReportBuilder {
         for (r in sorted) {
             val seen = TimeResolve.toLocal(r.t, zone)
             for (item in r.items) {
-                if (item.type != ObsType.DONE && item.type != ObsType.DELAY) continue
+                if (item.type != ObsType.DONE && item.type != ObsType.DELAY && item.type != ObsType.CANCELLED) continue
                 val doneAt = item.doneAt?.let { TimeResolve.parseHHmm(it) }
                     ?.let { TimeResolve.latestAtOrBefore(it, seen.plusMinutes(1)) }
                 val day = doneAt?.toLocalDate() ?: seen.toLocalDate()
-                val key = "${item.gf}|${doneAt ?: day}"
+                val terminalTag = if (item.type == ObsType.CANCELLED) "C" else "D"
+                val key = "${item.gf}|$terminalTag|${doneAt ?: day}"
                 val a = acc.getOrPut(key) { Acc(item.gf, doneAt, day, r.t) }
+                if (item.type == ObsType.CANCELLED) a.cancelled = true
                 if (item.type == ObsType.DELAY) {
                     a.delayed = true
                     item.delayMin?.let { m -> a.delayMin = maxOf(a.delayMin ?: 0, m) }
@@ -144,6 +152,7 @@ object ReportBuilder {
 
         val onDate = acc.values.filter { it.date == date }
         val readyShots = sorted.filter { r -> r.uri != null && r.items.any { it.type == ObsType.READY } }
+        val readySeenRecords = sorted.filter { r -> r.items.any { it.type == ObsType.READY } }
         val presses = sorted.filter { r -> r.items.any { it.type == ObsType.PRESS } }
         val windowMs = cfg.evidenceWindowHours * 3600_000L
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
@@ -164,8 +173,20 @@ object ReportBuilder {
             rs.filter { it.t in dayStart until dayEnd }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
         val pressed = gfsOf(presses, ObsType.PRESS)
         val ready = gfsOf(readyShots, ObsType.READY)
+        val readySeen = gfsOf(readySeenRecords, ObsType.READY)
 
-        return DailyReport(date, onDate.size, cases, pressed.size, pressed.count { it in ready }, ready.size)
+        val completedSeen = onDate.count { !it.cancelled }
+        val cancelledSeen = onDate.count { it.cancelled }
+        return DailyReport(
+            date = date,
+            completedSeen = completedSeen,
+            cases = cases,
+            pressedOrders = pressed.size,
+            pressedWithReady = pressed.count { it in ready },
+            readyOrders = ready.size,
+            cancelledSeen = cancelledSeen,
+            readySeenOrders = readySeen.size,
+        )
     }
 }
 
@@ -179,11 +200,20 @@ object ReportText {
 
     fun summary(r: DailyReport, zone: ZoneId): String = buildString {
         append("สรุปออเดอร์ล่าช้า วันที่ ").append(date(r.date)).append('\n')
-        append("• History ที่แอปสแกนเห็น: ").append(r.completedSeen).append(" ออเดอร์ (ใช้ตรวจการสแกน ไม่ใช่ยอดรวมจริง)\n")
+        append("• History ที่แอปสแกนเห็น: ").append(r.historyOrders)
+            .append(" ออเดอร์ (เสร็จ ").append(r.completedSeen)
+            .append(" / ยกเลิก ").append(r.cancelledSeen).append(")\n")
+        append("• Ready เห็น ").append(r.readySeenOrders)
+            .append(" / มีภาพ ").append(r.readyOrders)
+            .append(" / Pending ").append(r.pendingReadyProof).append('\n')
+        append("• Ready proof ").append(r.readyOrders)
+            .append(" / Completed: ").append(r.completedSeen)
+            .append(if (r.readyVsCompletedMatch) " — MATCH\n" else " — MISMATCH\n")
         append("• Grab ระบุล่าช้า: ").append(r.delayed).append('\n')
         append("• มีภาพในแท็บ Ready (กดเสร็จแล้ว): ").append(r.withEvidence.size).append('\n')
         append("• ไม่มีภาพ Ready / เหลือล่าช้าตามหลักฐาน: ").append(r.withoutEvidence.size).append('\n')
-        append("• % ล่าช้า: ไม่คำนวณจาก History — ต้องใช้ยอดออเดอร์รวมจริงจาก Sheet/ยอดร้าน\n")
+        append("• % Grab จาก History: ").append(pct(r.pct(r.delayed))).append('\n')
+        append("• % Actual จากหลักฐาน: ").append(pct(r.pct(r.actualDelayed))).append('\n')
         if (r.withEvidence.isNotEmpty()) {
             append("\n✅ มีหลักฐาน\n")
             r.withEvidence.forEach { append(caseLine(it, zone)).append('\n') }

@@ -28,9 +28,9 @@ class Deduper {
     @Synchronized
     fun seed(records: List<Record>) {
         for (r in records) for (item in r.items) {
-            // A DELAY saved in a text-only SEEN record is not valid screenshot evidence. Do not
-            // let it suppress a later chance to capture the same order with GF + delay visible.
-            if (item.type == ObsType.DELAY && r.uri == null) continue
+            // Text-only READY/DELAY observations are coverage logs, not screenshot evidence.
+            // Never let them suppress a later chance to capture the real proof image.
+            if ((item.type == ObsType.READY || item.type == ObsType.DELAY) && r.uri == null) continue
             val key = keyOf(item) ?: continue
             val prev = seen[key]
             if (prev == null || prev < r.t) seen[key] = r.t
@@ -54,12 +54,13 @@ class Deduper {
             ObsType.READY -> "READY|${item.gf}"
             ObsType.DELAY -> "DELAY|${item.gf}|${item.doneAt ?: "-"}"
             ObsType.DONE -> "DONE|${item.gf}|${item.doneAt ?: "-"}"
+            ObsType.CANCELLED -> "CANCELLED|${item.gf}|${item.doneAt ?: "-"}"
             ObsType.PRESS, ObsType.VISIBLE -> null
         }
 
         fun windowMs(type: ObsType, cfg: Config): Long = when (type) {
             ObsType.READY -> cfg.readyRepeatMinutes * 60_000L
-            ObsType.DELAY, ObsType.DONE -> 36L * 3600_000
+            ObsType.DELAY, ObsType.DONE, ObsType.CANCELLED -> 36L * 3600_000
             ObsType.PRESS, ObsType.VISIBLE -> 0L
         }
     }
