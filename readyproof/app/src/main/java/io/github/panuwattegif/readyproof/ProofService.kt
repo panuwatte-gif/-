@@ -135,7 +135,7 @@ class ProofService : AccessibilityService() {
             try {
                 val today = LocalDate.now()
                 val startupRecords = RecordStore.loadRange(this, today.minusDays(1), today)
-                deduper.seed(startupRecords.filter { it.shopId == ShopStore.get(this)?.id })
+                deduper.seed(startupRecords.filter { it.shopId == ShopStore.get(this)?.id && RecordStore.dateOf(it.t) == today })
                 readySeenDate = today
                 startupRecords.filter { RecordStore.dateOf(it.t) == today && it.shopId == ShopStore.get(this)?.id }.forEach { r ->
                     r.items.filter { it.type == ObsType.READY }.forEach { readySeenToday += it.gf }
@@ -409,6 +409,7 @@ class ProofService : AccessibilityService() {
 
         val today = LocalDate.now()
         if (today != readySeenDate) {
+            deduper.clear()
             readySeenDate = today
             readySeenToday.clear()
             lastReadyLedgerAt.clear()

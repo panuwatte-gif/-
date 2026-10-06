@@ -24,6 +24,9 @@ class Deduper {
         keys.forEach { seen.remove(it) }
     }
 
+    @Synchronized
+    fun clear() { seen.clear() }
+
     /** Rebuilds memory from the log after the service restarts. */
     @Synchronized
     fun seed(records: List<Record>) {
@@ -52,9 +55,9 @@ class Deduper {
         /** Identity of an observation; history rows include the finish time because order numbers repeat. */
         fun keyOf(item: Item): String? = when (item.type) {
             ObsType.READY -> "READY|${item.gf}"
-            ObsType.DELAY -> "DELAY|${item.gf}|${item.doneAt ?: "-"}"
-            ObsType.DONE -> "DONE|${item.gf}|${item.doneAt ?: "-"}"
-            ObsType.CANCELLED -> "CANCELLED|${item.gf}|${item.doneAt ?: "-"}"
+            ObsType.DELAY -> "DELAY|${item.gf}|${item.doneAt ?: "-"}|${item.historyDate ?: "UNKNOWN"}"
+            ObsType.DONE -> "DONE|${item.gf}|${item.doneAt ?: "-"}|${item.historyDate ?: "UNKNOWN"}"
+            ObsType.CANCELLED -> "CANCELLED|${item.gf}|${item.doneAt ?: "-"}|${item.historyDate ?: "UNKNOWN"}"
             ObsType.PRESS, ObsType.VISIBLE -> null
         }
 

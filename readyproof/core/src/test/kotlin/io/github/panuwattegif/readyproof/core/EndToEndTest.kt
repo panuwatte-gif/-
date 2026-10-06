@@ -138,4 +138,14 @@ class EndToEndTest {
         val proven = ProofValidation.targets(RecordKind.DELAY, analysis.items.filter { it.type == ObsType.DELAY }, listOf(root), Config.DEFAULT)
         assertEquals(listOf("GF-001"), proven.map { it.item.gf })
     }
+
+    @Test fun historyDedupeDoesNotSuppressTheSameGfAndClockOnAnotherDay() {
+        val yesterday = Item("GF-001", ObsType.DELAY, doneAt = "11:00", historyDate = day.minusDays(1).toString())
+        val today = yesterday.copy(historyDate = day.toString())
+        val d = Deduper()
+        d.mark(listOfNotNull(Deduper.keyOf(yesterday)), 100_000)
+        assertEquals(listOf(today), d.fresh(listOf(yesterday, today), 101_000, Config.DEFAULT))
+        d.clear()
+        assertEquals(2, d.fresh(listOf(yesterday, today), 102_000, Config.DEFAULT).size)
+    }
 }

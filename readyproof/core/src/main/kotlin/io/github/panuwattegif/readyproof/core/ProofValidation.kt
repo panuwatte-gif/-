@@ -35,7 +35,11 @@ object ProofValidation {
             }
             if (!valid) return@mapNotNull null
             val fingerprint = Json.write(listOf(target.gf, target.type.name, target.doneAt,
-                card.node.left, card.node.top, card.node.right, card.node.bottom, card.texts))
+                card.node.left, card.node.top, card.node.right, card.node.bottom, card.texts,
+                roots.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }.filter { raw ->
+                    TextNorm.key(raw) in listOf("today", "วันนี้", "yesterday", "เมื่อวาน", "เมื่อวานนี้") ||
+                        raw.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))
+                }))
             ValidatedTarget(target, fingerprint)
         }
     }
