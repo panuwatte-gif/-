@@ -66,6 +66,6 @@ class DriveApi(private val token: String,
         val properties = saved["appProperties"] as? Map<*, *>
         require(saved["id"] == id && saved["trashed"] == false && saved["md5Checksum"] == e.md5 &&
             (saved["parents"] as? List<*>)?.contains(folder) == true &&
-            properties?.get("readyproofKey") == e.key && properties["shopId"] == e.shopId) { "ตรวจยืนยันไฟล์ไม่ผ่าน" }
+            properties?.get("readyproofKey") == e.key && properties?.get("shopId") == e.shopId) { "ตรวจยืนยันไฟล์ไม่ผ่าน" }
     }
 }

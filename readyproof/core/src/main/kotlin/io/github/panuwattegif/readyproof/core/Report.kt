@@ -194,7 +194,7 @@ object ReportBuilder {
         val pressed = gfsOf(presses, ObsType.PRESS)
         val ready = gfsOf(readyShots, ObsType.READY)
         val readySeen = gfsOf(readySeenRecords, ObsType.READY)
-        fun readyInstances(rs: List<Record>): Set<String> = rs.filter { it.t in dayStart until dayEnd }.flatMap { r ->
+        fun collectReadyInstances(rs: List<Record>): Set<String> = rs.filter { it.t in dayStart until dayEnd }.flatMap { r ->
             r.items.filter { it.type == ObsType.READY }.map { i ->
                 val local = TimeResolve.toLocal(r.t, zone)
                 val terminal = onDate.filter { it.gf == i.gf && it.doneAt != null && it.doneAt >= local }
@@ -202,8 +202,8 @@ object ReportBuilder {
                 i.gf + "@" + (terminal?.doneAt?.toLocalTime()?.toString() ?: "UNRESOLVED")
             }
         }.toSet()
-        val readyInstances = readyInstances(readyShots)
-        val seenInstances = readyInstances(readySeenRecords)
+        val readyInstances = collectReadyInstances(readyShots)
+        val seenInstances = collectReadyInstances(readySeenRecords)
         val pendingGfs = seenInstances - readyInstances
 
         val completedSeen = onDate.count { !it.cancelled }

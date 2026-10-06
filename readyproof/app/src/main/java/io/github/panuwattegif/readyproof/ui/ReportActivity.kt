@@ -110,6 +110,7 @@ class ReportActivity : Activity() {
         Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
             (if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN"), 13f, Ui.MUTED)
         Ui.text(s, "Ready pending: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" }, 13f, Ui.AMBER)
+        Ui.text(s, "Completed ขาด Ready: " + r.missingReadyInstances.joinToString().ifEmpty { "-" }, 13f, Ui.AMBER)
         Ui.text(
             s,
             "History: ${r.historyOrders} ออเดอร์ · เสร็จ ${r.completedSeen} · ยกเลิก ${r.cancelledSeen}",

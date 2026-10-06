@@ -17,20 +17,20 @@ class EndToEndTest {
 
     @Test fun coverageIsPerOrderAndIncompleteDaysStillExportEveryDelayedCase() {
         val rs = listOf(
-            record("ready-seen", 10, 0, Item("GF-1", ObsType.READY), Item("GF-2", ObsType.READY), image = false),
-            record("one-valid", 10, 0, Item("GF-1", ObsType.READY)),
-            record("seen", 20, 0, Item("GF-1", ObsType.DELAY, doneAt = "10:20"),
-                Item("GF-2", ObsType.DELAY, doneAt = "10:30"),
-                Item("GF-3", ObsType.CANCELLED, doneAt = "11:00"), image = false),
-            record("valid-history", 20, 1, Item("GF-1", ObsType.DELAY, doneAt = "10:20"),
-                Item("GF-2", ObsType.DELAY, doneAt = "10:30")))
+            record("ready-seen", 10, 0, Item("GF-001", ObsType.READY), Item("GF-002", ObsType.READY), image = false),
+            record("one-valid", 10, 0, Item("GF-001", ObsType.READY)),
+            record("seen", 20, 0, Item("GF-001", ObsType.DELAY, doneAt = "10:20"),
+                Item("GF-002", ObsType.DELAY, doneAt = "10:30"),
+                Item("GF-003", ObsType.CANCELLED, doneAt = "11:00"), image = false),
+            record("valid-history", 20, 1, Item("GF-001", ObsType.DELAY, doneAt = "10:20"),
+                Item("GF-002", ObsType.DELAY, doneAt = "10:30")))
         val r = report(rs)
         assertEquals(3, r.historyOrders) // two completed plus one cancelled, not four screenshots
         assertEquals(2, r.delayed)
         assertEquals(1, r.withEvidence.size)
         assertEquals(1, r.actualDelayed)
-        assertEquals(listOf("GF-2@10:30"), r.pendingReadyGfs)
-        assertEquals(listOf("GF-3@11:00"), r.missingHistoryInstances)
+        assertEquals(listOf("GF-002@10:30"), r.pendingReadyGfs)
+        assertEquals(listOf("GF-003@11:00"), r.missingHistoryInstances)
         assertFalse(r.complete)
         assertEquals(2, ReportText.csv(r, zone).lines().count { it.startsWith(day.toString()) })
         assertTrue(ReportText.summary(r, zone).contains("INCOMPLETE"))
@@ -40,11 +40,11 @@ class EndToEndTest {
 
     @Test fun sameGfMustNotBorrowProofAcrossTerminalBoundariesOrShops() {
         val r = report(listOf(
-            record("earlier-ready", 10, 0, Item("GF-9", ObsType.READY)),
-            record("other-shop", 15, 0, Item("GF-9", ObsType.READY), shop = Shop.DAUGHTER.id),
-            record("legacy", 15, 1, Item("GF-9", ObsType.READY), shop = null),
-            record("terminals", 20, 0, Item("GF-9", ObsType.DONE, doneAt = "10:20"),
-                Item("GF-9", ObsType.DELAY, doneAt = "15:30"))))
+            record("earlier-ready", 10, 0, Item("GF-009", ObsType.READY)),
+            record("other-shop", 15, 0, Item("GF-009", ObsType.READY), shop = Shop.DAUGHTER.id),
+            record("legacy", 15, 1, Item("GF-009", ObsType.READY), shop = null),
+            record("terminals", 20, 0, Item("GF-009", ObsType.DONE, doneAt = "10:20"),
+                Item("GF-009", ObsType.DELAY, doneAt = "15:30"))))
         assertEquals(2, r.historyOrders)
         assertEquals(1, r.delayed)
         assertFalse(r.cases.single().hasEvidence)
@@ -52,20 +52,20 @@ class EndToEndTest {
     }
 
     @Test fun unknownClockNeverMatchesByGfAndProofAfterFinishNeverCounts() {
-        val unknown = report(listOf(record("ready", 10, 0, Item("GF-8", ObsType.READY)),
-            record("unknown", 20, 0, Item("GF-8", ObsType.DELAY))))
+        val unknown = report(listOf(record("ready", 10, 0, Item("GF-008", ObsType.READY)),
+            record("unknown", 20, 0, Item("GF-008", ObsType.DELAY))))
         assertEquals("UNKNOWN_INSTANCE", unknown.cases.single().matchStatus)
         assertFalse(unknown.cases.single().hasEvidence)
         assertFalse(unknown.complete)
-        val after = report(listOf(record("ready", 10, 21, Item("GF-8", ObsType.READY)),
-            record("history", 20, 0, Item("GF-8", ObsType.DELAY, doneAt = "10:20"))))
+        val after = report(listOf(record("ready", 10, 21, Item("GF-008", ObsType.READY)),
+            record("history", 20, 0, Item("GF-008", ObsType.DELAY, doneAt = "10:20"))))
         assertFalse(after.cases.single().hasEvidence)
     }
 
     @Test fun completeRequiresImagesEndOfListAndExplicitDate() {
-        val rs = listOf(record("ready", 10, 0, Item("GF-1", ObsType.READY)),
-            record("all", 20, 0, Item("GF-1", ObsType.DONE, doneAt = "11:00"),
-            Item("GF-2", ObsType.CANCELLED, doneAt = "12:00")))
+        val rs = listOf(record("ready", 10, 0, Item("GF-001", ObsType.READY)),
+            record("all", 20, 0, Item("GF-001", ObsType.DONE, doneAt = "11:00"),
+            Item("GF-002", ObsType.CANCELLED, doneAt = "12:00")))
         assertTrue(report(rs).complete)
         assertFalse(report(rs, end = false).complete)
         assertFalse(report(rs.map { it.copy(historyDate = null) }).complete)
@@ -90,19 +90,19 @@ class EndToEndTest {
     }
 
     @Test fun bitmapValidationKeepsValidSubsetAndRejectsMovedOrMismatchedRows() {
-        val targets = listOf(Item("GF-1", ObsType.DELAY, doneAt = "11:00"), Item("GF-2", ObsType.DELAY, doneAt = "12:00"))
+        val targets = listOf(Item("GF-001", ObsType.DELAY, doneAt = "11:00"), Item("GF-002", ObsType.DELAY, doneAt = "12:00"))
         val before = ProofValidation.targets(RecordKind.HISTORY, targets, listOf(screen(
-            "GF-1" to "Completed at 11:00 AM Delayed by 3 mins", "GF-2" to "Completed at 12:00 PM Delayed by 4 mins")), Config.DEFAULT)
+            "GF-001" to "Completed at 11:00 AM Delayed by 3 mins", "GF-002" to "Completed at 12:00 PM Delayed by 4 mins")), Config.DEFAULT)
         assertEquals(2, before.size)
         val after = ProofValidation.targets(RecordKind.HISTORY, targets, listOf(screen(
-            "GF-1" to "Completed at 11:00 AM Delayed by 3 mins")), Config.DEFAULT)
+            "GF-001" to "Completed at 11:00 AM Delayed by 3 mins")), Config.DEFAULT)
         assertEquals(listOf(targets.first()), ProofValidation.stableSubset(before, after))
         val moved = ProofValidation.targets(RecordKind.HISTORY, targets, listOf(screen(
-            "GF-1" to "Completed at 11:00 AM Delayed by 3 mins", shifted = true)), Config.DEFAULT)
+            "GF-001" to "Completed at 11:00 AM Delayed by 3 mins", shifted = true)), Config.DEFAULT)
         assertTrue(ProofValidation.stableSubset(before, moved).isEmpty())
         assertTrue(ProofValidation.targets(RecordKind.HISTORY, targets, listOf(screen(
-            "GF-1" to "Completed at 11:00 AM", "GF-2" to "Completed at 11:00 AM Delayed by 4 mins")), Config.DEFAULT).isEmpty())
-        assertTrue(ProofValidation.targets(RecordKind.READY, listOf(Item("GF-1", ObsType.READY)), listOf(screen(
-            "GF-1" to "Completed at 11:00 AM")), Config.DEFAULT).isEmpty())
+            "GF-001" to "Completed at 11:00 AM", "GF-002" to "Completed at 11:00 AM Delayed by 4 mins")), Config.DEFAULT).isEmpty())
+        assertTrue(ProofValidation.targets(RecordKind.READY, listOf(Item("GF-001", ObsType.READY)), listOf(screen(
+            "GF-001" to "Completed at 11:00 AM")), Config.DEFAULT).isEmpty())
     }
 }

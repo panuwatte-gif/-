@@ -24,7 +24,7 @@ object ProofValidation {
             val observed = rules.evaluate(card)
             val history = observed.any { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) }
             val valid = when (target.type) {
-                ObsType.READY -> kind == RecordKind.READY && !history &&
+                ObsType.READY -> kind in listOf(RecordKind.READY, RecordKind.MANUAL) && !history &&
                     (analysis.readyTab == true || (analysis.readyTab == null && observed.any { it.type == ObsType.READY }))
                 ObsType.DELAY -> target.doneAt != null && nodes.any { n -> onScreen(n) &&
                     n.ownStrings().any { TextNorm.containsAny(it, cfg.delayAny) } } &&

@@ -135,7 +135,7 @@ class ProofService : AccessibilityService() {
             try {
                 val today = LocalDate.now()
                 val startupRecords = RecordStore.loadRange(this, today.minusDays(1), today)
-                deduper.seed(startupRecords)
+                deduper.seed(startupRecords.filter { it.shopId == ShopStore.get(this)?.id })
                 readySeenDate = today
                 startupRecords.filter { RecordStore.dateOf(it.t) == today && it.shopId == ShopStore.get(this)?.id }.forEach { r ->
                     r.items.filter { it.type == ObsType.READY }.forEach { readySeenToday += it.gf }
@@ -491,7 +491,7 @@ class ProofService : AccessibilityService() {
         }
 
         if (ready || delay) {
-            val kind = if (ready) RecordKind.READY else RecordKind.HISTORY
+            val kind = if (ready) RecordKind.READY else if (captureItems.any { it.type == ObsType.DELAY }) RecordKind.DELAY else RecordKind.HISTORY
             // Only a successful screenshot is allowed to make an order stay deduped.
             // Keys are tentatively marked here to stop duplicate jobs while Android is capturing;
             // on failure or partial batch coverage onCaptureDone() releases every unsaved key.
@@ -676,6 +676,7 @@ class ProofService : AccessibilityService() {
                 autoHistoryTargetDate = null
                 nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
                 Diagnostics.error(this, "finishAutomaticHistory", e)
+                main.post { clickTab(config.readyTabLabels) }
             }
         }
     }
@@ -902,8 +903,8 @@ class ProofService : AccessibilityService() {
     }
 
     private fun manualCapture(note: String?) {
+        if (captureInFlight) { toast("กำลังแคปหลักฐาน — ลองแคปเองอีกครั้ง"); return }
         val job = CaptureJob(RecordKind.MANUAL, System.currentTimeMillis(), ShopStore.get(this)?.id)
-        capture.submit(job)
         val cfg = config
         val meta = try {
             val snaps: List<UiNode> = targetRoots(cfg).map { NodeSnapshot.capture(it, MAX_NODES) }
@@ -921,6 +922,8 @@ class ProofService : AccessibilityService() {
             CaptureMeta(note = note, toast = "📸 แคปแล้ว")
         }
         job.setMeta(meta)
+        captureInFlight = true
+        capture.submit(job)
     }
 
     // ---- screenshot result --------------------------------------------------------------------

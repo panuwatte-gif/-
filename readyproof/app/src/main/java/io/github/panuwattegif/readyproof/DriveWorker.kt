@@ -17,6 +17,7 @@ class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) 
         val ctx = applicationContext
         val prefs = ConfigStore.prefs(ctx)
         if (!prefs.getBoolean("drive_enabled", false)) return Result.success()
+        DriveSync.recover(ctx)
         val shop = ShopStore.get(ctx) ?: return Result.success()
         val account = prefs.getString("drive_account", null) ?: run {
             DriveSync.status(ctx, "ต้องเชื่อมบัญชี Google — แคปและแชร์เองยังทำงาน")

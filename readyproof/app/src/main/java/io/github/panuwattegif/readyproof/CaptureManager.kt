@@ -96,7 +96,7 @@ class CaptureManager(
         while (attempt <= MAX_ATTEMPTS) {
             val meta = job.awaitMeta(0)
             val requestedTargets = meta.items
-            val before = if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
+            val before = if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY, RecordKind.MANUAL)) {
                 visibleEvidenceTargets(job.kind, requestedTargets)
             } else {
                 requestedTargets.map { ValidatedTarget(it, "manual") }
@@ -128,7 +128,13 @@ class CaptureManager(
                                 screenshot.hardwareBuffer.close()
                                 return
                             }
-                            if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
+                            if (job.kind == RecordKind.MANUAL) {
+                                // Keep the raw hand capture even without provable targets. Only the
+                                // validated stable subset may participate in automatic evidence matching.
+                                val stable = ProofValidation.stableSubset(before, visibleEvidenceTargets(job.kind, before.map { it.item }))
+                                val raw = meta.items.filterNot { it in stable }.map { it.copy(type = ObsType.VISIBLE) }
+                                save(job, screenshot, meta.copy(items = stable + raw))
+                            } else if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
                                 // One bitmap may prove many orders. Keep only targets that are still
                                 // visibly present after Android produced the bitmap. Any target that
                                 // dropped out remains pending in ProofService and is retried; it is
@@ -239,6 +245,7 @@ class CaptureManager(
                 return
             }
             val meta = validatedMeta ?: job.awaitMeta(META_TIMEOUT_MS)
+            val savedItems = meta.items
             val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(job.t), ZoneId.systemDefault())
             val name = (job.shopId?.let { "${it}_" } ?: "UNKNOWN_") + Naming.fileName(job.kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
             val uri = MediaSaver.saveJpeg(service, bitmap, name, job.t, ConfigStore.get(service).jpegQuality)
@@ -246,7 +253,7 @@ class CaptureManager(
                 id = "${job.t}-${seq.incrementAndGet()}",
                 t = job.t,
                 kind = job.kind,
-                items = meta.items,
+                items = savedItems,
                 visible = meta.visible,
                 uri = uri.toString(),
                 file = name,
