@@ -77,6 +77,13 @@ class MainActivity : Activity() {
         )
         val lastEvent = ProofService.lastTargetEventAt
         if (lastEvent > 0) Ui.text(status, "เห็นหน้าจอ Grab ล่าสุด: " + ReportText.time(lastEvent, zone), 14f, Ui.MUTED)
+        Ui.text(status, "เครื่องนี้เฝ้าแคปอย่างเดียว · ไม่ต้องกด Ready บนเครื่องนี้", 14f, Ui.MUTED)
+        val monitorPrefs = ConfigStore.prefs(this)
+        monitorPrefs.getString("monitor_status", null)?.let {
+            Ui.text(status, it, 13f, Ui.MUTED, topDp = 4)
+        }
+        val lastPoll = monitorPrefs.getLong("monitor_last_poll", 0L)
+        if (lastPoll > 0) Ui.text(status, "ตรวจหน้าเฝ้าแคปล่าสุด: " + ReportText.time(lastPoll, zone), 13f, Ui.MUTED)
         if (!ServiceStatus.isIgnoringBattery(this)) {
             Ui.button(status, "อนุญาตให้ทำงานเบื้องหลังตลอด (กันมือถือปิดระบบ)", filled = false) {
                 ServiceStatus.requestIgnoreBattery(this)

@@ -15,6 +15,7 @@ Uploads go directly into these **ออเดอร์รอตรวจ** folde
 
 ## Proof coverage
 
+- ReadyProof is installed only on the dedicated proof phone. The shop accepts orders and marks food ready on its existing Sunmi/device without installing anything there. A 1.5-second poll observes the foreground Grab UI independently of local clicks/events. The app stays on Ready and returns to the top after each pass. Supported accidental tab navigation returns via Orders/Ready; it never presses order actions, approves dialogs or opens other apps automatically. Missing roots/login/lock wait and retry, with last monitor status/time visible on the home screen. Closing and manual History workflows take priority over this navigation. An accidental History tab tap during the day does not start an unscheduled sweep.
 - READY observations are logged before screenshot requests. One bitmap can prove several GFs. Validation retains each stable visible target independently; missing targets remain eligible for retry. A partial bitmap is not discarded merely because another GF dropped out.
 - Foreground Grab, the GF, and the relevant status/clock must be visible. DELAY requires GF + Delayed + terminal clock on the same card. READY needs the selected Ready tab or a positive Ready status. Unknown tab selection alone is insufficient.
 - Capture pauses auto-scrolling/poll scans. Card text and bounds are validated on both sides of the bitmap callback. This is accessibility validation, not pixel OCR; human review still matters.

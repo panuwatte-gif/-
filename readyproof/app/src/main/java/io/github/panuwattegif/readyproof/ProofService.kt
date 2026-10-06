@@ -11,8 +11,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
-import io.github.panuwattegif.readyproof.core.ClickInfo
-import io.github.panuwattegif.readyproof.core.ClickMatcher
+import io.github.panuwattegif.readyproof.core.DedicatedMonitor
 import io.github.panuwattegif.readyproof.core.Config
 import io.github.panuwattegif.readyproof.core.Deduper
 import io.github.panuwattegif.readyproof.core.Item
@@ -43,8 +42,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - READY: an order shown in Grab's Ready / พร้อมจัดส่ง tab.
  *  - DELAY: a History row explicitly marked Delayed / ล่าช้า.
  *
- * When the merchant taps the real Ready button, ReadyProof briefly opens the Ready tab,
- * scrolls the whole list by itself, captures any new order(s), then returns to Preparing.
+ * This phone only monitors proof. Order actions happen on the shop's Sunmi. Independently poll
+ * Grab and return to Ready when another tab is opened; never wait for a local food-ready tap.
  * After 19:00, ReadyProof checks Ready and Preparing, opens History when both are confirmed
  * empty, and captures all terminal rows. Preparing-button presses are NOT stored as evidence.
  */
@@ -68,8 +67,6 @@ class ProofService : AccessibilityService() {
         private const val AUTO_HISTORY_PREF_LAST_RESULT = "auto_history_last_result"
         private const val SCROLL_SETTLE_MS = 650L
         private const val TEXT_ONLY_SCAN_INTERVAL_MS = 5_000L
-        private const val PRESS_DEBOUNCE_MS = 650L
-        private const val OPEN_READY_DELAY_MS = 750L
         private const val AUTO_SCROLL_DELAY_MS = 450L
         private const val MAX_SWEEP_SCROLLS = 250
         private const val MAX_RETURN_TO_TOP_SCROLLS = 250
@@ -91,19 +88,15 @@ class ProofService : AccessibilityService() {
     @Volatile private var lastScrollAt = 0L
     @Volatile private var lastFailToastAt = 0L
 
-    private var lastPressAt = 0L
     private var buttonCallback: AccessibilityButtonController.AccessibilityButtonCallback? = null
 
-    /** Sweep state. A forced Ready sweep is set only after ReadyProof itself clicks the Ready tab. */
-    @Volatile private var forcedReadySweep = false
+    /** History sweeps require explicit authorization from closing or the in-app button. */
     @Volatile private var forcedHistorySweep = false
-    @Volatile private var returnToPreparingAfterReady = false
     private var lastSweepSignature = ""
     private var repeatedSweepSignature = 0
     private var sweepScrolls = 0
     @Volatile private var returningReadyToTop = false
     private var returnToTopScrolls = 0
-    private var historyTabWasSelected = false
     @Volatile private var captureInFlight = false
     @Volatile private var returningHistoryToTop = false
     private var historyAtTop = false
@@ -125,6 +118,10 @@ class ProofService : AccessibilityService() {
     @Volatile private var autoHistoryTargetDate: LocalDate? = null
     @Volatile private var nextAutoHistoryAttemptAt = 0L
     @Volatile private var closingGate: ClosingHistoryGate? = null
+    @Volatile private var monitorNavigationUntil = 0L
+    private var nextMonitorNavigationAt = 0L
+    private var monitorStatusText = ""
+    private var monitorStatusSavedAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -175,9 +172,6 @@ class ProofService : AccessibilityService() {
         if (pkg !in cfg.targetPackages) return
         lastTargetEventAt = System.currentTimeMillis()
 
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            handleClick(event, cfg)
-        }
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 lastScrollAt = SystemClock.uptimeMillis()
@@ -189,59 +183,6 @@ class ProofService : AccessibilityService() {
                 if (!textOnly || SystemClock.uptimeMillis() - lastScanAt > TEXT_ONLY_SCAN_INTERVAL_MS) scheduleScan()
             }
             else -> scheduleScan()
-        }
-    }
-
-    /** Detect a real food-ready press, but do not save/log that Preparing screen. */
-    private fun handleClick(event: AccessibilityEvent, cfg: Config) {
-        val src = event.source
-        val info = ClickInfo(
-            ownText = src?.text?.toString(),
-            desc = src?.contentDescription?.toString() ?: event.contentDescription?.toString(),
-            eventTexts = event.text.map { it.toString() },
-            className = (src?.className ?: event.className)?.toString(),
-            viewId = src?.viewIdResourceName,
-            roleDesc = src?.extras?.getCharSequence(ROLE_DESCRIPTION_KEY)?.toString(),
-        )
-        val label = info.label()
-
-        // If the user opens History, start an automatic History sweep.
-        if (matchesAny(label, listOf("History", "ประวัติ"))) {
-            // Our own navigation emits this event too. Wait for page confirmation, not just
-            // ACTION_CLICK's return value, before starting any History scrolling.
-            if (autoHistoryInProgress) return
-            worker.post {
-                closingGate = null
-                startHistorySweep(LocalDate.now(), force = true)
-            }
-            return
-        }
-
-        if (closingGate != null || autoHistoryInProgress) return
-
-        val now = System.currentTimeMillis()
-        val isFoodReady = ClickMatcher.matches(info, cfg) && now - lastPressAt > PRESS_DEBOUNCE_MS
-        if (!isFoodReady) return
-        lastPressAt = now
-
-        // Give Grab time to move the order from Preparing to Ready, then open Ready ourselves.
-        worker.postDelayed({ openReadyTabForSweep(cfg) }, OPEN_READY_DELAY_MS)
-    }
-
-    private fun openReadyTabForSweep(cfg: Config) {
-        if (closingGate != null || autoHistoryInProgress) return
-        main.post {
-            if (closingGate != null || autoHistoryInProgress) return@post
-            val clicked = clickTab(cfg.readyTabLabels)
-            if (clicked) {
-                forcedReadySweep = true
-                forcedHistorySweep = false
-                returnToPreparingAfterReady = true
-                resetSweepLoop()
-                worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
-            } else {
-                toast("⚠️ หาแท็บ Ready / พร้อมจัดส่งไม่เจอ — เปิดแท็บนี้เอง 1 ครั้ง")
-            }
         }
     }
 
@@ -275,20 +216,63 @@ class ProofService : AccessibilityService() {
             try {
                 if (config.enabled) {
                     maybeStartAutomaticHistory()
+                    superviseDedicatedMonitor()
                     // Poll History as well as Ready: a transient empty accessibility root or
                     // omitted event must recover without a human touching the phone.
                     if (!returningReadyToTop && !returningHistoryToTop && !captureInFlight) scheduleScan()
                 }
+            } catch (e: Exception) {
+                Diagnostics.error(this@ProofService, "readyWatch", e)
+                saveMonitorStatus("อ่านหน้าจอไม่สำเร็จ: ระบบจะตรวจใหม่เอง")
             } finally {
                 runCatching { worker.postDelayed(this, READY_WATCH_INTERVAL_MS) }
             }
         }
     }
 
+    private fun saveMonitorStatus(text: String) {
+        val now = System.currentTimeMillis()
+        if (text == monitorStatusText && now - monitorStatusSavedAt < 60_000L) return
+        monitorStatusText = text
+        monitorStatusSavedAt = now
+        ConfigStore.prefs(this).edit().putString("monitor_status", text)
+            .putLong("monitor_last_poll", now).apply()
+    }
+
+    /** Recover supported Grab navigation only; never accept/cancel orders or dismiss dialogs. */
+    private fun superviseDedicatedMonitor() {
+        val busy = captureInFlight || closingGate != null || autoHistoryInProgress || forcedHistorySweep ||
+            returningReadyToTop || returningHistoryToTop
+        val action = DedicatedMonitor.decide(activeGrabSnapshots(), config, busy)
+        when (action) {
+            DedicatedMonitor.Action.IDLE -> return
+            DedicatedMonitor.Action.WATCH_READY -> saveMonitorStatus("เฝ้า Ready อัตโนมัติ / รับการเปลี่ยนสถานะจาก Grab ไม่รอการกดบนมือถือ")
+            DedicatedMonitor.Action.WAIT_FOR_GRAB -> saveMonitorStatus("ยังอ่านหน้าออเดอร์ Grab ไม่ได้: รอตรวจใหม่ / ตรวจจอล็อกหรือหน้าเข้าสู่ระบบเมื่อปิดร้าน")
+            else -> {
+                val now = SystemClock.uptimeMillis()
+                if (now < nextMonitorNavigationAt) return
+                nextMonitorNavigationAt = now + 10_000L
+                monitorNavigationUntil = now + 1_500L
+                saveMonitorStatus("กำลังกลับหน้า Ready อัตโนมัติ")
+                main.post {
+                    if (!config.enabled || captureInFlight || closingGate != null || autoHistoryInProgress ||
+                        forcedHistorySweep || returningReadyToTop || returningHistoryToTop) return@post
+                    val labels = if (action == DedicatedMonitor.Action.OPEN_READY) config.readyTabLabels
+                        else listOf("Orders", "คำสั่งซื้อ")
+                    clickTab(labels)
+                    // A click is not proof. scan() still requires a selected Ready tab or positive
+                    // per-card Ready wording, and CaptureManager validates the actual bitmap.
+                    worker.postDelayed({ scheduleScan() }, 1_500L)
+                }
+            }
+        }
+    }
+
     /** Closing never interrupts pending orders: recheck both queues before each automatic pass. */
     private fun maybeStartAutomaticHistory() {
+        if (SystemClock.uptimeMillis() < monitorNavigationUntil) return
         if (closingGate != null || captureInFlight || autoHistoryInProgress || forcedHistorySweep ||
-            forcedReadySweep || returningReadyToTop || returningHistoryToTop) return
+            returningReadyToTop || returningHistoryToTop) return
         val now = LocalDateTime.now()
         if (!ClosingHistoryGate.isDue(now.toLocalTime())) return
         if (System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
@@ -389,9 +373,6 @@ class ProofService : AccessibilityService() {
         val terminal = analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.CANCELLED, ObsType.DELAY) }
         if (config.enabled && !otherSelected && (selected || terminal)) {
             forcedHistorySweep = true
-            forcedReadySweep = false
-            returnToPreparingAfterReady = false
-            historyTabWasSelected = selected
             resetSweepLoop()
             closingStatus("เปิด History แล้ว: กำลังกวาดรายการทั้งวัน")
             startHistoryAtTop()
@@ -442,6 +423,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun scan() {
+        if (SystemClock.uptimeMillis() < monitorNavigationUntil) return
         if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
         if (returningReadyToTop || returningHistoryToTop || captureInFlight) return
         val cfg = config
@@ -453,37 +435,12 @@ class ProofService : AccessibilityService() {
 
         var analysis = ScreenAnalyzer.analyze(snaps, cfg, allowUnknownDelayed = forcedHistorySweep)
 
-        // Detect History from the selected tab itself. Some Grab builds emit a click event from
-        // the tab container with no text, so relying only on TYPE_VIEW_CLICKED can miss the sweep.
-        val historyTabSelected = selectedTabOpen(snaps, listOf("History", "ประวัติ"))
-        if (historyTabSelected && !historyTabWasSelected && !forcedReadySweep) {
-            forcedHistorySweep = true
-            autoHistoryTargetDate = LocalDate.now()
-            sweepShopId = ShopStore.get(this)?.id
-            resetSweepLoop()
-            historyTabWasSelected = true
-            startHistoryAtTop()
-            return
-        }
-        historyTabWasSelected = historyTabSelected
+        // An accidental staff tap on History must return to Ready, not launch an unscheduled
+        // History pass. Only the closing workflow / explicit in-app test button authorizes it.
+        if (!forcedHistorySweep && analysis.readyTab != true && analysis.items.none { it.type == ObsType.READY }) return
 
-        // If we successfully clicked Ready ourselves but Grab does not expose tab-selected state,
-        // the current list is still known to be Ready. Mark every listed GF as READY evidence.
-        if (forcedReadySweep && analysis.readyTab != false) {
-            val existing = analysis.items.filterNot { it.type == ObsType.READY }
-            val readyItems = analysis.cards.filter { it.inList }.distinctBy { it.gf }.map { card ->
-                Item(
-                    gf = card.gf,
-                    type = ObsType.READY,
-                    status = ScreenAnalyzer.statusLine(card, cfg.gfExtractor()),
-                    card = card.texts,
-                )
-            }
-            analysis = analysis.copy(items = (readyItems + existing).distinctBy { Triple(it.gf, it.type, it.doneAt) })
-        }
-
-        val historyMode = forcedHistorySweep || historyTabSelected || analysis.items.any { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
-        val readyMode = forcedReadySweep || analysis.readyTab == true
+        val historyMode = forcedHistorySweep
+        val readyMode = !historyMode && (analysis.readyTab == true || analysis.items.any { it.type == ObsType.READY })
         val sweepMode = readyMode || historyMode
         if (historyMode) {
             val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
@@ -705,7 +662,7 @@ class ProofService : AccessibilityService() {
                     lastScrollAt = SystemClock.uptimeMillis()
                     worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
                 } else {
-                    finishSweep(readyMode ?: forcedReadySweep)
+                    finishSweep(readyMode ?: false)
                 }
             }
         }, AUTO_SCROLL_DELAY_MS)
@@ -713,19 +670,11 @@ class ProofService : AccessibilityService() {
 
     private fun finishSweep(wasReady: Boolean) {
         if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
-        if (wasReady || forcedReadySweep) {
-            forcedReadySweep = false
+        if (wasReady) {
             resetSweepLoop()
-            if (returnToPreparingAfterReady) {
-                returnToPreparingAfterReady = false
-                // Legacy same-device flow: return only when ReadyProof opened Ready itself.
-                main.postDelayed({ clickTab(listOf("Preparing", "กำลังเตรียม")) }, 250L)
-            } else {
-                // Dedicated proof phone stays on Ready. Sweep back to the top so an order inserted
-                // above the current viewport cannot be missed between Accessibility events.
-                startReturnReadyToTop()
-                return
-            }
+            // Always stay on Ready: this phone never accepts or prepares orders.
+            startReturnReadyToTop()
+            return
         }
         if (forcedHistorySweep) {
             val target = autoHistoryTargetDate
