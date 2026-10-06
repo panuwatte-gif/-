@@ -440,6 +440,8 @@ class ProofService : AccessibilityService() {
 
         // Persist ALL terminal observations before any screenshot/reposition attempt.
         val terminal = analysis.items.filter { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) }
+        val targetDay = autoHistoryTargetDate ?: today
+        val olderDateBoundary = terminal.any { i -> i.historyDate?.let { runCatching { LocalDate.parse(it).isBefore(targetDay) }.getOrDefault(false) } == true }
         val newTerminal = terminal.filter { historySeenKeys.add("${it.historyDate}|${Deduper.keyOf(it)}|${it.card}") }
         if (newTerminal.isNotEmpty()) RecordStore.append(this, Record("$now-hs${seq.incrementAndGet()}", now,
             RecordKind.SEEN, newTerminal, analysis.visible, shopId = ShopStore.get(this)?.id))
@@ -465,7 +467,8 @@ class ProofService : AccessibilityService() {
         val delayTargets = captureCandidates.filter { it.type == ObsType.DELAY }
         val captureItems = when {
             readyMode && cfg.captureReady && readyTargets.isNotEmpty() -> readyTargets
-            historyMode && terminal.isNotEmpty() -> fresh.filter { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) }
+            historyMode && terminal.isNotEmpty() -> fresh.filter { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) &&
+                (it.historyDate == null || it.historyDate == targetDay.toString()) }
             cfg.captureReady && readyTargets.isNotEmpty() -> readyTargets
             cfg.captureDelay && delayTargets.isNotEmpty() -> delayTargets
             else -> emptyList()
@@ -511,7 +514,10 @@ class ProofService : AccessibilityService() {
             return
         }
 
-        if (sweepMode) continueSweep(readyMode)
+        if (historyMode && olderDateBoundary && forcedHistorySweep) {
+            historyReachedEnd = historyAtTop
+            finishSweep(false)
+        } else if (sweepMode) continueSweep(readyMode)
     }
 
     private fun matchingDelayCard(item: Item, analysis: ScreenAnalysis, cfg: Config) =

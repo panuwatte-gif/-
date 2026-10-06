@@ -27,14 +27,17 @@ object DriveSync {
     private fun meta(ctx: Context, key: String) = File(root(ctx), "$key.json")
     private fun digest(bytes: ByteArray, algorithm: String) = MessageDigest.getInstance(algorithm)
         .digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun validPhoto(r: Record) = r.uri != null && r.items.any {
+        it.type in listOf(ObsType.READY, ObsType.DELAY, ObsType.DONE, ObsType.CANCELLED)
+    }
 
     fun offerRecord(ctx: Context, r: Record) {
         val app = ctx.applicationContext
         // All exceptions are confined to the sidecar executor; the local capture has already committed.
         runCatching { io.execute {
             runCatching {
-                if (r.uri != null && r.items.isNotEmpty()) {
-                    val bytes = app.contentResolver.openInputStream(Uri.parse(r.uri))?.use { it.readBytes() }
+                if (validPhoto(r)) {
+                    val bytes = app.contentResolver.openInputStream(Uri.parse(r.uri!!))?.use { it.readBytes() }
                         ?: error("อ่านภาพในเครื่องไม่ได้")
                     stage(app, r.shopId, r.file ?: "${r.id}.jpg", "image/jpeg", bytes)
                 }
@@ -113,9 +116,9 @@ object DriveSync {
                 val recordsDir = File(app.filesDir, "records")
                 recordsDir.listFiles()?.filter { it.name.endsWith(".jsonl") }?.forEach { f ->
                     f.useLines { lines -> lines.mapNotNull(RecordCodec::decode).forEach { r ->
-                        if (r.shopId == ShopStore.get(app)?.id && r.uri != null && r.items.isNotEmpty()) {
+                        if (r.shopId == ShopStore.get(app)?.id && validPhoto(r)) {
                             runCatching {
-                                val bytes = app.contentResolver.openInputStream(Uri.parse(r.uri))?.use { it.readBytes() }
+                                val bytes = app.contentResolver.openInputStream(Uri.parse(r.uri!!))?.use { it.readBytes() }
                                 if (bytes != null) stage(app, r.shopId, r.file ?: "${r.id}.jpg", "image/jpeg", bytes)
                             }
                         }

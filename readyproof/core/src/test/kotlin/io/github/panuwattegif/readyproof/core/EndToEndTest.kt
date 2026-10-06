@@ -105,4 +105,23 @@ class EndToEndTest {
         assertTrue(ProofValidation.targets(RecordKind.READY, listOf(Item("GF-001", ObsType.READY)), listOf(screen(
             "GF-001" to "Completed at 11:00 AM")), Config.DEFAULT).isEmpty())
     }
+
+    @Test fun dateBoundarySeparatesTodayFromYesterdayWithinOneScreenshot() {
+        val root = screen("GF-001" to "Completed at 11:00 AM", "GF-002" to "Completed at 12:00 PM")
+        root.add(UiNode(text = "Today", top = 80))
+        root.add(UiNode(text = "Yesterday", top = 290))
+        val analysis = ScreenAnalyzer.analyze(listOf(root), Config.DEFAULT)
+        val (items, lastHeader) = HistoryDates.assign(analysis.items, analysis, listOf(root), day, null)
+        assertEquals(day.toString(), items.first { it.gf == "GF-001" }.historyDate)
+        assertEquals(day.minusDays(1).toString(), items.first { it.gf == "GF-002" }.historyDate)
+        assertEquals(day.minusDays(1), lastHeader)
+    }
+
+    @Test fun manualImagesOnlyProvideReadyEvidenceWhenTheReadyStateIsValidated() {
+        val target = Item("GF-001", ObsType.READY)
+        assertEquals(listOf(target), ProofValidation.targets(RecordKind.MANUAL, listOf(target),
+            listOf(screen("GF-001" to "Finding a driver...", ready = true)), Config.DEFAULT).map { it.item })
+        assertTrue(ProofValidation.targets(RecordKind.MANUAL, listOf(target),
+            listOf(screen("GF-001" to "Ready in: 5:00 min")), Config.DEFAULT).isEmpty())
+    }
 }

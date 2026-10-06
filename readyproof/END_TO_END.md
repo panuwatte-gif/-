@@ -20,7 +20,7 @@ Uploads go directly into these **ออเดอร์รอตรวจ** folde
 - Capture pauses auto-scrolling/poll scans. Card text and bounds are validated on both sides of the bitmap callback. This is accessibility validation, not pixel OCR; human review still matters.
 - Recapture once per minute helps with reused GF numbers. Previous terminal times partition evidence windows. READY after completion or before a previous terminal cannot prove a later instance. Missing clocks stay UNKNOWN. Same-GF/same-minute collisions may remain unresolved.
 - Every observed terminal row is journalled before any screenshot or reposition. Repeated viewport failures are recorded as missing; scanning proceeds and later sweeps retry. Existing valid files are always eligible for sharing/upload.
-- History goes back to the top, sweeps forward, counts Completed + Cancelled instances and captures their rows, including Delayed without Ready. It returns to Ready. Safety-cap/stalled scans remain incomplete.
+- History goes back to the top, sweeps forward to the end or an explicit older-date boundary, counts Completed + Cancelled instances and captures their rows, including Delayed without Ready. It returns to Ready. Safety-cap/stalled scans remain incomplete.
 - Retained close schedule: weekdays 19:15, Saturday 16:15, Sunday manual. Incomplete sweeps retry after 5 minutes; completed sweeps revisit after 15 minutes for late rows. These require a running service and accessible Grab, not just an Android alarm.
 
 ## Reports and manual fallback
