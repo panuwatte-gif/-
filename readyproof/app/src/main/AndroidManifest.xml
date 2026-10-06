@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  No INTERNET permission on purpose: the app cannot send anything anywhere.
-  Screenshots leave the phone only when the user shares them.
--->
+<!-- Optional official Drive network sidecar; local proof does not depend on it. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <queries>
         <package android:name="com.grab.merchant" />
     </queries>
 
     <application
+        android:name=".ProofApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -34,6 +34,12 @@
         <activity android:name=".ui.SettingsActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.GuideActivity" android:exported="false" />
+        <activity android:name=".ui.DriveActivity" android:exported="false" />
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="io.github.panuwattegif.readyproof.exports"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/export_paths" />
+        </provider>
 
         <provider
             android:name=".EvidenceProvider"

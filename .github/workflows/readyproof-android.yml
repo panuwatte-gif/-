@@ -44,7 +44,7 @@ jobs:
           exit 1
 
       - name: Unit tests (screen + report logic)
-        run: ./gradlew --no-daemon --stacktrace :core:test
+        run: ./gradlew --no-daemon --stacktrace :core:test :app:testDebugUnitTest
 
       - name: Build APK
         run: ./gradlew --no-daemon --stacktrace :app:assembleRelease

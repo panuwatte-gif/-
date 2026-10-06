@@ -12,6 +12,7 @@ enum class RecordKind(val label: String) {
     MANUAL("แคปเอง"),
     /** History rows seen without a screenshot (used for the daily totals). */
     SEEN("เห็นในประวัติ"),
+    HISTORY("HISTORY"),
 }
 
 /** What was observed about one order. */
@@ -30,6 +31,7 @@ data class Item(
     val countdown: String? = null,
     /** Strings of the order card, for search and for the report. */
     val card: List<String> = emptyList(),
+    val historyDate: String? = null,
 )
 
 data class Record(
@@ -46,6 +48,10 @@ data class Record(
     /** Label of the tapped button (PRESS). */
     val click: String? = null,
     val note: String? = null,
+    /** Null on legacy/unconfigured records: never automatically route them to a shop. */
+    val shopId: String? = null,
+    /** Date read explicitly from History; clock-only rows remain unverified. */
+    val historyDate: String? = null,
 ) {
     val gfs: List<String> get() = items.map { it.gf }.distinct()
 
@@ -77,6 +83,8 @@ object RecordCodec {
             "file" to r.file,
             "click" to r.click,
             "note" to r.note,
+            "shopId" to r.shopId,
+            "historyDate" to r.historyDate,
         )
     )
 
@@ -88,6 +96,7 @@ object RecordCodec {
         "doneAt" to i.doneAt,
         "countdown" to i.countdown,
         "card" to i.card.take(MAX_CARD_TEXTS).map { it.take(MAX_TEXT) }.ifEmpty { null },
+        "historyDate" to i.historyDate,
     )
 
     /** Returns null for blank, corrupt or unknown-kind lines instead of throwing. */
@@ -106,6 +115,8 @@ object RecordCodec {
                 file = m.str("file"),
                 click = m.str("click"),
                 note = m.str("note"),
+                shopId = m.str("shopId"),
+                historyDate = m.str("historyDate"),
             )
         } catch (e: Exception) {
             null
@@ -122,6 +133,7 @@ object RecordCodec {
             doneAt = m.str("doneAt"),
             countdown = m.str("countdown"),
             card = m.strList("card") ?: emptyList(),
+            historyDate = m.str("historyDate"),
         )
     }
 }

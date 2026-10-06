@@ -66,7 +66,7 @@ class SettingsActivity : Activity() {
 
         val storage = Ui.card(col)
         Ui.text(storage, "การเก็บภาพ", 17f, bold = true)
-        fRetention = Ui.field(storage, "เก็บภาพไว้กี่วัน (เกินนี้ลบอัตโนมัติ)", cfg.retentionDays.toString(), number = true)
+        fRetention = Ui.field(storage, "จำนวนวันสำหรับค้นย้อนหลัง (ไม่ลบหลักฐานอัตโนมัติ)", cfg.retentionDays.toString(), number = true)
         fQuality = Ui.field(storage, "คุณภาพภาพ JPEG (30–100)", cfg.jpegQuality.toString(), number = true)
 
         val adv = Ui.card(col)

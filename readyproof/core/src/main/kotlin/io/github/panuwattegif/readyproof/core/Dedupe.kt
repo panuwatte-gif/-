@@ -30,7 +30,7 @@ class Deduper {
         for (r in records) for (item in r.items) {
             // Text-only READY/DELAY observations are coverage logs, not screenshot evidence.
             // Never let them suppress a later chance to capture the real proof image.
-            if ((item.type == ObsType.READY || item.type == ObsType.DELAY) && r.uri == null) continue
+            if (r.uri == null) continue
             val key = keyOf(item) ?: continue
             val prev = seen[key]
             if (prev == null || prev < r.t) seen[key] = r.t
