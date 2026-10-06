@@ -647,7 +647,198 @@ class ProofService : AccessibilityService() {
             .map { Deduper.keyOf(it) ?: "${it.type}|${it.gf}" }
             .sorted()
         if (target.isEmpty()) return ""
- …2415 tokens truncated…   }
+        return kind.name + "|" + target.joinToString(";") + "|" + visible.joinToString(",")
+    }
+
+    private fun pageCapturedRecently(key: String, now: Long): Boolean {
+        val last = recentPageCaptures[key] ?: return false
+        return now - last < PAGE_DUPLICATE_WINDOW_MS
+    }
+
+    private fun rememberPageCapture(key: String, now: Long) {
+        if (key.isEmpty()) return
+        recentPageCaptures[key] = now
+        recentPageCaptures.entries.removeAll { now - it.value > PAGE_DUPLICATE_WINDOW_MS }
+    }
+
+    private fun toastFor(kind: RecordKind, items: List<Item>): String = when (kind) {
+        RecordKind.READY -> "📸 READY: " + items.filter { it.type == ObsType.READY }.joinToString(", ") { it.gf }
+        else -> "📸 ล่าช้า: " + items.filter { it.type == ObsType.DELAY }
+            .joinToString(", ") { it.gf + (it.delayMin?.let { m -> " ($m นาที)" } ?: "") }
+    }
+
+    // ---- automatic scrolling ------------------------------------------------------------------
+
+    private fun updateSweepSignature(signature: String) {
+        if (signature.isNotEmpty() && signature == lastSweepSignature) {
+            repeatedSweepSignature++
+        } else {
+            lastSweepSignature = signature
+            repeatedSweepSignature = 0
+        }
+    }
+
+    private fun resetSweepLoop() {
+        lastSweepSignature = ""
+        repeatedSweepSignature = 0
+        sweepScrolls = 0
+        delayRepositionKey = null
+        delayRepositionAttempts = 0
+    }
+
+    private fun continueSweep(readyMode: Boolean? = null) {
+        worker.postDelayed({
+            main.post {
+                if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return@post
+                // Stop only when the viewport truly stops moving several times or the safety cap
+                // is reached. The old GF-only signature could stop while the list was still moving.
+                val canContinue = repeatedSweepSignature < 4 && sweepScrolls < MAX_SWEEP_SCROLLS
+                val moved = canContinue && scrollOrderListForward()
+                if (!moved && forcedHistorySweep) historyReachedEnd = historyAtTop && canContinue &&
+                    scrollContainerFound && repeatedSweepSignature < 4
+                if (moved) {
+                    sweepScrolls++
+                    lastScrollAt = SystemClock.uptimeMillis()
+                    worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+                } else {
+                    finishSweep(readyMode ?: forcedReadySweep)
+                }
+            }
+        }, AUTO_SCROLL_DELAY_MS)
+    }
+
+    private fun finishSweep(wasReady: Boolean) {
+        if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
+        if (wasReady || forcedReadySweep) {
+            forcedReadySweep = false
+            resetSweepLoop()
+            if (returnToPreparingAfterReady) {
+                returnToPreparingAfterReady = false
+                // Legacy same-device flow: return only when ReadyProof opened Ready itself.
+                main.postDelayed({ clickTab(listOf("Preparing", "กำลังเตรียม")) }, 250L)
+            } else {
+                // Dedicated proof phone stays on Ready. Sweep back to the top so an order inserted
+                // above the current viewport cannot be missed between Accessibility events.
+                startReturnReadyToTop()
+                return
+            }
+        }
+        if (forcedHistorySweep) {
+            val target = autoHistoryTargetDate
+            forcedHistorySweep = false
+            resetSweepLoop()
+            if (target != null) finishAutomaticHistory(target)
+        }
+    }
+
+    private fun finishAutomaticHistory(day: LocalDate) {
+        worker.post {
+            try {
+                val records = RecordStore.loadRange(this, day.minusDays(1), day.plusDays(1))
+                val report = DailyExport.save(this, day, sweepShopId, historyReachedEnd)
+                val missingDelayProof = report.cases.count { it.delayShot == null }
+                val complete = report.complete
+                val result = buildString {
+                    append("Ready seen ").append(report.readySeenOrders)
+                    append(" / Ready proof ").append(report.readyOrders)
+                    append(" / Pending ").append(report.pendingReadyProof)
+                    append(" / Completed ").append(report.completedSeen)
+                    append(" / Cancelled ").append(report.cancelledSeen)
+                    append(" / History total ").append(report.historyOrders)
+                    append(" / Delayed ").append(report.delayed)
+                    append(" / DELAY proof ").append(report.delayed - missingDelayProof).append('/').append(report.delayed)
+                    append(if (complete) " / MATCH" else " / INCOMPLETE")
+                }
+                val edit = ConfigStore.prefs(this).edit()
+                    .putString(AUTO_HISTORY_PREF_LAST_RESULT, result)
+                if (complete) {
+                    edit.putString(AUTO_HISTORY_PREF_COMPLETE_DATE, day.toString())
+                    nextAutoHistoryAttemptAt = System.currentTimeMillis() + 15 * 60_000L
+                } else {
+                    edit.remove(AUTO_HISTORY_PREF_COMPLETE_DATE)
+                    nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
+                }
+                edit.apply()
+                closingStatus(if (complete) "กวาด History แล้ว / ครบตามข้อมูลที่อ่านได้" else "กวาด History แล้ว / ยังไม่ครบ จะตรวจซ้ำใน 5 นาที")
+                lastCaptureText = result
+                autoHistoryInProgress = false
+                autoHistoryTargetDate = null
+                main.post {
+                    // Return to the dedicated Ready monitor after every History pass. If counts are
+                    // incomplete the scheduled retry will revisit History automatically.
+                    clickTab(config.readyTabLabels)
+                    toast(if (complete) "✓ History ครบ: $result" else "⚠️ History ยังไม่ครบ: $result — จะลองใหม่")
+                }
+            } catch (e: Exception) {
+                autoHistoryInProgress = false
+                autoHistoryTargetDate = null
+                nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
+                Diagnostics.error(this, "finishAutomaticHistory", e)
+                main.post { clickTab(config.readyTabLabels) }
+            }
+        }
+    }
+
+    fun onShopBound() {
+        worker.post {
+            // Never let pre-binding dedupe suppress new shop-tagged proof.
+            val today = LocalDate.now()
+            val records = RecordStore.loadRange(this, today.minusDays(1), today)
+            deduper.forget(records.flatMap { it.items }.mapNotNull { Deduper.keyOf(it) })
+            readySeenToday.clear()
+            historySeenKeys.clear()
+            ConfigStore.prefs(this).edit().remove(AUTO_HISTORY_PREF_COMPLETE_DATE).apply()
+        }
+    }
+
+    private fun startHistoryAtTop() {
+        if (returningHistoryToTop) return
+        returningHistoryToTop = true
+        historyAtTop = false
+        historyReachedEnd = false
+        historyHeader = null
+        var attempts = 0
+        fun step() {
+            main.postDelayed({
+                val moved = attempts < MAX_RETURN_TO_TOP_SCROLLS && scrollOrderListBackward()
+                if (moved) {
+                    attempts++
+                    lastScrollAt = SystemClock.uptimeMillis()
+                    step()
+                } else {
+                    historyAtTop = attempts < MAX_RETURN_TO_TOP_SCROLLS && scrollContainerFound
+                    returningHistoryToTop = false
+                    resetSweepLoop()
+                    worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+                }
+            }, SCROLL_SETTLE_MS)
+        }
+        step()
+    }
+
+    private fun startReturnReadyToTop() {
+        if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
+        if (returningReadyToTop) return
+        returningReadyToTop = true
+        returnToTopScrolls = 0
+        continueReturnReadyToTop()
+    }
+
+    private fun continueReturnReadyToTop() {
+        worker.postDelayed({
+            main.post {
+                val canContinue = returnToTopScrolls < MAX_RETURN_TO_TOP_SCROLLS
+                val moved = canContinue && scrollOrderListBackward()
+                if (moved) {
+                    returnToTopScrolls++
+                    lastScrollAt = SystemClock.uptimeMillis()
+                    continueReturnReadyToTop()
+                } else {
+                    returningReadyToTop = false
+                    returnToTopScrolls = 0
+                    worker.postDelayed({ scheduleScan() }, READY_WATCH_INTERVAL_MS)
+                }
+            }
         }, AUTO_SCROLL_DELAY_MS)
     }
 
