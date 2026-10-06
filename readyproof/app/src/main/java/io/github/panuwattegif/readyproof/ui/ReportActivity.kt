@@ -129,7 +129,7 @@ class ReportActivity : Activity() {
         if (r.historyOrders == 0) {
             Ui.text(
                 s,
-                "ยังไม่มีข้อมูลจาก History ของวันนี้ — ระบบจะเข้า History เองหลังปิดร้าน หรือกด "กวาด History ตอนนี้" ที่หน้าหลักเพื่อทดสอบ",
+                "ยังไม่มีข้อมูลจาก History ของวันนี้ — ระบบจะเข้า History เองหลังปิดร้าน หรือกด \"กวาด History ตอนนี้\" ที่หน้าหลักเพื่อทดสอบ",
                 13f, Ui.AMBER, topDp = 8,
             )
         } else if (!r.readyVsCompletedMatch) {
