@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.Display
 import android.view.accessibility.AccessibilityWindowInfo
+import io.github.panuwattegif.readyproof.core.Deduper
 import io.github.panuwattegif.readyproof.core.Item
 import io.github.panuwattegif.readyproof.core.Naming
 import io.github.panuwattegif.readyproof.core.ObsType
@@ -132,7 +133,7 @@ class CaptureManager(
                                     retry.set(true)
                                     return
                                 }
-                                val afterKeys = after.mapNotNull { io.github.panuwattegif.readyproof.core.Deduper.keyOf(it) }
+                                val afterKeys = after.mapNotNull { Deduper.keyOf(it) }
                                 save(
                                     job,
                                     screenshot,
