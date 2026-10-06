@@ -3,6 +3,9 @@ package io.github.panuwattegif.readyproof.ui
 import android.app.Activity
 import android.content.Intent
 import io.github.panuwattegif.readyproof.ConfigStore
+import io.github.panuwattegif.readyproof.ShopStore
+import io.github.panuwattegif.readyproof.DailyExport
+import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
@@ -80,14 +83,21 @@ class MainActivity : Activity() {
             }
         }
 
+        val drive = Ui.card(col)
+        Ui.text(drive, "ร้าน: " + (ShopStore.get(this)?.label ?: "ยังไม่เลือก — หลักฐานใหม่ยังไม่อัปอัตโนมัติ"), 16f, bold = true)
+        Ui.text(drive, DriveSync.summary(this), 13f, Ui.MUTED)
+        Ui.button(drive, "ร้าน / Google Drive / คิวส่งไฟล์", filled = false) { startActivity(Intent(this, DriveActivity::class.java)) }
+
         // --- today ---
         val today = LocalDate.now()
-        val records = RecordStore.load(this, today)
+        val records = ShopStore.reportRecords(this, RecordStore.load(this, today))
         val report = ReportBuilder.build(
             RecordStore.loadRange(this, today.minusDays(1), today.plusDays(1)),
             today,
             zone,
             cfg,
+            ShopStore.get(this)?.id,
+            DailyExport.reachedEnd(this, today, ShopStore.get(this)?.id),
         )
         fun gfs(type: ObsType, withImage: Boolean) =
             records.filter { !withImage || it.uri != null }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
@@ -150,6 +160,6 @@ class MainActivity : Activity() {
         Ui.button(tools, "📖 คู่มือการใช้งาน", filled = false) { startActivity(Intent(this, GuideActivity::class.java)) }
 
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
-        Ui.text(col, "ReadyProof $version · ไม่ใช้อินเทอร์เน็ต ข้อมูลอยู่ในเครื่องนี้เท่านั้น", 12f, Ui.MUTED, topDp = 4)
+        Ui.text(col, "ReadyProof $version · เก็บในเครื่องก่อน · Drive ส่งแยกเบื้องหลัง", 12f, Ui.MUTED, topDp = 4)
     }
 }

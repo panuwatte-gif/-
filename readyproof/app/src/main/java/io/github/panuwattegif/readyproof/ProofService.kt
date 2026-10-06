@@ -26,6 +26,7 @@ import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
 import io.github.panuwattegif.readyproof.core.StatusRules
 import io.github.panuwattegif.readyproof.core.TextNorm
 import io.github.panuwattegif.readyproof.core.UiNode
+import io.github.panuwattegif.readyproof.core.HistoryDates
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -100,11 +101,22 @@ class ProofService : AccessibilityService() {
     @Volatile private var returningReadyToTop = false
     private var returnToTopScrolls = 0
     private var historyTabWasSelected = false
+    @Volatile private var captureInFlight = false
+    @Volatile private var returningHistoryToTop = false
+    private var historyAtTop = false
+    private var historyReachedEnd = false
+    private var scrollContainerFound = false
+    private var historyHeader: LocalDate? = null
+    private val historySeenKeys = LinkedHashSet<String>()
+    private var captureFailureCount = 0
+    private var captureFailureSignature = ""
+    private var sweepShopId: String? = null
     private var delayRepositionKey: String? = null
     private var delayRepositionAttempts = 0
     private val recentPageCaptures = LinkedHashMap<String, Long>()
     private var readySeenDate: LocalDate = LocalDate.now()
     private val readySeenToday = LinkedHashSet<String>()
+    private val lastReadyLedgerAt = HashMap<String, Long>()
 
     @Volatile private var autoHistoryInProgress = false
     @Volatile private var autoHistoryTargetDate: LocalDate? = null
@@ -123,12 +135,12 @@ class ProofService : AccessibilityService() {
             try {
                 val today = LocalDate.now()
                 val startupRecords = RecordStore.loadRange(this, today.minusDays(1), today)
-                deduper.seed(startupRecords)
+                deduper.seed(startupRecords.filter { it.shopId == ShopStore.get(this)?.id && RecordStore.dateOf(it.t) == today })
                 readySeenDate = today
-                startupRecords.filter { RecordStore.dateOf(it.t) == today }.forEach { r ->
+                startupRecords.filter { RecordStore.dateOf(it.t) == today && it.shopId == ShopStore.get(this)?.id }.forEach { r ->
                     r.items.filter { it.type == ObsType.READY }.forEach { readySeenToday += it.gf }
                 }
-                Cleanup.runIfDue(this, config)
+                DriveSync.recover(this)
             } catch (e: Exception) {
                 Diagnostics.error(this, "startup", e)
             }
@@ -191,11 +203,13 @@ class ProofService : AccessibilityService() {
 
         // If the user opens History, start an automatic History sweep.
         if (matchesAny(label, listOf("History", "ประวัติ"))) {
+            autoHistoryTargetDate = LocalDate.now()
+            sweepShopId = ShopStore.get(this)?.id
             forcedHistorySweep = true
             forcedReadySweep = false
             returnToPreparingAfterReady = false
             resetSweepLoop()
-            worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+            worker.post { startHistoryAtTop() }
             return
         }
 
@@ -253,7 +267,9 @@ class ProofService : AccessibilityService() {
             try {
                 if (config.enabled) {
                     maybeStartAutomaticHistory()
-                    if (!autoHistoryInProgress && !returningReadyToTop) scheduleScan()
+                    // Poll History as well as Ready: a transient empty accessibility root or
+                    // omitted event must recover without a human touching the phone.
+                    if (!returningReadyToTop && !returningHistoryToTop && !captureInFlight) scheduleScan()
                 }
             } finally {
                 runCatching { worker.postDelayed(this, READY_WATCH_INTERVAL_MS) }
@@ -280,7 +296,7 @@ class ProofService : AccessibilityService() {
         if (System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
         val day = now.toLocalDate()
         val completed = ConfigStore.prefs(this).getString(AUTO_HISTORY_PREF_COMPLETE_DATE, null)
-        if (completed == day.toString()) return
+        // Revisit completed passes too: Grab can add late terminal rows after the first close sweep.
         startHistorySweep(day)
     }
 
@@ -295,6 +311,7 @@ class ProofService : AccessibilityService() {
         if (!force && System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
         autoHistoryInProgress = true
         autoHistoryTargetDate = day
+        sweepShopId = ShopStore.get(this)?.id
         main.post {
             val clicked = clickTab(listOf("History", "ประวัติ"))
             if (clicked) {
@@ -302,7 +319,7 @@ class ProofService : AccessibilityService() {
                 forcedReadySweep = false
                 returnToPreparingAfterReady = false
                 resetSweepLoop()
-                worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+                worker.post { startHistoryAtTop() }
             } else {
                 autoHistoryInProgress = false
                 autoHistoryTargetDate = null
@@ -336,7 +353,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun scan() {
-        if (returningReadyToTop) return
+        if (returningReadyToTop || returningHistoryToTop || captureInFlight) return
         val cfg = config
         if (!cfg.enabled) return
         val roots = targetRoots(cfg)
@@ -344,14 +361,19 @@ class ProofService : AccessibilityService() {
         if (snaps.isEmpty()) return
         if (cfg.diagnostics) Diagnostics.dump(this, "SCAN", snaps, force = false)
 
-        var analysis = ScreenAnalyzer.analyze(snaps, cfg)
+        var analysis = ScreenAnalyzer.analyze(snaps, cfg, allowUnknownDelayed = forcedHistorySweep)
 
         // Detect History from the selected tab itself. Some Grab builds emit a click event from
         // the tab container with no text, so relying only on TYPE_VIEW_CLICKED can miss the sweep.
         val historyTabSelected = selectedTabOpen(snaps, listOf("History", "ประวัติ"))
         if (historyTabSelected && !historyTabWasSelected && !forcedReadySweep) {
             forcedHistorySweep = true
+            autoHistoryTargetDate = LocalDate.now()
+            sweepShopId = ShopStore.get(this)?.id
             resetSweepLoop()
+            historyTabWasSelected = true
+            startHistoryAtTop()
+            return
         }
         historyTabWasSelected = historyTabSelected
 
@@ -373,6 +395,11 @@ class ProofService : AccessibilityService() {
         val historyMode = forcedHistorySweep || historyTabSelected || analysis.items.any { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
         val readyMode = forcedReadySweep || analysis.readyTab == true
         val sweepMode = readyMode || historyMode
+        if (historyMode) {
+            val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
+            analysis = analysis.copy(items = dated.first)
+            historyHeader = dated.second
+        }
 
         if (sweepMode) {
             // Include card positions, not just GF numbers. Grab often scrolls by less than a full
@@ -384,8 +411,11 @@ class ProofService : AccessibilityService() {
 
         val today = LocalDate.now()
         if (today != readySeenDate) {
+            deduper.clear()
             readySeenDate = today
             readySeenToday.clear()
+            lastReadyLedgerAt.clear()
+            historySeenKeys.clear()
         }
         val now = System.currentTimeMillis()
 
@@ -393,7 +423,8 @@ class ProofService : AccessibilityService() {
         // know exactly which GF reached Ready, while the screenshot deduper keeps it eligible.
         if (readyMode) {
             val newlySeen = analysis.items.filter { it.type == ObsType.READY }
-                .filter { readySeenToday.add(it.gf) }
+                .filter { readySeenToday.add(it.gf) || now - (lastReadyLedgerAt[it.gf] ?: 0) >= 60_000 }
+            newlySeen.forEach { lastReadyLedgerAt[it.gf] = now }
             if (newlySeen.isNotEmpty()) {
                 RecordStore.append(
                     this,
@@ -404,12 +435,21 @@ class ProofService : AccessibilityService() {
                         items = newlySeen,
                         visible = analysis.visible,
                         note = "READY_SEEN_PENDING_UNTIL_IMAGE",
+                        shopId = ShopStore.get(this)?.id,
                     )
                 )
             }
         }
 
-        val fresh = deduper.fresh(analysis.items, now, cfg)
+        // Persist ALL terminal observations before any screenshot/reposition attempt.
+        val terminal = analysis.items.filter { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) }
+        val targetDay = autoHistoryTargetDate ?: today
+        val olderDateBoundary = terminal.any { i -> i.historyDate?.let { runCatching { LocalDate.parse(it).isBefore(targetDay) }.getOrDefault(false) } == true }
+        val newTerminal = terminal.filter { historySeenKeys.add("${it.historyDate}|${Deduper.keyOf(it)}|${it.card}") }
+        if (newTerminal.isNotEmpty()) RecordStore.append(this, Record("$now-hs${seq.incrementAndGet()}", now,
+            RecordKind.SEEN, newTerminal, analysis.visible, shopId = ShopStore.get(this)?.id))
+        // Short periodic recapture also covers reused GF numbers that return to Ready quickly.
+        val fresh = deduper.fresh(analysis.items, now, cfg.copy(readyRepeatMinutes = 1))
 
         // A History row is valid screenshot evidence only when the GF label is actually inside the
         // visible screen and the completed time was parsed. Accessibility can expose a clipped row
@@ -430,14 +470,15 @@ class ProofService : AccessibilityService() {
         val delayTargets = captureCandidates.filter { it.type == ObsType.DELAY }
         val captureItems = when {
             readyMode && cfg.captureReady && readyTargets.isNotEmpty() -> readyTargets
-            historyMode && cfg.captureDelay && delayTargets.isNotEmpty() -> delayTargets
+            historyMode && terminal.isNotEmpty() -> fresh.filter { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) &&
+                (it.historyDate == null || it.historyDate == targetDay.toString()) }
             cfg.captureReady && readyTargets.isNotEmpty() -> readyTargets
             cfg.captureDelay && delayTargets.isNotEmpty() -> delayTargets
             else -> emptyList()
         }
         val captureKeys = captureItems.mapNotNull { Deduper.keyOf(it) }
         val ready = captureItems.any { it.type == ObsType.READY }
-        val delay = captureItems.any { it.type == ObsType.DELAY }
+        val delay = captureItems.any { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) }
 
         // Keep unproofable delayed rows as text-only observations so the report knows they exist,
         // but do not seed screenshot dedupe from them. A later sweep can still capture proper proof.
@@ -448,6 +489,7 @@ class ProofService : AccessibilityService() {
                     id = "$now-u${seq.incrementAndGet()}",
                     t = now,
                     kind = RecordKind.SEEN,
+                    shopId = ShopStore.get(this)?.id,
                     items = unproofableDelays,
                     visible = analysis.visible,
                 )
@@ -455,12 +497,12 @@ class ProofService : AccessibilityService() {
         }
 
         if (ready || delay) {
-            val kind = if (ready) RecordKind.READY else RecordKind.DELAY
+            val kind = if (ready) RecordKind.READY else if (captureItems.any { it.type == ObsType.DELAY }) RecordKind.DELAY else RecordKind.HISTORY
             // Only a successful screenshot is allowed to make an order stay deduped.
             // Keys are tentatively marked here to stop duplicate jobs while Android is capturing;
             // on failure or partial batch coverage onCaptureDone() releases every unsaved key.
             if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
-            val job = CaptureJob(kind, now)
+            val job = CaptureJob(kind, now, ShopStore.get(this)?.id)
             job.setMeta(
                 CaptureMeta(
                     items = captureItems,
@@ -469,30 +511,16 @@ class ProofService : AccessibilityService() {
                     toast = toastFor(kind, captureItems),
                 )
             )
+            captureInFlight = true
             capture.submit(job)
             // Continue scrolling only after this screenshot finishes, so proof and metadata stay aligned.
             return
         }
 
-        // History rows without a screenshot are kept as text-only observations. DELAY items whose
-        // screenshot was not proofable are deliberately not marked in the screenshot deduper.
-        val markable = fresh.filterNot { it.type == ObsType.DELAY && it in unproofableDelays }
-        val markableKeys = markable.mapNotNull { Deduper.keyOf(it) }
-        if (markableKeys.isNotEmpty()) deduper.mark(markableKeys, now)
-        if (fresh.any { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }) {
-            RecordStore.append(
-                this,
-                Record(
-                    id = "$now-s${seq.incrementAndGet()}",
-                    t = now,
-                    kind = RecordKind.SEEN,
-                    items = fresh,
-                    visible = analysis.visible,
-                )
-            )
-        }
-
-        if (sweepMode) continueSweep(readyMode)
+        if (historyMode && olderDateBoundary && forcedHistorySweep) {
+            historyReachedEnd = historyAtTop
+            finishSweep(false)
+        } else if (sweepMode) continueSweep(readyMode)
     }
 
     private fun matchingDelayCard(item: Item, analysis: ScreenAnalysis, cfg: Config) =
@@ -579,6 +607,8 @@ class ProofService : AccessibilityService() {
                 // is reached. The old GF-only signature could stop while the list was still moving.
                 val canContinue = repeatedSweepSignature < 4 && sweepScrolls < MAX_SWEEP_SCROLLS
                 val moved = canContinue && scrollOrderListForward()
+                if (!moved && forcedHistorySweep) historyReachedEnd = historyAtTop && canContinue &&
+                    scrollContainerFound && repeatedSweepSignature < 4
                 if (moved) {
                     sweepScrolls++
                     lastScrollAt = SystemClock.uptimeMillis()
@@ -617,9 +647,9 @@ class ProofService : AccessibilityService() {
         worker.post {
             try {
                 val records = RecordStore.loadRange(this, day.minusDays(1), day.plusDays(1))
-                val report = ReportBuilder.build(records, day, ZoneId.systemDefault(), config)
+                val report = DailyExport.save(this, day, sweepShopId, historyReachedEnd)
                 val missingDelayProof = report.cases.count { it.delayShot == null }
-                val complete = report.readyVsCompletedMatch && missingDelayProof == 0
+                val complete = report.complete
                 val result = buildString {
                     append("Ready seen ").append(report.readySeenOrders)
                     append(" / Ready proof ").append(report.readyOrders)
@@ -635,7 +665,7 @@ class ProofService : AccessibilityService() {
                     .putString(AUTO_HISTORY_PREF_LAST_RESULT, result)
                 if (complete) {
                     edit.putString(AUTO_HISTORY_PREF_COMPLETE_DATE, day.toString())
-                    nextAutoHistoryAttemptAt = 0L
+                    nextAutoHistoryAttemptAt = System.currentTimeMillis() + 15 * 60_000L
                 } else {
                     edit.remove(AUTO_HISTORY_PREF_COMPLETE_DATE)
                     nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
@@ -655,8 +685,46 @@ class ProofService : AccessibilityService() {
                 autoHistoryTargetDate = null
                 nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
                 Diagnostics.error(this, "finishAutomaticHistory", e)
+                main.post { clickTab(config.readyTabLabels) }
             }
         }
+    }
+
+    fun onShopBound() {
+        worker.post {
+            // Never let pre-binding dedupe suppress new shop-tagged proof.
+            val today = LocalDate.now()
+            val records = RecordStore.loadRange(this, today.minusDays(1), today)
+            deduper.forget(records.flatMap { it.items }.mapNotNull { Deduper.keyOf(it) })
+            readySeenToday.clear()
+            historySeenKeys.clear()
+            ConfigStore.prefs(this).edit().remove(AUTO_HISTORY_PREF_COMPLETE_DATE).apply()
+        }
+    }
+
+    private fun startHistoryAtTop() {
+        if (returningHistoryToTop) return
+        returningHistoryToTop = true
+        historyAtTop = false
+        historyReachedEnd = false
+        historyHeader = null
+        var attempts = 0
+        fun step() {
+            main.postDelayed({
+                val moved = attempts < MAX_RETURN_TO_TOP_SCROLLS && scrollOrderListBackward()
+                if (moved) {
+                    attempts++
+                    lastScrollAt = SystemClock.uptimeMillis()
+                    step()
+                } else {
+                    historyAtTop = attempts < MAX_RETURN_TO_TOP_SCROLLS && scrollContainerFound
+                    returningHistoryToTop = false
+                    resetSweepLoop()
+                    worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
+                }
+            }, SCROLL_SETTLE_MS)
+        }
+        step()
     }
 
     private fun startReturnReadyToTop() {
@@ -694,6 +762,7 @@ class ProofService : AccessibilityService() {
         val roots = targetRoots(config)
         val candidates = ArrayList<AccessibilityNodeInfo>()
         for (root in roots) collectScrollable(root, candidates, 0)
+        scrollContainerFound = candidates.isNotEmpty()
         if (candidates.isEmpty()) return false
 
         // Prefer the scrollable container that actually contains the most visible GF order IDs.
@@ -732,7 +801,7 @@ class ProofService : AccessibilityService() {
 
     private fun collectScrollable(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>, depth: Int) {
         if (depth > 50 || out.size > 20) return
-        if (node.isScrollable) out += node
+        if (node.isScrollable || node.collectionInfo != null) out += node
         for (i in 0 until node.childCount) {
             val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
             collectScrollable(child, out, depth + 1)
@@ -843,8 +912,8 @@ class ProofService : AccessibilityService() {
     }
 
     private fun manualCapture(note: String?) {
-        val job = CaptureJob(RecordKind.MANUAL, System.currentTimeMillis())
-        capture.submit(job)
+        if (captureInFlight) { toast("กำลังแคปหลักฐาน — ลองแคปเองอีกครั้ง"); return }
+        val job = CaptureJob(RecordKind.MANUAL, System.currentTimeMillis(), ShopStore.get(this)?.id)
         val cfg = config
         val meta = try {
             val snaps: List<UiNode> = targetRoots(cfg).map { NodeSnapshot.capture(it, MAX_NODES) }
@@ -862,11 +931,18 @@ class ProofService : AccessibilityService() {
             CaptureMeta(note = note, toast = "📸 แคปแล้ว")
         }
         job.setMeta(meta)
+        captureInFlight = true
+        capture.submit(job)
     }
 
     // ---- screenshot result --------------------------------------------------------------------
 
     private fun onCaptureDone(job: CaptureJob, record: Record?, error: String?) {
+        worker.post { handleCaptureDone(job, record, error) }
+    }
+
+    private fun handleCaptureDone(job: CaptureJob, record: Record?, error: String?) {
+        captureInFlight = false
         val meta = job.awaitMeta(0)
         if (record == null) {
             deduper.forget(meta.dedupeKeys)
@@ -876,11 +952,21 @@ class ProofService : AccessibilityService() {
                 lastFailToastAt = now
                 toast("⚠️ ${error ?: "แคปไม่สำเร็จ"} — ออเดอร์ยังเป็น PENDING และจะลองใหม่")
             }
-            // Fail closed: never advance the list after a proof failure. Re-read the same viewport.
-            scheduleScan()
+            // Retry a viewport, then continue the sweep with explicit missing proof. One damaged
+            // page/permission failure must not strand the rest of the day's History indefinitely.
+            val signature = meta.dedupeKeys.sorted().joinToString("|")
+            if (signature == captureFailureSignature) captureFailureCount++ else {
+                captureFailureSignature = signature
+                captureFailureCount = 1
+            }
+            if (captureFailureCount >= 3 && job.kind != RecordKind.MANUAL) {
+                captureFailureCount = 0
+                continueSweep(job.kind == RecordKind.READY)
+            } else scheduleScan()
             return
         }
 
+        captureFailureCount = 0
         // Batch captures can save only the subset still visible when Android delivered the bitmap.
         // Release every requested GF that was not actually attached to this saved image so it is
         // immediately eligible for another capture instead of disappearing from coverage.
@@ -892,7 +978,7 @@ class ProofService : AccessibilityService() {
             " · " + ReportText.time(record.t, ZoneId.systemDefault())
         if (config.showToast) toast("📸 " + record.kind.label + ": " + record.gfs.joinToString(", "))
 
-        if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
+        if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
             // Re-read this viewport before scrolling. Any GF not covered by the saved bitmap stays
             // fresh and is captured again; only when no pending target remains may the sweep move on.
             scheduleScan()

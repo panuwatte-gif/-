@@ -10,6 +10,9 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import io.github.panuwattegif.readyproof.ConfigStore
+import io.github.panuwattegif.readyproof.ShopStore
+import io.github.panuwattegif.readyproof.DailyExport
+import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.EvidenceProvider
 import io.github.panuwattegif.readyproof.MediaSaver
 import io.github.panuwattegif.readyproof.RecordStore
@@ -31,6 +34,7 @@ import java.time.ZoneId
  * DELAY screenshot is still exported, so a real shop delay can never disappear from the report.
  */
 class ReportActivity : Activity() {
+    private var legacy = false
     private var date: LocalDate = LocalDate.now()
     private lateinit var thumbs: Thumbs
     private val refresh: () -> Unit = { render() }
@@ -60,7 +64,8 @@ class ReportActivity : Activity() {
         val zone = ZoneId.systemDefault()
         val cfg = ConfigStore.get(this)
         val records = RecordStore.loadRange(this, date.minusDays(1), date.plusDays(1))
-        val report = ReportBuilder.build(records, date, zone, cfg)
+        val shopId = if (legacy) null else ShopStore.get(this)?.id
+        val report = ReportBuilder.build(records, date, zone, cfg, shopId, DailyExport.reachedEnd(this, date, shopId))
         val col = Ui.page(this, "รายงานออเดอร์ล่าช้า", "จับคู่กับภาพหลักฐานให้อัตโนมัติ")
 
         val nav = Ui.row(this)
@@ -84,6 +89,10 @@ class ReportActivity : Activity() {
             bottomMargin = Ui.dp(this@ReportActivity, 10)
         })
 
+        Ui.button(col, if (legacy) "ดูร้านที่เลือก" else "ดูข้อมูลเดิมที่ยังไม่ระบุร้าน", filled = false) {
+            legacy = !legacy
+            render()
+        }
         summaryCard(col, report, zone)
         if (report.cases.isEmpty()) {
             val c = Ui.card(col)
@@ -96,6 +105,12 @@ class ReportActivity : Activity() {
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
         val s = Ui.card(col)
+        Ui.text(s, "ร้าน: " + (io.github.panuwattegif.readyproof.core.Shop.fromId(r.shopId)?.label ?: "UNKNOWN / ข้อมูลเดิม"), 16f, bold = true)
+        Ui.text(s, if (r.complete) "COMPLETE (ตามรายการที่อ่านได้)" else "INCOMPLETE / PROVISIONAL — จำนวนทั้งวันยัง UNKNOWN", 14f, Ui.AMBER)
+        Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
+            (if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN"), 13f, Ui.MUTED)
+        Ui.text(s, "Ready pending: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" }, 13f, Ui.AMBER)
+        Ui.text(s, "Completed ขาด Ready: " + r.missingReadyInstances.joinToString().ifEmpty { "-" }, 13f, Ui.AMBER)
         Ui.text(
             s,
             "History: ${r.historyOrders} ออเดอร์ · เสร็จ ${r.completedSeen} · ยกเลิก ${r.cancelledSeen}",
@@ -135,7 +150,7 @@ class ReportActivity : Activity() {
         } else if (!r.readyVsCompletedMatch) {
             Ui.text(
                 s,
-                "⚠ จำนวน Ready กับ Completed ยังไม่ตรงกัน ระบบสิ้นวันจะถือว่างานยังไม่ครบและสแกนซ้ำ",
+                "⚠ จำนวน Ready กับ Completed ต่างกัน — ใช้รายออเดอร์ตรวจความครบ รูปที่มีส่งได้เสมอ",
                 13f, Ui.AMBER, topDp = 6,
             )
         }
@@ -157,6 +172,16 @@ class ReportActivity : Activity() {
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
+        Ui.button(s, "📄 แชร์สรุปวันนี้เป็นไฟล์", filled = false) {
+            runCatching {
+                Share.file(this, MediaSaver.saveDownload(this, "${r.shopId ?: "UNKNOWN"}_summary-${r.date}.txt",
+                    "text/plain", ReportText.summary(r, zone).toByteArray()), "text/plain", "ส่งสรุปวันนี้")
+            }.onFailure { Ui.alert(this, "แชร์ไม่ได้", it.message ?: "") }
+        }
+        Ui.button(s, "📤 แชร์ READY + HISTORY ทุกภาพของวัน (แม้ยังไม่ครบ)", filled = false) {
+            val shots = RecordStore.load(this, r.date).filter { it.shopId == r.shopId && it.uri != null }
+            Share.images(this, shots.mapNotNull { shot -> shot.uri?.let(Uri::parse) })
+        }
     }
 
     /**
@@ -204,6 +229,7 @@ class ReportActivity : Activity() {
             Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.time(it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
         }
         c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
+        if (c.matchStatus == "UNKNOWN_INSTANCE") Ui.text(card, "UNKNOWN: ยังยืนยัน instance ไม่ได้ ห้ามใช้ GF อย่างเดียวจับคู่", 13f, Ui.AMBER)
         if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ — เก็บเคสนี้ไว้ ไม่ตัดออก", 13f, Ui.RED, topDp = 2)
         if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้า History ของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
         val shots = ArrayList<Pair<Record, String>>()

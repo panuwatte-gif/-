@@ -66,7 +66,7 @@ class SettingsActivity : Activity() {
 
         val storage = Ui.card(col)
         Ui.text(storage, "การเก็บภาพ", 17f, bold = true)
-        fRetention = Ui.field(storage, "เก็บภาพไว้กี่วัน (เกินนี้ลบอัตโนมัติ)", cfg.retentionDays.toString(), number = true)
+        fRetention = Ui.field(storage, "จำนวนวันสำหรับค้นย้อนหลัง (ไม่ลบหลักฐานอัตโนมัติ)", cfg.retentionDays.toString(), number = true)
         fQuality = Ui.field(storage, "คุณภาพภาพ JPEG (30–100)", cfg.jpegQuality.toString(), number = true)
 
         val adv = Ui.card(col)
@@ -79,7 +79,7 @@ class SettingsActivity : Activity() {
             help = "ใช้เฉพาะเมื่อเครื่องบอกไม่ได้ว่าเปิดแท็บไหน", multiLine = true)
         fReadyNone = Ui.field(adv, "สำรอง: ถ้าการ์ดมีคำเหล่านี้ ไม่นับเป็น Ready", cfg.readyNone.joinToString("\n"),
             help = "กันออเดอร์ที่ยังเตรียมอยู่หรือเสร็จไปแล้ว", multiLine = true)
-        fRepeat = Ui.field(adv, "แคป READY ออเดอร์เดิมซ้ำได้ทุกกี่นาที", cfg.readyRepeatMinutes.toString(), number = true)
+        fRepeat = Ui.field(adv, "แคป READY ซ้ำ (ระบบใช้ไม่เกิน 1 นาทีเพื่อกัน GF ซ้ำ)", cfg.readyRepeatMinutes.toString(), number = true)
         fDoneAny = Ui.field(adv, "คำว่า \"เสร็จสมบูรณ์\" ในหน้า History", cfg.doneAny.joinToString("\n"), multiLine = true)
         fDelayAny = Ui.field(adv, "คำว่า \"ล่าช้า\" ในหน้า History", cfg.delayAny.joinToString("\n"), multiLine = true)
         fWindow = Ui.field(adv, "จับคู่หลักฐานย้อนหลังกี่ชั่วโมงก่อนเวลาเสร็จ", cfg.evidenceWindowHours.toString(), number = true)

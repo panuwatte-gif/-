@@ -58,4 +58,8 @@ android {
 
 dependencies {
     implementation(project(":core"))
+    implementation("com.google.android.gms:play-services-auth:22.0.0")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.core:core-ktx:1.13.1")
+    testImplementation(kotlin("test-junit"))
 }

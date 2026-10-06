@@ -16,6 +16,8 @@ import io.github.panuwattegif.readyproof.core.RecordKind
 import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
 import io.github.panuwattegif.readyproof.core.StatusRules
 import io.github.panuwattegif.readyproof.core.TextNorm
+import io.github.panuwattegif.readyproof.core.ProofValidation
+import io.github.panuwattegif.readyproof.core.ValidatedTarget
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -37,7 +39,7 @@ data class CaptureMeta(
     val toast: String? = null,
 )
 
-class CaptureJob(val kind: RecordKind, val t: Long) {
+class CaptureJob(val kind: RecordKind, val t: Long, val shopId: String? = null, val historyDate: String? = null) {
     private val latch = CountDownLatch(1)
 
     @Volatile
@@ -93,15 +95,14 @@ class CaptureManager(
         var attempt = 1
         while (attempt <= MAX_ATTEMPTS) {
             val meta = job.awaitMeta(0)
-            val wantedType = if (job.kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
-            val requestedTargets = meta.items.filter { it.type == wantedType }
-            val before = if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
+            val requestedTargets = meta.items
+            val before = if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY, RecordKind.MANUAL)) {
                 visibleEvidenceTargets(job.kind, requestedTargets)
             } else {
-                requestedTargets
+                requestedTargets.map { ValidatedTarget(it, "manual") }
             }
 
-            if ((job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) && before.isEmpty()) {
+            if ((job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) && before.isEmpty()) {
                 if (attempt >= MAX_ATTEMPTS) {
                     onDone(job, null, "ยังถ่ายหลักฐาน ${job.kind} ไม่ได้ — จะคงออเดอร์ไว้เพื่อสแกนซ้ำ")
                     return
@@ -118,16 +119,27 @@ class CaptureManager(
             val finished = CountDownLatch(1)
             val retry = AtomicBoolean(false)
             val callbackDelivered = AtomicBoolean(false)
+            val expired = AtomicBoolean(false)
             try {
                 service.takeScreenshot(Display.DEFAULT_DISPLAY, io, object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                         try {
-                            if (job.kind == RecordKind.READY || job.kind == RecordKind.DELAY) {
+                            if (expired.get()) {
+                                screenshot.hardwareBuffer.close()
+                                return
+                            }
+                            if (job.kind == RecordKind.MANUAL) {
+                                // Keep the raw hand capture even without provable targets. Only the
+                                // validated stable subset may participate in automatic evidence matching.
+                                val stable = ProofValidation.stableSubset(before, visibleEvidenceTargets(job.kind, before.map { it.item }))
+                                val raw = meta.items.filterNot { it in stable }.map { it.copy(type = ObsType.VISIBLE) }
+                                save(job, screenshot, meta.copy(items = stable + raw))
+                            } else if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
                                 // One bitmap may prove many orders. Keep only targets that are still
                                 // visibly present after Android produced the bitmap. Any target that
                                 // dropped out remains pending in ProofService and is retried; it is
                                 // never silently marked as having proof.
-                                val after = visibleEvidenceTargets(job.kind, before)
+                                val after = ProofValidation.stableSubset(before, visibleEvidenceTargets(job.kind, before.map { it.item }))
                                 if (after.isEmpty()) {
                                     runCatching { screenshot.hardwareBuffer.close() }
                                     retry.set(true)
@@ -171,6 +183,7 @@ class CaptureManager(
             }
 
             if (!finished.await(CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                expired.set(true)
                 if (!callbackDelivered.get()) onDone(job, null, "แคปหน้าจอไม่ตอบสนองภายในเวลาที่กำหนด")
                 return
             }
@@ -190,63 +203,18 @@ class CaptureManager(
      * READY only requires the target GF to be visible in the selected Ready tab. DELAY requires
      * the same card to show both the target GF and Grab's delayed text.
      */
-    private fun visibleEvidenceTargets(kind: RecordKind, targets: List<Item>): List<Item> {
+    private fun visibleEvidenceTargets(kind: RecordKind, targets: List<Item>): List<ValidatedTarget> {
         if (targets.isEmpty()) return emptyList()
-        val result = AtomicReference<List<Item>>(emptyList())
+        val result = AtomicReference<List<ValidatedTarget>>(emptyList())
         val done = CountDownLatch(1)
         main.post {
             try {
                 val cfg = ConfigStore.get(service)
-                val roots = ArrayList<android.view.accessibility.AccessibilityNodeInfo>()
-                runCatching {
-                    for (w in service.windows) {
-                        if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
-                        val root = w.root ?: continue
-                        val pkg = root.packageName?.toString()
-                        if (pkg != null && pkg in cfg.targetPackages) roots += root
-                    }
-                }
-                if (roots.isEmpty()) {
-                    service.rootInActiveWindow?.let { root ->
-                        val pkg = root.packageName?.toString()
-                        if (pkg == null || pkg in cfg.targetPackages) roots += root
-                    }
-                }
-                if (roots.isEmpty()) return@post
-
-                val snaps = roots.map { NodeSnapshot.capture(it, VALIDATION_MAX_NODES) }
-                val analysis = ScreenAnalyzer.analyze(snaps, cfg)
-                val rules = StatusRules(cfg)
-                val extractor = cfg.gfExtractor()
-                val wantedType = if (kind == RecordKind.READY) ObsType.READY else ObsType.DELAY
-                val good = ArrayList<Item>()
-
-                for (target in targets.filter { it.type == wantedType }) {
-                    val card = analysis.cards.firstOrNull { c -> c.inList && c.gf == target.gf } ?: continue
-                    val gfVisible = card.node.walk().any { n ->
-                        n.top >= 0 && n.bottom > n.top &&
-                            n.ownStrings().any { raw -> target.gf in extractor.extract(raw) }
-                    }
-                    if (!gfVisible) continue
-
-                    if (wantedType == ObsType.READY) {
-                        val historyLike = rules.evaluate(card).any { seen ->
-                            seen.type == ObsType.DONE || seen.type == ObsType.DELAY || seen.type == ObsType.CANCELLED
-                        }
-                        if (!historyLike && analysis.readyTab != false) good += target
-                    } else {
-                        val delayMatch = rules.evaluate(card).any { seen ->
-                            seen.type == ObsType.DELAY &&
-                                (target.doneAt == null || seen.doneAt == target.doneAt)
-                        }
-                        val delayVisible = card.node.walk().any { n ->
-                            n.top >= 0 && n.bottom > n.top &&
-                                n.ownStrings().any { raw -> TextNorm.containsAny(raw, cfg.delayAny) }
-                        }
-                        if (delayMatch && delayVisible) good += target
-                    }
-                }
-                result.set(good)
+                // Never validate a background Grab window while another app is on the screenshot.
+                val root = service.rootInActiveWindow ?: return@post
+                if (root.packageName?.toString() !in cfg.targetPackages) return@post
+                result.set(ProofValidation.targets(kind, targets,
+                    listOf(NodeSnapshot.capture(root, VALIDATION_MAX_NODES)), cfg))
             } catch (_: Exception) {
                 result.set(emptyList())
             } finally {
@@ -277,21 +245,25 @@ class CaptureManager(
                 return
             }
             val meta = validatedMeta ?: job.awaitMeta(META_TIMEOUT_MS)
+            val savedItems = meta.items
             val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(job.t), ZoneId.systemDefault())
-            val name = Naming.fileName(job.kind, meta.items, meta.visible, at)
+            val name = (job.shopId?.let { "${it}_" } ?: "UNKNOWN_") + Naming.fileName(job.kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
             val uri = MediaSaver.saveJpeg(service, bitmap, name, job.t, ConfigStore.get(service).jpegQuality)
             val record = Record(
                 id = "${job.t}-${seq.incrementAndGet()}",
                 t = job.t,
                 kind = job.kind,
-                items = meta.items,
+                items = savedItems,
                 visible = meta.visible,
                 uri = uri.toString(),
                 file = name,
                 click = meta.click,
                 note = meta.note,
+                shopId = job.shopId,
+                historyDate = job.historyDate,
             )
             RecordStore.append(service, record)
+            DriveSync.offerRecord(service, record)
             onDone(job, record, null)
         } catch (e: Exception) {
             onDone(job, null, "บันทึกภาพไม่สำเร็จ: ${e.message}")

@@ -21,10 +21,14 @@ data class PressAnalysis(
 
 object ScreenAnalyzer {
 
-    fun analyze(roots: List<UiNode>, cfg: Config): ScreenAnalysis {
+    fun analyze(roots: List<UiNode>, cfg: Config, allowUnknownDelayed: Boolean = false): ScreenAnalysis {
         val gfx = cfg.gfExtractor()
         val rules = StatusRules(cfg)
         val readyTab = TabDetector.readyTabOpen(roots, cfg)
+        val historySelected = roots.any { root -> root.walk().any { n ->
+            (n.selected || n.parent?.selected == true || n.parent?.parent?.selected == true) &&
+                n.ownStrings().any { s -> listOf("History", "ประวัติ").any { TabDetector.isLabel(s, it) } }
+        } }
         val cards = ArrayList<Card>()
         val visible = LinkedHashSet<String>()
         for (root in roots) {
@@ -34,7 +38,7 @@ object ScreenAnalyzer {
         }
         val items = ArrayList<Item>()
         for (card in cards) {
-            val observed = rules.evaluate(card)
+            val observed = rules.evaluate(card, allowUnknownDelayed || historySelected)
             val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
             val ready = when (readyTab) {
                 // Everything listed under the Ready tab has been pressed ready, whatever its status says.
