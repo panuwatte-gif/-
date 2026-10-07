@@ -247,7 +247,7 @@ class CaptureManager(
             val meta = validatedMeta ?: job.awaitMeta(META_TIMEOUT_MS)
             val savedItems = meta.items
             val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(job.t), ZoneId.systemDefault())
-            val name = (job.shopId?.let { "${it}_" } ?: "UNKNOWN_") + Naming.fileName(job.kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
+            val name = Naming.fileName(job.kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
             val uri = MediaSaver.saveJpeg(service, bitmap, name, job.t, ConfigStore.get(service).jpegQuality)
             val record = Record(
                 id = "${job.t}-${seq.incrementAndGet()}",
