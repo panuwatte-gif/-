@@ -99,7 +99,14 @@ class ReportActivity : Activity() {
             Ui.text(c, if (report.completedSeen == 0) "ยังไม่มีข้อมูลออเดอร์ล่าช้าของวันนี้" else "ไม่มีออเดอร์ล่าช้า 🎉", 15f, bold = true)
         } else {
             val sets = report.sets().associateBy { it.case }
-            report.cases.forEach { caseCard(col, it, sets[it], report, zone) }
+            if (report.withEvidence.isNotEmpty()) {
+                Ui.text(col, "✅ จับคู่ได้ ${report.withEvidence.size} เคส", 17f, Ui.GREEN, bold = true)
+                report.withEvidence.forEach { caseCard(col, it, sets[it], report, zone) }
+            }
+            if (report.withoutEvidence.isNotEmpty()) {
+                Ui.text(col, "❌ จับคู่ไม่ได้ ${report.withoutEvidence.size} เคส", 17f, Ui.RED, bold = true)
+                report.withoutEvidence.forEach { caseCard(col, it, sets[it], report, zone) }
+            }
         }
     }
 
@@ -109,8 +116,12 @@ class ReportActivity : Activity() {
         Ui.text(s, if (r.complete) "COMPLETE (ตามรายการที่อ่านได้)" else "INCOMPLETE / PROVISIONAL — จำนวนทั้งวันยัง UNKNOWN", 14f, Ui.AMBER)
         Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
             (if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN"), 13f, Ui.MUTED)
-        Ui.text(s, "Ready pending: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" }, 13f, Ui.AMBER)
-        Ui.text(s, "Completed ขาด Ready: " + r.missingReadyInstances.joinToString().ifEmpty { "-" }, 13f, Ui.AMBER)
+        Ui.button(s, "ดูรายละเอียดความครบของหลักฐาน", filled = false) {
+            Ui.alert(this, "ข้อมูลการเก็บภาพ — ไม่ใช่รายการล่าช้า",
+                "Ready รอภาพ: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" } +
+                    "\nCompleted ขาด Ready: " + r.missingReadyInstances.joinToString().ifEmpty { "-" } +
+                    "\nHistory ขาดภาพ: " + r.missingHistoryInstances.joinToString().ifEmpty { "-" })
+        }
         Ui.text(
             s,
             "History: ${r.historyOrders} ออเดอร์ · เสร็จ ${r.completedSeen} · ยกเลิก ${r.cancelledSeen}",
@@ -134,12 +145,6 @@ class ReportActivity : Activity() {
             14f,
             Ui.MUTED,
             topDp = 4,
-        )
-        Ui.text(
-            s,
-            if (r.pressedOrders > 0) "กด Ready ${r.pressedOrders} ออเดอร์ · มีภาพในแท็บ Ready ${r.pressedWithReady} ออเดอร์"
-            else "มีภาพในแท็บ Ready ${r.readyOrders} ออเดอร์",
-            13f, Ui.MUTED, topDp = 4,
         )
         if (r.historyOrders == 0) {
             Ui.text(

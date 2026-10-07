@@ -203,8 +203,9 @@ class CapturesActivity : Activity() {
             }
             val r = shown[position]
             val day = if (allDays && query.isNotBlank()) ReportText.date(RecordStore.dateOf(r.t)) + " " else ""
-            holder.title.text = day + ReportText.time(r.t, zone) + " · " + r.kind.label
-            holder.gfs.text = r.gfs.ifEmpty { r.visible }.joinToString(", ").ifEmpty { "ไม่พบเลข GF" }
+            holder.title.text = day + ReportText.time(r.t, zone) + " · " +
+                io.github.panuwattegif.readyproof.core.CaptureFeedback.status(r)
+            holder.gfs.text = "ออเดอร์ในภาพ: " + r.gfs.ifEmpty { r.visible }.joinToString(", ").ifEmpty { "ไม่พบเลข GF" }
             val first = r.items.firstOrNull()
             holder.detail.text = listOfNotNull(
                 first?.status,
