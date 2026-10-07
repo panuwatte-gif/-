@@ -3,6 +3,7 @@ package io.github.panuwattegif.readyproof
 import android.content.Context
 import io.github.panuwattegif.readyproof.core.*
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 import android.util.AtomicFile
 import java.io.File
@@ -20,7 +21,6 @@ object DailyExport {
         val text = ReportText.summary(report, zone)
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
-        DriveSync.offerBytes(ctx, shopId, "summary-$day.txt", "text/plain", text.toByteArray())
         val manifest = Json.write(linkedMapOf(
             "schema" to 2, "shopId" to shopId, "date" to day.toString(),
             "complete" to report.complete, "historyDateVerified" to report.historyDateVerified,
@@ -41,8 +41,28 @@ object DailyExport {
                 .map { Json.parseObject(RecordCodec.encode(it)) }
         ))
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_manifest-$day.json", manifest)
-        DriveSync.offerBytes(ctx, shopId, "manifest-$day.json", "application/json", manifest.toByteArray())
+        if (Shop.fromId(shopId) != null && NightlyUploads.canRelease(day, LocalDateTime.now(zone))) {
+            // Durable immutable intent also recovers a process death before the outbox task starts.
+            saveLocal(ctx, "${shopId}_batch-request-$day.json", Json.write(linkedMapOf(
+                "shopId" to shopId, "date" to day.toString(), "text" to text, "manifest" to manifest)))
+        }
+        DriveSync.offerDailyBatch(ctx, day, shopId, records, text, manifest)
         return report
+    }
+
+    fun recoverBatches(ctx: Context) {
+        val shop = ShopStore.get(ctx) ?: return
+        File(ctx.filesDir, "reports").listFiles()?.filter {
+            it.name.startsWith("${shop.id}_batch-request-") && it.name.endsWith(".json")
+        }?.forEach { f -> runCatching {
+            val request = Json.parseObject(AtomicFile(f).readFully().toString(Charsets.UTF_8))
+            if (request.str("shopId") != shop.id) return@runCatching
+            val day = LocalDate.parse(request.str("date"))
+            val manifest = request.str("manifest") ?: return@runCatching
+            val text = request.str("text") ?: return@runCatching
+            val records = Json.parseObject(manifest).objList("records").mapNotNull { RecordCodec.decode(Json.write(it)) }
+            DriveSync.offerDailyBatch(ctx, day, shop.id, records, text, manifest)
+        } }
     }
 
     private fun saveLocal(ctx: Context, name: String, text: String) {

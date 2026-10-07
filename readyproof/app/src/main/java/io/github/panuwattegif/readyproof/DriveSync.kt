@@ -9,11 +9,14 @@ import io.github.panuwattegif.readyproof.core.*
 import java.io.File
 import java.security.MessageDigest
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 data class UploadEntry(val key: String, val shopId: String?, val name: String, val mime: String,
-    val md5: String, val remoteId: String? = null, val state: String = "PENDING", val error: String? = null)
+    val md5: String, val remoteId: String? = null, val state: String = "PENDING", val error: String? = null,
+    val batchMembers: List<String>? = null)
 
 /** Durable private copies + a journal. Capture never waits for network, auth or this executor. */
 object DriveSync {
@@ -55,10 +58,11 @@ object DriveSync {
         } }
     }
 
-    private fun stage(ctx: Context, shopId: String?, name: String, mime: String, bytes: ByteArray) = synchronized(lock) {
+    private fun stage(ctx: Context, shopId: String?, name: String, mime: String, bytes: ByteArray,
+        batchMembers: List<String>? = null): String = synchronized(lock) {
         require(bytes.isNotEmpty())
         val key = digest(("${shopId ?: "UNKNOWN"}|$name|").toByteArray() + bytes, "SHA-256")
-        if (meta(ctx, key).exists()) return@synchronized
+        if (meta(ctx, key).exists()) return@synchronized key
         val af = AtomicFile(payload(ctx, key))
         val stream = af.startWrite()
         try { stream.write(bytes); af.finishWrite(stream) } catch (e: Exception) { af.failWrite(stream); throw e }
@@ -66,7 +70,57 @@ object DriveSync {
         val ext = name.substringAfterLast('.', "dat")
         // Shop, date (in source filename), and content revision are visible to downstream consumers.
         val remoteName = "${shopId ?: "UNKNOWN"}_${stem}_${key.take(12)}.$ext"
-        write(ctx, UploadEntry(key, shopId, remoteName, mime, digest(bytes, "MD5")))
+        write(ctx, UploadEntry(key, shopId, remoteName, mime, digest(bytes, "MD5"), batchMembers = batchMembers))
+        key
+    }
+
+    /** Release after a local History report commits. Missing photos never block the valid subset. */
+    fun offerDailyBatch(ctx: Context, day: LocalDate, shopId: String?, records: List<Record>, text: String, manifest: String) {
+        val app = ctx.applicationContext
+        runCatching { io.execute {
+            runCatching {
+                require(Shop.fromId(shopId) != null)
+                if (!NightlyUploads.canRelease(day, LocalDateTime.now(ZoneId.of("Asia/Bangkok")))) {
+                    status(app, "เก็บชุดทดสอบในเครื่องแล้ว — ส่งอัตโนมัติหลังปิดร้านเท่านั้น")
+                    return@execute
+                }
+                val keys = linkedSetOf<String>()
+                val photoRecords = linkedMapOf<String, MutableList<String>>()
+                val missing = mutableListOf<String>()
+                for (r in records.filter { it.shopId == shopId && validPhoto(it) && RecordStore.dateOf(it.t) == day }) {
+                    runCatching {
+                        val bytes = app.contentResolver.openInputStream(Uri.parse(r.uri!!))?.use { it.readBytes() }
+                            ?: error("missing local photo")
+                        val key = stage(app, shopId, r.file ?: "${r.id}.jpg", "image/jpeg", bytes)
+                        keys += key
+                        photoRecords.getOrPut(key) { mutableListOf() }.add(r.id)
+                    }.onFailure { missing += r.id }
+                }
+                keys += stage(app, shopId, "summary-$day.txt", "text/plain", text.toByteArray())
+                keys += stage(app, shopId, "manifest-$day.json", "application/json", manifest.toByteArray())
+                val files = entries(app).associateBy { it.key }
+                // Deterministic payload: unchanged passes reuse the same marker and uploaded files.
+                val marker = Json.write(linkedMapOf("schema" to 1, "status" to "UPLOAD_DONE",
+                    "shopId" to shopId, "date" to day.toString(), "sourceManifestMD5" to digest(manifest.toByteArray(), "MD5"),
+                    "proofCompleteness" to "READ_SOURCE_MANIFEST", "localPhotoReadFailures" to missing,
+                    "files" to keys.sorted().map { key -> linkedMapOf("key" to key, "name" to files[key]?.name,
+                        "md5" to files[key]?.md5, "recordIds" to photoRecords[key]?.distinct()?.sorted()) }))
+                // Journal this marker last: a crash during staging cannot release a partial batch.
+                stage(app, shopId, "UPLOAD_DONE-$day.json", "application/json", marker.toByteArray(), keys.sorted())
+                status(app, "เตรียมชุดหลังปิดร้าน $day แล้ว — ส่งเฉพาะไฟล์ที่มีจริง")
+                schedule(app)
+            }.onFailure { status(app, "เตรียมชุดส่งไม่ได้ — ภาพและรายงานยังอยู่ในเครื่อง แชร์เองได้") }
+        } }
+    }
+
+    fun fileStates(entries: List<UploadEntry>) = entries.map {
+        NightlyUploads.FileState(it.key, it.shopId, it.state == "UPLOADED", it.batchMembers)
+    }
+
+    fun releasedEntries(ctx: Context, shopId: String): List<UploadEntry> {
+        val all = entries(ctx)
+        val keys = NightlyUploads.releasedKeys(fileStates(all), shopId)
+        return all.filter { it.key in keys }
     }
 
     fun entries(ctx: Context): List<UploadEntry> = synchronized(lock) {
@@ -74,7 +128,7 @@ object DriveSync {
             runCatching {
                 val m = Json.parseObject(AtomicFile(f).readFully().toString(Charsets.UTF_8))
                 UploadEntry(m.str("key")!!, m.str("shopId"), m.str("name")!!, m.str("mime")!!,
-                    m.str("md5")!!, m.str("remoteId"), m.str("state") ?: "PENDING", m.str("error"))
+                    m.str("md5")!!, m.str("remoteId"), m.str("state") ?: "PENDING", m.str("error"), m.strList("batchMembers"))
             }.getOrNull()
         } ?: emptyList()
     }
@@ -86,7 +140,7 @@ object DriveSync {
         try {
             out.write(Json.write(linkedMapOf("key" to e.key, "shopId" to e.shopId,
                 "name" to e.name, "mime" to e.mime, "md5" to e.md5, "remoteId" to e.remoteId,
-                "state" to e.state, "error" to e.error)).toByteArray())
+                "state" to e.state, "error" to e.error, "batchMembers" to e.batchMembers)).toByteArray())
             af.finishWrite(out)
         } catch (ex: Exception) { af.failWrite(out); throw ex }
     }
@@ -125,6 +179,7 @@ object DriveSync {
                     } }
                 }
             }.onFailure { status(app, "ตรวจคิวเดิมไม่สำเร็จ — หลักฐานในเครื่องยังใช้ได้") }
+            DailyExport.recoverBatches(app)
             schedule(app)
         } }
     }
@@ -132,7 +187,8 @@ object DriveSync {
     fun summary(ctx: Context): String {
         val shop = ShopStore.get(ctx)
         val es = entries(ctx).filter { it.shopId == shop?.id }
-        return "Drive: ส่งแล้ว ${es.count { it.state == "UPLOADED" }} / รอ ${es.count { it.state != "UPLOADED" }}\n" +
+        val released = shop?.let { releasedEntries(ctx, it.id) } ?: emptyList()
+        return "Drive: ส่งแล้ว ${es.count { it.state == "UPLOADED" }} / คิวหลังปิดร้าน ${released.count { it.state != "UPLOADED" }} / เก็บรอในเครื่อง ${es.count { it.state != "UPLOADED" && it.key !in released.map { r -> r.key } }}\n" +
             ConfigStore.prefs(ctx).getString("drive_status", "ยังไม่เชื่อม Google")
     }
 
