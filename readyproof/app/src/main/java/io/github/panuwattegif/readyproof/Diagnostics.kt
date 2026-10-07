@@ -43,7 +43,8 @@ object Diagnostics {
     fun dump(ctx: Context, label: String, roots: List<UiNode>, force: Boolean) {
         try {
             val now = System.currentTimeMillis()
-            if (!force && now - lastDumpAt < MIN_DUMP_GAP_MS) return
+            // Failure snapshots are automatic, but still bounded when a broken page repeats.
+            if (now - lastDumpAt < MIN_DUMP_GAP_MS) return
             val text = roots.joinToString("\n") { TreeDump.dump(it) }
             val signature = DIGITS.replace(text, "#").hashCode()
             if (!force && signature == lastSignature) return
@@ -77,6 +78,9 @@ object Diagnostics {
             sb.append(key).append("=").append(prefs.getString(key, null)).append('\n')
         sb.append("shop=").append(ShopStore.get(ctx)?.id)
             .append(" driveEnabled=").append(prefs.getBoolean("drive_enabled", false)).append('\n')
+        sb.append("\n## Local daily batch requests\n")
+        File(ctx.filesDir, "reports").listFiles()?.filter { it.name.contains("batch-request-") }
+            ?.sortedBy { it.name }?.forEach { sb.append(it.name).append(" | bytes=").append(it.length()).append('\n') }
         sb.append("\n## Upload journal (no tokens or photo contents)\n")
         DriveSync.entries(ctx).forEach { e ->
             sb.append(e.key).append(" | shop=").append(e.shopId).append(" | ").append(e.name)
