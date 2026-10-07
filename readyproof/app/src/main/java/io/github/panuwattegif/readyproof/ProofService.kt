@@ -1044,9 +1044,9 @@ class ProofService : AccessibilityService() {
         val missingKeys = meta.dedupeKeys.filterNot { it in savedKeys }
         if (missingKeys.isNotEmpty()) deduper.forget(missingKeys)
 
-        lastCaptureText = record.kind.label + " " + record.gfs.joinToString(", ").ifEmpty { "-" } +
+        lastCaptureText = io.github.panuwattegif.readyproof.core.CaptureFeedback.status(record) +
             " · " + ReportText.time(record.t, ZoneId.systemDefault())
-        if (config.showToast) toast("📸 " + record.kind.label + ": " + record.gfs.joinToString(", "))
+        if (config.showToast) io.github.panuwattegif.readyproof.core.CaptureFeedback.notification(record)?.let { toast(it) }
 
         if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
             // Re-read this viewport before scrolling. Any GF not covered by the saved bitmap stays
