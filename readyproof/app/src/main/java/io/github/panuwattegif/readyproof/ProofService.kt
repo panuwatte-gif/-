@@ -391,6 +391,7 @@ class ProofService : AccessibilityService() {
     }
 
     private fun historyNavigationFailed() {
+        Diagnostics.dump(this, "HISTORY_NAVIGATION_FAILED", activeGrabSnapshots(), force = true)
         autoHistoryInProgress = false
         autoHistoryTargetDate = null
         nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
@@ -1014,6 +1015,8 @@ class ProofService : AccessibilityService() {
         if (record == null) {
             deduper.forget(meta.dedupeKeys)
             Diagnostics.error(this, "capture ${job.kind}", RuntimeException(error))
+            Diagnostics.dump(this, "CAPTURE_FAILED ${job.kind}: ${meta.items.joinToString { "${it.gf}/${it.type}/${it.doneAt}/${it.historyDate}" }}",
+                activeGrabSnapshots(), force = true)
             val now = SystemClock.uptimeMillis()
             if (now - lastFailToastAt > 30_000L) {
                 lastFailToastAt = now
