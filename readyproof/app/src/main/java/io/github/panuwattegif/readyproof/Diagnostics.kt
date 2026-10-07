@@ -71,6 +71,18 @@ object Diagnostics {
             .append(" running=").append(ProofService.instance != null)
             .append(" lastGrabEvent=").append(ProofService.lastTargetEventAt).append('\n')
         sb.append("\n## Config\n").append(ConfigCodec.encode(ConfigStore.get(ctx))).append('\n')
+        val prefs = ConfigStore.prefs(ctx)
+        sb.append("\n## Monitor and closing\n")
+        for (key in listOf("monitor_status", "closing_history_status", "auto_history_last_result", "drive_status"))
+            sb.append(key).append("=").append(prefs.getString(key, null)).append('\n')
+        sb.append("shop=").append(ShopStore.get(ctx)?.id)
+            .append(" driveEnabled=").append(prefs.getBoolean("drive_enabled", false)).append('\n')
+        sb.append("\n## Upload journal (no tokens or photo contents)\n")
+        DriveSync.entries(ctx).forEach { e ->
+            sb.append(e.key).append(" | shop=").append(e.shopId).append(" | ").append(e.name)
+                .append(" | state=").append(e.state).append(" | error=").append(e.error)
+                .append(" | batchMembers=").append(e.batchMembers?.size).append('\n')
+        }
         sb.append("\n## Recent taps\n")
         ClickLog.list(ctx).forEach { e ->
             sb.append(e.t).append(" | ").append(e.label).append(" | ").append(e.className).append(" | ")

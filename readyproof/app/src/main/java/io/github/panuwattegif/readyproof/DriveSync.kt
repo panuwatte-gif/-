@@ -66,10 +66,7 @@ object DriveSync {
         val af = AtomicFile(payload(ctx, key))
         val stream = af.startWrite()
         try { stream.write(bytes); af.finishWrite(stream) } catch (e: Exception) { af.failWrite(stream); throw e }
-        val stem = name.substringBeforeLast('.', name).replace(Regex("[^A-Za-z0-9_-]"), "_")
-        val ext = name.substringAfterLast('.', "dat")
-        // Shop, date (in source filename), and content revision are visible to downstream consumers.
-        val remoteName = "${shopId ?: "UNKNOWN"}_${stem}_${key.take(12)}.$ext"
+        val remoteName = Naming.uploadName(shopId, name, key, mime)
         write(ctx, UploadEntry(key, shopId, remoteName, mime, digest(bytes, "MD5"), batchMembers = batchMembers))
         key
     }
@@ -109,7 +106,10 @@ object DriveSync {
                 stage(app, shopId, "UPLOAD_DONE-$day.json", "application/json", marker.toByteArray(), keys.sorted())
                 status(app, "เตรียมชุดหลังปิดร้าน $day แล้ว — ส่งเฉพาะไฟล์ที่มีจริง")
                 schedule(app)
-            }.onFailure { status(app, "เตรียมชุดส่งไม่ได้ — ภาพและรายงานยังอยู่ในเครื่อง แชร์เองได้") }
+            }.onFailure {
+                Diagnostics.error(app, "offerDailyBatch", it)
+                status(app, "เตรียมชุดส่งไม่ได้: ${it.javaClass.simpleName} — ภาพและรายงานยังอยู่ในเครื่อง แชร์เองได้")
+            }
         } }
     }
 

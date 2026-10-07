@@ -10,6 +10,18 @@ object Naming {
     private const val MAX_GFS = 4
     private val UNSAFE = Regex("[^A-Za-z0-9_-]")
 
+    /** Shop belongs in metadata and folder routing; photographs keep the original GF name. */
+    fun uploadName(shopId: String?, name: String, revision: String, mime: String): String {
+        val ext = name.substringAfterLast('.', "dat")
+        var stem = name.substringBeforeLast('.', name)
+        if (mime.startsWith("image/")) {
+            val prefix = shopId?.let { "${it}_" } ?: "UNKNOWN_"
+            while (stem.startsWith(prefix)) stem = stem.removePrefix(prefix)
+            return UNSAFE.replace(stem, "_") + ".$ext"
+        }
+        return "${shopId ?: "UNKNOWN"}_${UNSAFE.replace(stem, "_")}_${revision.take(12)}.$ext"
+    }
+
     fun fileName(kind: RecordKind, items: List<Item>, visible: List<String>, at: LocalDateTime): String {
         val head = if (kind == RecordKind.DELAY) {
             items.filter { it.type == ObsType.DELAY }.distinctBy { it.gf }.take(MAX_GFS)

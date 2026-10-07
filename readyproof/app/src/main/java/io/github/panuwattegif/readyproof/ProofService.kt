@@ -107,6 +107,7 @@ class ProofService : AccessibilityService() {
     private var captureFailureCount = 0
     private var captureFailureSignature = ""
     private var sweepShopId: String? = null
+    private var historyLastProgressAt = 0L
     private var delayRepositionKey: String? = null
     private var delayRepositionAttempts = 0
     private val recentPageCaptures = LinkedHashMap<String, Long>()
@@ -215,6 +216,13 @@ class ProofService : AccessibilityService() {
             if (!::worker.isInitialized) return
             try {
                 if (config.enabled) {
+                    // A missing Grab tree must not strand an authorised pass forever.
+                    if (forcedHistorySweep && !captureInFlight && !returningHistoryToTop &&
+                        SystemClock.uptimeMillis() - historyLastProgressAt >= 90_000L) {
+                        historyReachedEnd = false
+                        closingStatus("อ่าน History ไม่คืบหน้า: เก็บและส่งชุดที่มี พร้อมรายงานว่ายังไม่ครบ แล้วลองใหม่")
+                        finishSweep(false)
+                    }
                     maybeStartAutomaticHistory()
                     superviseDedicatedMonitor()
                     // Poll History as well as Ready: a transient empty accessibility root or
@@ -373,6 +381,7 @@ class ProofService : AccessibilityService() {
         val terminal = analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.CANCELLED, ObsType.DELAY) }
         if (config.enabled && !otherSelected && (selected || terminal)) {
             forcedHistorySweep = true
+            historyLastProgressAt = SystemClock.uptimeMillis()
             resetSweepLoop()
             closingStatus("เปิด History แล้ว: กำลังกวาดรายการทั้งวัน")
             startHistoryAtTop()
@@ -453,7 +462,10 @@ class ProofService : AccessibilityService() {
             // card, so the visible GF set can stay identical for several successful scrolls.
             val signature = analysis.cards.filter { it.inList }
                 .joinToString("|") { "${it.gf}@${it.node.top}:${it.node.bottom}" }
-            updateSweepSignature(signature.ifEmpty { analysis.visible.joinToString("|") })
+            val nextSignature = signature.ifEmpty { analysis.visible.joinToString("|") }
+            if (historyMode && nextSignature.isNotEmpty() && nextSignature != lastSweepSignature)
+                historyLastProgressAt = SystemClock.uptimeMillis()
+            updateSweepSignature(nextSignature)
         }
 
         val today = LocalDate.now()
