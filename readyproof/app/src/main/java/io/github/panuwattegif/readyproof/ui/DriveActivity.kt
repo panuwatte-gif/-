@@ -44,7 +44,7 @@ class DriveActivity : Activity() {
         val prefs = ConfigStore.prefs(this)
         Ui.text(card, "บัญชี: ${prefs.getString("drive_account", null) ?: "ยังไม่เชื่อม"}", 14f)
         Ui.text(card, DriveSync.summary(this), 14f, Ui.MUTED, topDp = 8)
-        Ui.switch(card, "อัปโหลดอัตโนมัติ (เฉพาะไฟล์ที่มีจริง)", prefs.getBoolean("drive_enabled", false)) { on ->
+        Ui.switch(card, "ส่งชุดอัตโนมัติหลังปิดร้าน", prefs.getBoolean("drive_enabled", false)) { on ->
             prefs.edit().putBoolean("drive_enabled", on).apply()
             if (on) DriveSync.recover(this)
         }
@@ -83,7 +83,7 @@ class DriveActivity : Activity() {
         if (result.accessToken == null) { failed(); return }
         // Tokens remain in Google's cache; only the chosen account and opt-in are persisted.
         ConfigStore.prefs(this).edit().putString("drive_account", email).putBoolean("drive_enabled", true).apply()
-        DriveSync.status(this, "อนุญาตแล้ว — กำลังตรวจสิทธิ์โฟลเดอร์และส่งไฟล์")
+        DriveSync.status(this, "อนุญาตแล้ว — ระหว่างวันเก็บในเครื่อง ส่งชุดหลังปิดร้านและกวาด History")
         DriveSync.recover(this)
         render()
     }

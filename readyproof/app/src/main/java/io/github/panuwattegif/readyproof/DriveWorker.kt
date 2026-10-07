@@ -10,6 +10,7 @@ import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Tasks
 import io.github.panuwattegif.readyproof.core.Shop
+import io.github.panuwattegif.readyproof.core.NightlyUploads
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 
@@ -27,6 +28,8 @@ class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) 
         if (!prefs.getBoolean("drive_enabled", false)) return Result.success()
         DriveSync.recover(ctx)
         val shop = ShopStore.get(ctx) ?: return Result.success()
+        val pending = DriveSync.releasedEntries(ctx, shop.id).filter { it.state != "UPLOADED" }
+        if (pending.isEmpty()) return Result.success() // No Google auth/API calls for daytime staging.
         val account = prefs.getString("drive_account", null) ?: run {
             DriveSync.status(ctx, "ต้องเชื่อมบัญชี Google — แคปและแชร์เองยังทำงาน")
             return Result.success()
@@ -43,10 +46,16 @@ class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) 
             api.verifyFolder(shop.folderId)
             var failed = false
             // Bind each entry, not the current UI selection. Refuse unknown or mismatched shops.
-            for (original in DriveSync.entries(ctx).filter { it.shopId == shop.id && it.state != "UPLOADED" }) {
+            for (original in pending.sortedBy { it.batchMembers != null }) {
                 if (isStopped || !prefs.getBoolean("drive_enabled", false)) return Result.retry()
                 var entry = original
                 try {
+                    if (entry.batchMembers != null && !NightlyUploads.markerReady(
+                        NightlyUploads.FileState(entry.key, entry.shopId, false, entry.batchMembers),
+                        DriveSync.fileStates(DriveSync.entries(ctx)))) {
+                        failed = true
+                        continue // UPLOAD_DONE is sent only after every member is remotely verified.
+                    }
                     require(Shop.fromId(entry.shopId)?.folderId == shop.folderId)
                     if (entry.remoteId == null) {
                         entry = entry.copy(remoteId = api.generateId())

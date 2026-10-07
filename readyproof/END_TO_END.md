@@ -48,6 +48,10 @@ Manual report actions: matched READY+DELAY sets, unmatched DELAY alone, all actu
 
 ## Upload recovery
 
+New photos stay staged locally during the day. Only a report committed after the closing time releases a shop/day batch. Daytime manual History tests save local reports without releasing uploads. Each batch includes valid photos, summary and source manifest; missing proof never prevents uploading the valid subset. The `UPLOAD_DONE-YYYY-MM-DD` marker is uploaded last, only after every staged member has passed remote verification. It lists exact remote filenames, hashes and photo record IDs, plus local photo-read failures. UPLOAD_DONE means the listed subset was uploaded, not that every order has proof. Consumers must inspect manifest completeness and real images. An unchanged batch is not sent again; later closing passes that add evidence can release corrections without uploading an already-uploaded physical file again. Consumers should reprocess only new revisions.
+
+Atomic batch-request snapshots recover process death before staging. Outbox entries from older versions are not released merely because auto-upload is enabled; only membership in a newly committed closing batch authorizes them. Failed released batches can retry the next day, while that day's new captures stay local. No remote cleanup or hidden API is used.
+
 Private immutable payloads plus AtomicFile journals survive restarts. WorkManager requires connected network and retries with exponential backoff; a 15-minute recovery worker is also scheduled. Android may defer execution. Startup reconciles the retained capture journal, including captures made while auto-upload was disabled.
 
 Generated Drive IDs are persisted before upload. Retrying after a lost response reuses the same ID; a 409 is accepted only after verifying the ID, fixed parent, shop metadata, content key and MD5. UPLOADED is set only after remote content verification. A bad file does not prevent later valid files being attempted. Originals and queued payloads are not automatically deleted. Network/auth/upload errors never propagate into the capture pipeline.
