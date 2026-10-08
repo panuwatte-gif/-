@@ -9,6 +9,13 @@ import android.util.AtomicFile
 import java.io.File
 
 object DailyExport {
+    fun countMismatch(ctx: Context, report: DailyReport): Boolean {
+        val raw = ConfigStore.prefs(ctx).getString("history_totals_${report.shopId ?: "UNKNOWN"}_${report.date}", null) ?: return false
+        val m = Json.parseObject(raw)
+        return (m["completed"] as Number).toInt() != report.completedSeen ||
+            (m["cancelled"] as Number).toInt() != report.cancelledSeen ||
+            (m["total"] as Number).toInt() != report.historyOrders
+    }
     fun captureTotals(ctx: Context, day: LocalDate, shopId: String?, roots: List<UiNode>) {
         val totals = HistoryTotalsParser.parseRoots(roots, ConfigStore.get(ctx)) ?: return
         ConfigStore.prefs(ctx).edit().putString("history_totals_${shopId ?: "UNKNOWN"}_$day",
@@ -37,7 +44,10 @@ object DailyExport {
         ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", reachedEnd).apply()
         val zone = ZoneId.of("Asia/Bangkok")
         val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
-        val report = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
+        val observed = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
+        val verifiedEnd = reachedEnd && !countMismatch(ctx, observed)
+        ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", verifiedEnd).apply()
+        val report = if (verifiedEnd == reachedEnd) observed else ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, false)
         val text = summary(ctx, report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
@@ -45,7 +55,7 @@ object DailyExport {
             "schema" to 2, "shopId" to shopId, "date" to day.toString(),
             "historyFailure" to failureReason,
             "complete" to report.complete, "historyDateVerified" to report.historyDateVerified,
-            "sweepReachedEnd" to reachedEnd, "observedTotalOrders" to report.historyOrders,
+            "sweepReachedEnd" to verifiedEnd, "observedTotalOrders" to report.historyOrders,
             "totalOrders" to if (report.complete) report.historyOrders else null,
             "grabDelayed" to report.delayed, "readyEvidenceCount" to report.withEvidence.size,
             "actualDelayed" to report.actualDelayed, "grabPercentProvisional" to report.pct(report.delayed),

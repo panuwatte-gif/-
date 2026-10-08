@@ -115,6 +115,7 @@ class ProofService : AccessibilityService() {
     private var historyRowsRead = false
     @Volatile private var manualHistoryHold = false
     private var returnReadyAfterHistory = true
+    private var manualHistoryPass = 0
     private fun autoNavigationEnabled() = io.github.panuwattegif.readyproof.core.ManualWorkflow.autoNavigation
 
     fun resumeReadyMonitor() {
@@ -395,6 +396,7 @@ class ProofService : AccessibilityService() {
         returningReadyToTop = false
         closingGate = null
         worker.postDelayed({
+            manualHistoryPass = 0
             closingGate = null
             startHistorySweep(LocalDate.now(), force = true)
         }, 2_500L)
@@ -807,6 +809,13 @@ class ProofService : AccessibilityService() {
                 lastCaptureText = result
                 autoHistoryInProgress = false
                 autoHistoryTargetDate = null
+                if (manualHistoryHold && manualHistoryPass < 2 &&
+                    (DailyExport.countMismatch(this, report) || report.missingHistoryInstances.isNotEmpty() || missingDelayProof > 0)) {
+                    manualHistoryPass++
+                    closingStatus("ยังขาดรายการหรือภาพ: กวาดซ้ำในคำสั่งเดียวกัน รอบ ${manualHistoryPass + 1}/3")
+                    worker.postDelayed({ if (manualHistoryHold && config.enabled) startHistorySweep(day, force = true) }, 1_500L)
+                    return@post
+                }
                 main.post {
                     // Return to the dedicated Ready monitor after every History pass. If counts are
                     // incomplete the scheduled retry will revisit History automatically.
