@@ -96,7 +96,8 @@ class ReportActivity : Activity() {
         summaryCard(col, report, zone)
         if (report.cases.isEmpty()) {
             val c = Ui.card(col)
-            Ui.text(c, if (report.completedSeen == 0) "ยังไม่มีข้อมูลออเดอร์ล่าช้าของวันนี้" else "ไม่มีออเดอร์ล่าช้า 🎉", 15f, bold = true)
+            Ui.text(c, if (!report.complete) "ยังตรวจ History ไม่ครบ — ยังสรุปว่าไม่มีออเดอร์ล่าช้าไม่ได้"
+                else "ไม่มีออเดอร์ล่าช้า", 15f, bold = true)
         } else {
             val sets = report.sets().associateBy { it.case }
             if (report.withEvidence.isNotEmpty()) {
@@ -136,7 +137,7 @@ class ReportActivity : Activity() {
             if (r.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
             topDp = 2,
         )
-        Ui.text(s, "Grab ระบุล่าช้า: ${r.delayed}", 16f, bold = true, topDp = 6)
+        Ui.text(s, "ล่าช้าที่อ่านพบ: ${r.delayed}" + if (!r.complete) " · ยังไม่ยืนยันทั้งวัน" else "", 16f, bold = true, topDp = 6)
         Ui.text(s, "✅ มีภาพในแท็บ Ready (กดเสร็จแล้ว): ${r.withEvidence.size}", 15f, Ui.GREEN, topDp = 2)
         Ui.text(s, "❌ ไม่มีภาพ Ready / เหลือล่าช้าตามหลักฐาน: ${r.withoutEvidence.size}", 15f, Ui.RED, topDp = 2)
         Ui.text(

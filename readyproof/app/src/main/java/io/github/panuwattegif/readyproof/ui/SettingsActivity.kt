@@ -23,6 +23,7 @@ class SettingsActivity : Activity() {
     private lateinit var sDelay: Switch
     private lateinit var sToast: Switch
     private lateinit var sDiag: Switch
+    private lateinit var sAutoNavigation: Switch
     private lateinit var fTriggers: EditText
     private lateinit var fTabs: EditText
     private lateinit var fReadyTabs: EditText
@@ -49,6 +50,8 @@ class SettingsActivity : Activity() {
 
         val timing = Ui.card(col)
         Ui.text(timing, "แคปเมื่อไหร่", 17f, bold = true)
+        sAutoNavigation = Ui.switch(timing, "เปิดหน้า Ready / History อัตโนมัติ (ปิดแล้วยังแคปและแชร์เองได้)",
+            ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)) {}
         sReady = Ui.switch(timing, "แท็บ Ready (พร้อมจัดส่ง) เปิดอยู่ → แคปทุกออเดอร์ในแท็บ (ออเดอร์ละครั้ง)", cfg.captureReady) {}
         sDelay = Ui.switch(timing, "หน้า History เจอ \"Delayed by / ล่าช้าไป\" → แคป", cfg.captureDelay) {}
         sRemind = Ui.switch(timing, "กด Ready แล้ว 20 วิ ยังไม่มีภาพในแท็บ Ready → เตือน", cfg.remindReadyTab) {}
@@ -177,6 +180,8 @@ class SettingsActivity : Activity() {
             targetPackages = lines(fPackages),
         )
         val errors = ConfigStore.save(this, cfg)
+        if (errors.isEmpty()) ConfigStore.prefs(this).edit()
+            .putBoolean("auto_navigation_enabled", sAutoNavigation.isChecked).apply()
         if (errors.isEmpty()) {
             Ui.toast(this, "บันทึกแล้ว")
             finish()

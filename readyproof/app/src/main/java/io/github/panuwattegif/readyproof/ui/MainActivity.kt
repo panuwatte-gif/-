@@ -158,6 +158,10 @@ class MainActivity : Activity() {
                 Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
             }
         }
+        Ui.button(tools, "กลับไปเฝ้า Ready", filled = false) {
+            ServiceStatus.openApp(this, target)
+            ProofService.instance?.resumeReadyMonitor()
+        }
         Ui.button(tools, "🧪 ทดสอบ: แคปหน้าจอใน 5 วินาที", filled = false) {
             val service = ProofService.instance
             if (service == null) {
