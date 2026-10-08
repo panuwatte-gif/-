@@ -6,6 +6,7 @@ data class ValidatedTarget(val item: Item, val fingerprint: String)
 object ProofValidation {
     fun targets(kind: RecordKind, wanted: List<Item>, roots: List<UiNode>, cfg: Config): List<ValidatedTarget> {
         val analysis = ScreenAnalyzer.analyze(roots, cfg)
+        val historyOpen = DedicatedMonitor.historyOpen(roots, cfg)
         val rules = StatusRules(cfg)
         val gfx = cfg.gfExtractor()
         fun onScreen(n: UiNode): Boolean = roots.any { root ->
@@ -13,6 +14,8 @@ object ProofValidation {
                 n.top >= root.top && n.bottom > n.top && n.bottom <= root.bottom
         }
         return wanted.mapNotNull { target ->
+            if (target.type != ObsType.READY && (!historyOpen || analysis.readyTab == true ||
+                    kind == RecordKind.READY)) return@mapNotNull null
             val cards = analysis.cards.filter { c ->
                 c.inList && c.gf == target.gf && (target.type == ObsType.READY ||
                     rules.evaluate(c).any { it.type == target.type && it.doneAt == target.doneAt })
@@ -28,9 +31,10 @@ object ProofValidation {
                     (analysis.readyTab == true || (analysis.readyTab == null && observed.any { it.type == ObsType.READY }))
                 ObsType.DELAY -> target.doneAt != null && nodes.any { n -> onScreen(n) &&
                     n.ownStrings().any { TextNorm.containsAny(it, cfg.delayAny) } } &&
-                    nodes.any { n -> onScreen(n) && n.ownStrings().any { Parsers.doneAt(it, cfg.doneAny + cfg.cancelAny) == target.doneAt } }
-                ObsType.DONE, ObsType.CANCELLED -> target.doneAt != null && nodes.any { n -> onScreen(n) &&
-                    n.ownStrings().any { Parsers.doneAt(it, if (target.type == ObsType.DONE) cfg.doneAny else cfg.cancelAny) == target.doneAt } }
+                    Parsers.doneAtLines(nodes.filter(::onScreen).flatMap { it.ownStrings() }, cfg.doneAny + cfg.cancelAny) == target.doneAt
+                ObsType.DONE, ObsType.CANCELLED -> target.doneAt != null &&
+                    Parsers.doneAtLines(nodes.filter(::onScreen).flatMap { it.ownStrings() },
+                        if (target.type == ObsType.DONE) cfg.doneAny else cfg.cancelAny) == target.doneAt
                 else -> false
             }
             if (!valid) return@mapNotNull null

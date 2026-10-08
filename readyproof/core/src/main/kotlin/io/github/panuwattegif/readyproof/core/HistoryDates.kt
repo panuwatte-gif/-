@@ -20,6 +20,11 @@ object HistoryDates {
     }
     /** Deliberately narrow: unsupported localized headers remain UNKNOWN, never guessed. */
     fun parse(text: String, today: LocalDate): LocalDate? {
+        val numeric = Regex("^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$").matchEntire(text.trim())
+        if (numeric != null) {
+            val year = numeric.groupValues[3].toInt().let { if (it > 2400) it - 543 else it }
+            return runCatching { LocalDate.of(year, numeric.groupValues[2].toInt(), numeric.groupValues[1].toInt()) }.getOrNull()
+        }
         return when (TextNorm.key(text)) {
             "today", "วันนี้" -> today
             "yesterday", "เมื่อวาน", "เมื่อวานนี้" -> today.minusDays(1)

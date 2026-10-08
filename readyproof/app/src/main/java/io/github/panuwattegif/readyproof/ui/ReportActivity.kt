@@ -89,6 +89,10 @@ class ReportActivity : Activity() {
             bottomMargin = Ui.dp(this@ReportActivity, 10)
         })
 
+        Ui.button(col, "กวาด History สำหรับวันที่เลือก", filled = false) {
+            HistorySweepUi.choose(this, ConfigStore.get(this).targetPackages.first(), date)
+        }
+
         Ui.button(col, if (legacy) "ดูร้านที่เลือก" else "ดูข้อมูลเดิมที่ยังไม่ระบุร้าน", filled = false) {
             legacy = !legacy
             render()

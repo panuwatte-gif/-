@@ -150,10 +150,11 @@ object ReportBuilder {
             val seen = TimeResolve.toLocal(r.t, zone)
             for (item in r.items) {
                 if (item.type != ObsType.DONE && item.type != ObsType.DELAY && item.type != ObsType.CANCELLED) continue
+                if (r.kind == RecordKind.READY) continue
                 val explicitDate = (item.historyDate ?: r.historyDate)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
                 val doneAt = item.doneAt?.let { TimeResolve.parseHHmm(it) }
                     ?.let { if (explicitDate != null) explicitDate.atTime(it) else TimeResolve.latestAtOrBefore(it, seen.plusMinutes(1)) }
-                val day = doneAt?.toLocalDate() ?: seen.toLocalDate()
+                val day = explicitDate ?: doneAt?.toLocalDate() ?: seen.toLocalDate()
                 val key = "${item.gf}|${doneAt ?: "$day|${item.card.joinToString("|")}"}"
                 val a = acc.getOrPut(key) { Acc(item.gf, doneAt, day, r.t) }
                 if (item.type == ObsType.DONE || (item.type == ObsType.DELAY && doneAt != null)) a.completed = true

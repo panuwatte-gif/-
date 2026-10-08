@@ -29,7 +29,7 @@ object DailyExport {
         val completed = (m["completed"] as Number).toInt()
         val cancelled = (m["cancelled"] as Number).toInt()
         val total = (m["total"] as Number).toInt()
-        val match = completed == report.completedSeen && cancelled == report.cancelledSeen && completed + cancelled == total
+        val match = completed == report.completedSeen && cancelled == report.cancelledSeen && report.historyOrders == total
         return "ยอดหัวหน้า History: ทั้งหมด $total / สำเร็จ $completed / ยกเลิก $cancelled\n" +
             "อ่านรายออเดอร์: สำเร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen} — " +
             (if (match) "จำนวนตรงกัน" else "จำนวนยังไม่ตรง: อย่าถือว่ากวาดครบ")
