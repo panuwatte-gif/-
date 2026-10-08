@@ -12,7 +12,7 @@ data class Config(
     /** Apps whose screens are watched. Nothing outside these packages is ever read. */
     val targetPackages: List<String> = listOf("com.grab.merchant"),
     /** Order number pattern; group 1 (if present) is the number part. */
-    val gfPattern: String = """(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5})(?!\d)""",
+    val gfPattern: String = """(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5})(?![A-Za-z0-9])""",
     /** Prefix put in front of group 1 to build the canonical order number. */
     val gfPrefix: String = "GF-",
 
