@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ReadyProof Clean</string>
+    <string name="service_description">เก็บภาพหลักฐานออเดอร์ Grab หน้า Ready และ History แบบ local-first</string>
+</resources>
