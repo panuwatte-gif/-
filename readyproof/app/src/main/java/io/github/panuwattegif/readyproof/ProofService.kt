@@ -457,6 +457,7 @@ class ProofService : AccessibilityService() {
                     }
             }
             Diagnostics.dump(this, "HISTORY_CONFIRMED manual=$manualHistoryHold terminal=$terminal", snaps, force = true)
+            ConfigStore.prefs(this).edit().putString("manual_history_report_date", autoHistoryTargetDate.toString()).apply()
             forcedHistorySweep = true
             historyLastProgressAt = SystemClock.uptimeMillis()
             resetSweepLoop()

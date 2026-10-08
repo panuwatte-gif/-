@@ -264,7 +264,7 @@ object ReportText {
         append("ร้าน: ").append(Shop.fromId(r.shopId)?.label ?: "UNKNOWN (ข้อมูลเดิม/ยังไม่เลือกร้าน)").append('\n')
         append("ความครบ: ").append(if (r.complete) "COMPLETE" else "INCOMPLETE / PROVISIONAL").append('\n')
         if (!r.complete) append("ยังตรวจ History ไม่ครบ — ยังสรุปว่าไม่มีออเดอร์ล่าช้าไม่ได้\n")
-        append("วันที่ History: ").append(if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN — เวลาอย่างเดียวไม่ยืนยันวันที่").append('\n')
+        append("วันที่ History: ").append(if (r.historyDateVerified) "ระบุวันไว้แล้ว (หน้าจอหรือวันที่ผู้ใช้เลือกตอนกวาด)" else "UNKNOWN — เวลาอย่างเดียวไม่ยืนยันวันที่").append('\n')
         append("ถึงท้ายรายการ: ").append(r.sweepReachedEnd).append('\n')
         append("History ขาดภาพ: ").append(r.missingHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
         append("Instance UNKNOWN: ").append(r.unknownHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')

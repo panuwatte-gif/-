@@ -42,6 +42,14 @@ class ReportActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         thumbs = Thumbs(this)
+        date = savedInstanceState?.getString("report_date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            ?: ConfigStore.prefs(this).getString("manual_history_report_date", null)
+                ?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("report_date", date.toString())
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -121,7 +129,7 @@ class ReportActivity : Activity() {
         Ui.text(s, "ร้าน: " + (io.github.panuwattegif.readyproof.core.Shop.fromId(r.shopId)?.label ?: "UNKNOWN / ข้อมูลเดิม"), 16f, bold = true)
         Ui.text(s, if (r.complete) "COMPLETE (ตามรายการที่อ่านได้)" else "INCOMPLETE / PROVISIONAL — จำนวนทั้งวันยัง UNKNOWN", 14f, Ui.AMBER)
         Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
-            (if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN"), 13f, Ui.MUTED)
+            (if (r.historyDateVerified) "ระบุวันไว้แล้ว (หน้าจอหรือวันที่เลือกตอนกวาด)" else "UNKNOWN"), 13f, Ui.MUTED)
         Ui.button(s, "ดูรายละเอียดความครบของหลักฐาน", filled = false) {
             Ui.alert(this, "ข้อมูลการเก็บภาพ — ไม่ใช่รายการล่าช้า",
                 "Ready รอภาพ: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" } +
