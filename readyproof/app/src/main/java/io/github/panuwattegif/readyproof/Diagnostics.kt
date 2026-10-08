@@ -78,6 +78,7 @@ object Diagnostics {
             sb.append(key).append("=").append(prefs.getString(key, null)).append('\n')
         sb.append("shop=").append(ShopStore.get(ctx)?.id)
             .append(" driveEnabled=").append(prefs.getBoolean("drive_enabled", false)).append('\n')
+        sb.append("autoNavigationEnabled=").append(prefs.getBoolean("auto_navigation_enabled", true)).append('\n')
         sb.append("\n## Local daily batch requests\n")
         File(ctx.filesDir, "reports").listFiles()?.filter { it.name.contains("batch-request-") }
             ?.sortedBy { it.name }?.forEach { sb.append(it.name).append(" | bytes=").append(it.length()).append('\n') }

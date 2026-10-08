@@ -108,6 +108,22 @@ class ProofService : AccessibilityService() {
     private var captureFailureSignature = ""
     private var sweepShopId: String? = null
     private var historyLastProgressAt = 0L
+    private val historyScrollRetry = io.github.panuwattegif.readyproof.core.HistoryScrollRetry()
+    private var historyRowsRead = false
+    @Volatile private var manualHistoryHold = false
+    private var returnReadyAfterHistory = true
+    private fun autoNavigationEnabled() = ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)
+
+    fun resumeReadyMonitor() {
+        forcedHistorySweep = false
+        autoHistoryInProgress = false
+        autoHistoryTargetDate = null
+        closingGate = null
+        returningHistoryToTop = false
+        manualHistoryHold = false
+        main.post { clickTab(config.readyTabLabels) }
+        scheduleScan()
+    }
     private var delayRepositionKey: String? = null
     private var delayRepositionAttempts = 0
     private val recentPageCaptures = LinkedHashMap<String, Long>()
@@ -249,6 +265,12 @@ class ProofService : AccessibilityService() {
 
     /** Recover supported Grab navigation only; never accept/cancel orders or dismiss dialogs. */
     private fun superviseDedicatedMonitor() {
+        if (!autoNavigationEnabled()) return
+        if (manualHistoryHold) {
+            if (autoHistoryInProgress || forcedHistorySweep) return
+            if (selectedTabOpen(activeGrabSnapshots(), config.readyTabLabels)) manualHistoryHold = false
+            else return
+        }
         val busy = captureInFlight || closingGate != null || autoHistoryInProgress || forcedHistorySweep ||
             returningReadyToTop || returningHistoryToTop
         val action = DedicatedMonitor.decide(activeGrabSnapshots(), config, busy)
@@ -278,6 +300,7 @@ class ProofService : AccessibilityService() {
 
     /** Closing never interrupts pending orders: recheck both queues before each automatic pass. */
     private fun maybeStartAutomaticHistory() {
+        if (!autoNavigationEnabled() || manualHistoryHold) return
         if (SystemClock.uptimeMillis() < monitorNavigationUntil) return
         if (closingGate != null || captureInFlight || autoHistoryInProgress || forcedHistorySweep ||
             returningReadyToTop || returningHistoryToTop) return
@@ -298,7 +321,7 @@ class ProofService : AccessibilityService() {
         closingStatus("หลัง 19:00: กำลังตรวจ ${gate.tab.name} ว่ามีออเดอร์ค้างหรือไม่")
         main.post {
             if (closingGate !== gate) return@post
-            if (!config.enabled) {
+            if (!config.enabled || !autoNavigationEnabled()) {
                 worker.post { retryClosing(gate, "พักการตรวจ: ปิดแคปอัตโนมัติอยู่") }
                 return@post
             }
@@ -314,7 +337,7 @@ class ProofService : AccessibilityService() {
 
     private fun pollClosingTab(gate: ClosingHistoryGate, day: LocalDate) {
         if (closingGate !== gate) return
-        if (!config.enabled || day != LocalDate.now()) {
+        if (!config.enabled || !autoNavigationEnabled() || day != LocalDate.now()) {
             retryClosing(gate, "พักการตรวจ / วันเปลี่ยนแล้ว")
             return
         }
@@ -337,11 +360,12 @@ class ProofService : AccessibilityService() {
 
     private fun retryClosing(gate: ClosingHistoryGate, reason: String) {
         if (closingGate !== gate) return
+        Diagnostics.dump(this, "CLOSING_RETRY $reason", activeGrabSnapshots(), force = true)
         closingGate = null
         nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
         closingStatus(reason)
         // Continue capturing Ready evidence during the wait; never leave the monitor in Preparing.
-        main.post { if (config.enabled) clickTab(config.readyTabLabels) }
+        main.post { if (config.enabled && autoNavigationEnabled()) clickTab(config.readyTabLabels) }
         scheduleScan()
     }
 
@@ -358,6 +382,8 @@ class ProofService : AccessibilityService() {
         if (autoHistoryInProgress || forcedHistorySweep) return
         if (!force && System.currentTimeMillis() < nextAutoHistoryAttemptAt) return
         autoHistoryInProgress = true
+        returnReadyAfterHistory = !force
+        if (force) manualHistoryHold = true
         autoHistoryTargetDate = day
         sweepShopId = ShopStore.get(this)?.id
         main.post {
@@ -380,6 +406,7 @@ class ProofService : AccessibilityService() {
         // When selection is omitted, terminal-row content confirms History, never an empty tree.
         val terminal = analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.CANCELLED, ObsType.DELAY) }
         if (config.enabled && !otherSelected && (selected || terminal)) {
+            Diagnostics.dump(this, "HISTORY_CONFIRMED manual=$manualHistoryHold terminal=$terminal", snaps, force = true)
             forcedHistorySweep = true
             historyLastProgressAt = SystemClock.uptimeMillis()
             resetSweepLoop()
@@ -392,11 +419,17 @@ class ProofService : AccessibilityService() {
 
     private fun historyNavigationFailed() {
         Diagnostics.dump(this, "HISTORY_NAVIGATION_FAILED", activeGrabSnapshots(), force = true)
+        val failedDay = autoHistoryTargetDate
+        if (failedDay != null) worker.post {
+            runCatching { DailyExport.save(this, failedDay, sweepShopId, false,
+                "เปิดหรือยืนยันหน้า History ไม่สำเร็จ — ไม่ใช่วันที่ไม่มีออเดอร์") }
+                .onFailure { Diagnostics.error(this, "historyFailureExport", it) }
+        }
         autoHistoryInProgress = false
         autoHistoryTargetDate = null
         nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
         closingStatus("ยังเปิดหรือยืนยันหน้า History ไม่สำเร็จ: จะตรวจและลองใหม่ใน 1 นาที")
-        main.post { if (config.enabled) clickTab(config.readyTabLabels) }
+        main.post { if (config.enabled && returnReadyAfterHistory) clickTab(config.readyTabLabels) }
         toast("⚠️ เปิด History อัตโนมัติไม่สำเร็จ — จะลองใหม่")
     }
 
@@ -447,11 +480,14 @@ class ProofService : AccessibilityService() {
 
         // An accidental staff tap on History must return to Ready, not launch an unscheduled
         // History pass. Only the closing workflow / explicit in-app test button authorizes it.
-        if (!forcedHistorySweep && analysis.readyTab != true && analysis.items.none { it.type == ObsType.READY }) return
+        val manualHistoryMode = (manualHistoryHold || !autoNavigationEnabled()) &&
+            (selectedTabOpen(snaps, listOf("History", "ประวัติ")) ||
+                analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) })
+        if (!forcedHistorySweep && !manualHistoryMode && analysis.readyTab != true && analysis.items.none { it.type == ObsType.READY }) return
 
-        val historyMode = forcedHistorySweep
+        val historyMode = forcedHistorySweep || manualHistoryMode
         val readyMode = !historyMode && (analysis.readyTab == true || analysis.items.any { it.type == ObsType.READY })
-        val sweepMode = readyMode || historyMode
+        val sweepMode = (readyMode && autoNavigationEnabled()) || forcedHistorySweep
         if (historyMode) {
             val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
             analysis = analysis.copy(items = dated.first)
@@ -508,8 +544,9 @@ class ProofService : AccessibilityService() {
         val newTerminal = terminal.filter { historySeenKeys.add("${it.historyDate}|${Deduper.keyOf(it)}|${it.card}") }
         if (newTerminal.isNotEmpty()) RecordStore.append(this, Record("$now-hs${seq.incrementAndGet()}", now,
             RecordKind.SEEN, newTerminal, analysis.visible, shopId = ShopStore.get(this)?.id))
-        // Short periodic recapture also covers reused GF numbers that return to Ready quickly.
-        val fresh = deduper.fresh(analysis.items, now, cfg.copy(readyRepeatMinutes = 1))
+        // Respect the configured repeat window; polling is not permission to recapture every minute.
+        val fresh = deduper.fresh(analysis.items, now, cfg)
+        if (historyMode) historyRowsRead = terminal.isNotEmpty()
 
         // A History row is valid screenshot evidence only when the GF label is actually inside the
         // visible screen and the completed time was parsed. Accessibility can expose a clipped row
@@ -653,6 +690,8 @@ class ProofService : AccessibilityService() {
     }
 
     private fun resetSweepLoop() {
+        historyScrollRetry.reset()
+        historyRowsRead = false
         lastSweepSignature = ""
         repeatedSweepSignature = 0
         sweepScrolls = 0
@@ -664,10 +703,23 @@ class ProofService : AccessibilityService() {
         worker.postDelayed({
             main.post {
                 if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return@post
+                if (captureInFlight || returningHistoryToTop || returningReadyToTop) return@post
+                if (readyMode == false && !forcedHistorySweep) return@post
+                if (readyMode == true && forcedHistorySweep) return@post
                 // Stop only when the viewport truly stops moving several times or the safety cap
                 // is reached. The old GF-only signature could stop while the list was still moving.
                 val canContinue = repeatedSweepSignature < 4 && sweepScrolls < MAX_SWEEP_SCROLLS
                 val moved = canContinue && scrollOrderListForward()
+                if (forcedHistorySweep && !moved && historyScrollRetry.shouldRetry(false,
+                        scrollContainerFound, historyRowsRead)) {
+                    historyReachedEnd = false
+                    closingStatus("History ยังอ่านหรือเลื่อนไม่สำเร็จ: กำลังตรวจซ้ำ ไม่ถือว่าจบรายการ")
+                    Diagnostics.dump(this, "HISTORY_SCROLL_RETRY container=$scrollContainerFound rows=$historyRowsRead",
+                        activeGrabSnapshots(), force = true)
+                    worker.postDelayed({ scheduleScan() }, 1_500L)
+                    return@post
+                }
+                if (moved) historyScrollRetry.reset()
                 if (!moved && forcedHistorySweep) historyReachedEnd = historyAtTop && canContinue &&
                     scrollContainerFound && repeatedSweepSignature < 4
                 if (moved) {
@@ -700,6 +752,8 @@ class ProofService : AccessibilityService() {
     private fun finishAutomaticHistory(day: LocalDate) {
         worker.post {
             try {
+                Diagnostics.dump(this, "HISTORY_FINISH end=$historyReachedEnd rows=$historyRowsRead container=$scrollContainerFound",
+                    activeGrabSnapshots(), force = true)
                 val records = RecordStore.loadRange(this, day.minusDays(1), day.plusDays(1))
                 val report = DailyExport.save(this, day, sweepShopId, historyReachedEnd)
                 val missingDelayProof = report.cases.count { it.delayShot == null }
@@ -732,7 +786,7 @@ class ProofService : AccessibilityService() {
                 main.post {
                     // Return to the dedicated Ready monitor after every History pass. If counts are
                     // incomplete the scheduled retry will revisit History automatically.
-                    clickTab(config.readyTabLabels)
+                    if (returnReadyAfterHistory && autoNavigationEnabled()) clickTab(config.readyTabLabels)
                     toast(if (complete) "✓ History ครบ: $result" else "⚠️ History ยังไม่ครบ: $result — จะลองใหม่")
                 }
             } catch (e: Exception) {
@@ -740,7 +794,7 @@ class ProofService : AccessibilityService() {
                 autoHistoryTargetDate = null
                 nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
                 Diagnostics.error(this, "finishAutomaticHistory", e)
-                main.post { clickTab(config.readyTabLabels) }
+                main.post { if (returnReadyAfterHistory && autoNavigationEnabled()) clickTab(config.readyTabLabels) }
             }
         }
     }
@@ -766,6 +820,7 @@ class ProofService : AccessibilityService() {
         var attempts = 0
         fun step() {
             main.postDelayed({
+                if (!forcedHistorySweep) return@postDelayed
                 val moved = attempts < MAX_RETURN_TO_TOP_SCROLLS && scrollOrderListBackward()
                 if (moved) {
                     attempts++
@@ -834,6 +889,11 @@ class ProofService : AccessibilityService() {
         for (node in ordered) {
             val moved = runCatching { node.performAction(action) }.getOrDefault(false)
             if (moved) return true
+            val directional = if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
+            else AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id
+            if (node.actionList.any { it.id == directional } &&
+                runCatching { node.performAction(directional) }.getOrDefault(false)) return true
         }
         return false
     }
@@ -857,7 +917,9 @@ class ProofService : AccessibilityService() {
 
     private fun collectScrollable(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>, depth: Int) {
         if (depth > 50 || out.size > 20) return
-        if (node.isScrollable || node.collectionInfo != null) out += node
+        val scrollActions = setOf(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD,
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id, AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id)
+        if (node.isScrollable || node.collectionInfo != null || node.actionList.any { it.id in scrollActions }) out += node
         for (i in 0 until node.childCount) {
             val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
             collectScrollable(child, out, depth + 1)

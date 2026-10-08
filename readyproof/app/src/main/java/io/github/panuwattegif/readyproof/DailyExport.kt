@@ -13,16 +13,17 @@ object DailyExport {
         ConfigStore.prefs(ctx).getBoolean("history_end_${shopId ?: "UNKNOWN"}_$date", false)
 
     /** Every pass exports what exists, including incomplete passes; never gate on proof equality. */
-    fun save(ctx: Context, day: LocalDate, shopId: String?, reachedEnd: Boolean): DailyReport {
+    fun save(ctx: Context, day: LocalDate, shopId: String?, reachedEnd: Boolean, failureReason: String? = null): DailyReport {
         ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", reachedEnd).apply()
         val zone = ZoneId.of("Asia/Bangkok")
         val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
         val report = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
-        val text = ReportText.summary(report, zone)
+        val text = ReportText.summary(report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
         val manifest = Json.write(linkedMapOf(
             "schema" to 2, "shopId" to shopId, "date" to day.toString(),
+            "historyFailure" to failureReason,
             "complete" to report.complete, "historyDateVerified" to report.historyDateVerified,
             "sweepReachedEnd" to reachedEnd, "observedTotalOrders" to report.historyOrders,
             "totalOrders" to if (report.complete) report.historyOrders else null,
