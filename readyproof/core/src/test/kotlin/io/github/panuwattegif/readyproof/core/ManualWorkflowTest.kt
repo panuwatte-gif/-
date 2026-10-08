@@ -26,4 +26,9 @@ class ManualWorkflowTest {
         assertNull(HistoryTotalsParser.parse(listOf("GF-269", "Completed at 1:35 PM", "Delayed by 5 mins")))
         assertFalse(HistoryTotalsParser.parse(listOf("Total 90", "Completed 75", "Cancelled 1"))!!.consistent)
     }
+    @Test fun splitHeaderLabelsAndNumbersAreReadWithoutBorrowingOrderTimes() {
+        val header = Trees.box(Trees.box(Trees.n("Completed"), Trees.n("77")), Trees.box(Trees.n("Cancelled"), Trees.n("0")))
+        assertEquals(HistoryTotals(77, 0, 77), HistoryTotalsParser.parseRoots(listOf(header), Config.DEFAULT))
+        assertNull(HistoryTotalsParser.parseRoots(listOf(Trees.historyTabEn()), Config.DEFAULT))
+    }
 }

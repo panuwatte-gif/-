@@ -10,8 +10,7 @@ import java.io.File
 
 object DailyExport {
     fun captureTotals(ctx: Context, day: LocalDate, shopId: String?, roots: List<UiNode>) {
-        val texts = roots.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }
-        val totals = HistoryTotalsParser.parse(texts) ?: return
+        val totals = HistoryTotalsParser.parseRoots(roots, ConfigStore.get(ctx)) ?: return
         ConfigStore.prefs(ctx).edit().putString("history_totals_${shopId ?: "UNKNOWN"}_$day",
             Json.write(linkedMapOf("completed" to totals.completed, "cancelled" to totals.cancelled, "total" to totals.total))).apply()
     }
