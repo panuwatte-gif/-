@@ -12,12 +12,13 @@ enum class RecordKind(val label: String) {
     MANUAL("แคปเอง"),
     /** History rows read without a screenshot (every finished order of the day). */
     SEEN("เห็นในประวัติ"),
-    /** Grab's own totals at the top of History ("Completed 77, Cancelled 0"). */
+    HISTORY("HISTORY"),
+    /** Grab's own totals at the top of History ("Completed 77, Cancelled 0") for [Record.historyDate]. */
     STATS("ยอดในประวัติ"),
 }
 
 /** What was observed about one order. PRESS only appears in logs of older versions. */
-enum class ObsType { PRESS, READY, DELAY, DONE, VISIBLE }
+enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE }
 
 data class Item(
     val gf: String,
@@ -32,6 +33,7 @@ data class Item(
     val countdown: String? = null,
     /** Strings of the order card, for search and for the report. */
     val card: List<String> = emptyList(),
+    val historyDate: String? = null,
 )
 
 data class Record(
@@ -45,12 +47,14 @@ data class Record(
     /** content:// URI of the screenshot, null for text-only records. */
     val uri: String? = null,
     val file: String? = null,
-    /** Label of the tapped button (PRESS, older versions). */
+    /** Label of the tapped button (PRESS). */
     val click: String? = null,
     val note: String? = null,
-    /** Day the History tab was showing ("2026-10-08"), for History records; null otherwise. */
-    val day: String? = null,
-    /** STATS: Grab's totals for [day]. */
+    /** Null on legacy/unconfigured records: never automatically route them to a shop. */
+    val shopId: String? = null,
+    /** Date read explicitly from History; clock-only rows remain unverified. */
+    val historyDate: String? = null,
+    /** STATS: Grab's totals for [historyDate]. */
     val completed: Int? = null,
     val cancelled: Int? = null,
 ) {
@@ -84,7 +88,8 @@ object RecordCodec {
             "file" to r.file,
             "click" to r.click,
             "note" to r.note,
-            "day" to r.day,
+            "shopId" to r.shopId,
+            "historyDate" to r.historyDate,
             "completed" to r.completed,
             "cancelled" to r.cancelled,
         )
@@ -98,6 +103,7 @@ object RecordCodec {
         "doneAt" to i.doneAt,
         "countdown" to i.countdown,
         "card" to i.card.take(MAX_CARD_TEXTS).map { it.take(MAX_TEXT) }.ifEmpty { null },
+        "historyDate" to i.historyDate,
     )
 
     /** Returns null for blank, corrupt or unknown-kind lines instead of throwing. */
@@ -116,7 +122,8 @@ object RecordCodec {
                 file = m.str("file"),
                 click = m.str("click"),
                 note = m.str("note"),
-                day = m.str("day"),
+                shopId = m.str("shopId"),
+                historyDate = m.str("historyDate"),
                 completed = m.int("completed"),
                 cancelled = m.int("cancelled"),
             )
@@ -135,6 +142,7 @@ object RecordCodec {
             doneAt = m.str("doneAt"),
             countdown = m.str("countdown"),
             card = m.strList("card") ?: emptyList(),
+            historyDate = m.str("historyDate"),
         )
     }
 }

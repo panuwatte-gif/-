@@ -79,7 +79,7 @@ object Parsers {
 /** Turns one order card into observations according to the [Config] keyword lists. */
 class StatusRules(private val cfg: Config) {
 
-    fun evaluate(card: Card): List<Item> {
+    fun evaluate(card: Card, allowUnknownDelayed: Boolean = false): List<Item> {
         val texts = card.texts
         val out = ArrayList<Item>(2)
 
@@ -100,7 +100,24 @@ class StatusRules(private val cfg: Config) {
                 out += Item(card.gf, ObsType.DELAY, status = texts[delayIdx], delayMin = delayMin, doneAt = doneAt, card = texts)
             }
             out += Item(card.gf, ObsType.DONE, status = texts[doneIdx], delayMin = delayMin, doneAt = doneAt, card = texts)
+        } else {
+            val cancelIdx = TextNorm.indexOfAny(texts, cfg.cancelAny)
+            if (cancelIdx >= 0) {
+                val cancelledAt = Parsers.doneAt(texts[cancelIdx], cfg.cancelAny)
+                    ?: texts.firstNotNullOfOrNull { Parsers.doneAt(it, cfg.cancelAny) }
+                out += Item(card.gf, ObsType.CANCELLED, status = texts[cancelIdx], doneAt = cancelledAt, card = texts)
+                val delayIdx = TextNorm.indexOfAny(texts, cfg.delayAny)
+                if (delayIdx >= 0) out += Item(card.gf, ObsType.DELAY, status = texts[delayIdx],
+                    delayMin = Parsers.delayMinutes(texts[delayIdx], cfg.delayAny), doneAt = cancelledAt, card = texts)
+            } else if (allowUnknownDelayed && card.inList) {
+                // Missing terminal text must not erase a Delayed flag. Keep an UNKNOWN-clock case
+                // for reporting/retry; it cannot be paired by GF alone or claim a valid DELAY shot.
+                val delayIdx = TextNorm.indexOfAny(texts, cfg.delayAny)
+                if (delayIdx >= 0) out += Item(card.gf, ObsType.DELAY, status = texts[delayIdx],
+                    delayMin = Parsers.delayMinutes(texts[delayIdx], cfg.delayAny), card = texts)
+            }
         }
         return out
     }
+
 }

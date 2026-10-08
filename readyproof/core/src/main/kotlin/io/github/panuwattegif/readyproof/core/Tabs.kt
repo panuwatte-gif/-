@@ -1,7 +1,7 @@
 package io.github.panuwattegif.readyproof.core
 
 /** The order tabs of GrabMerchant that matter here; everything else is [OTHER]. */
-enum class OrderTab { READY, HISTORY, OTHER }
+enum class OrderTab { READY, PREPARING, HISTORY, OTHER }
 
 /**
  * Which order tab is open, and where to tap to open another one. Tab bars mark the open tab as
@@ -31,10 +31,11 @@ object TabDetector {
                 val tab = when {
                     isAny(label, cfg.readyTabLabels) -> OrderTab.READY
                     isAny(label, cfg.historyTabLabels) -> OrderTab.HISTORY
+                    isAny(label, cfg.preparingTabLabels) -> OrderTab.PREPARING
                     else -> OrderTab.OTHER
                 }
                 if (tab == OrderTab.READY) return tab
-                if (found == null || (found == OrderTab.OTHER && tab == OrderTab.HISTORY)) found = tab
+                if (found == null || found == OrderTab.OTHER) found = tab
             }
         }
         return found

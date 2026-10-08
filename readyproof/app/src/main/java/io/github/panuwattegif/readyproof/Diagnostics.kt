@@ -48,13 +48,14 @@ object Diagnostics {
 
     /**
      * Saves a dump when the screen *layout* changed (digits ignored, so ticking timers do not
-     * count) or when [force] is set (hand captures).
+     * count) or when [force] is set (taps and hand captures).
      */
     @Synchronized
     fun dump(ctx: Context, label: String, roots: List<UiNode>, force: Boolean) {
         try {
             val now = System.currentTimeMillis()
-            if (!force && now - lastDumpAt < MIN_DUMP_GAP_MS) return
+            // Failure snapshots are automatic, but still bounded when a broken page repeats.
+            if (now - lastDumpAt < MIN_DUMP_GAP_MS) return
             val text = roots.joinToString("\n") { TreeDump.dump(it) }
             val signature = DIGITS.replace(text, "#").hashCode()
             if (!force && signature == lastSignature) return
@@ -82,6 +83,22 @@ object Diagnostics {
             .append(" running=").append(ProofService.instance != null)
             .append(" lastGrabEvent=").append(ProofService.lastTargetEventAt).append('\n')
         sb.append("\n## Config\n").append(ConfigCodec.encode(ConfigStore.get(ctx))).append('\n')
+        val prefs = ConfigStore.prefs(ctx)
+        sb.append("\n## Monitor and closing\n")
+        for (key in listOf("monitor_status", "closing_history_status", "auto_history_last_result", "drive_status"))
+            sb.append(key).append("=").append(prefs.getString(key, null)).append('\n')
+        sb.append("shop=").append(ShopStore.get(ctx)?.id)
+            .append(" driveEnabled=").append(prefs.getBoolean("drive_enabled", false)).append('\n')
+        sb.append("autoNavigationEnabled=").append(prefs.getBoolean("auto_navigation_enabled", true)).append('\n')
+        sb.append("\n## Local daily batch requests\n")
+        File(ctx.filesDir, "reports").listFiles()?.filter { it.name.contains("batch-request-") }
+            ?.sortedBy { it.name }?.forEach { sb.append(it.name).append(" | bytes=").append(it.length()).append('\n') }
+        sb.append("\n## Upload journal (no tokens or photo contents)\n")
+        DriveSync.entries(ctx).forEach { e ->
+            sb.append(e.key).append(" | shop=").append(e.shopId).append(" | ").append(e.name)
+                .append(" | state=").append(e.state).append(" | error=").append(e.error)
+                .append(" | batchMembers=").append(e.batchMembers?.size).append('\n')
+        }
         ProofService.instance?.engine?.let { e -> sb.append("\n## Status\n").append(e.statusLines().joinToString("\n")).append('\n') }
         val activity = File(dir(ctx), "activity.log")
         sb.append("\n## Activity\n").append(if (activity.exists()) activity.readLines().takeLast(300).joinToString("\n") else "-").append('\n')

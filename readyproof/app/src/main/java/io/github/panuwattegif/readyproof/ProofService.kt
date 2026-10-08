@@ -11,7 +11,8 @@ import io.github.panuwattegif.readyproof.core.Config
 
 /**
  * The accessibility service: receives GrabMerchant's screen events and hands them to [Engine],
- * which does the watching, sweeping, screenshots and the end-of-day run.
+ * which does the watching, sweeping, screenshots and the end-of-day run. This phone only
+ * watches; orders are accepted and marked ready on the shop's own device.
  * Events from any other app are never delivered (packageNames = the apps chosen in Settings).
  */
 class ProofService : AccessibilityService() {
@@ -25,6 +26,10 @@ class ProofService : AccessibilityService() {
         @Volatile
         var lastTargetEventAt = 0L
             private set
+
+        /** Last saved photo, for the home screen. */
+        @Volatile
+        var lastCaptureText: String? = null
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -108,9 +113,22 @@ class ProofService : AccessibilityService() {
         main.postDelayed({ engine?.manualCapture(note) }, delayMs)
     }
 
-    /** The button "สรุปสิ้นวันตอนนี้". */
+    /** The buttons "สรุปสิ้นวันตอนนี้" / "กวาด History ตอนนี้". */
     fun runEndOfDayNow() {
         main.post { engine?.runEndOfDayNow() }
+    }
+
+    /** Same as [runEndOfDayNow]; the name the History button has always used. */
+    fun requestHistorySweepNow() = runEndOfDayNow()
+
+    /** "กลับไปเฝ้า Ready". */
+    fun resumeReadyMonitor() {
+        main.post { engine?.resumeReadyMonitor() }
+    }
+
+    /** The phone was just bound to a shop. */
+    fun onShopBound() {
+        main.post { engine?.onShopBound() }
     }
 
     fun toast(msg: String) {

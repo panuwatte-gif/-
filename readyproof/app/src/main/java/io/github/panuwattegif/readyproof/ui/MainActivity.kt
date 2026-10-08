@@ -5,17 +5,19 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import io.github.panuwattegif.readyproof.ConfigStore
+import io.github.panuwattegif.readyproof.ShopStore
+import io.github.panuwattegif.readyproof.DailyExport
+import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.Notifier
 import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
-import io.github.panuwattegif.readyproof.core.ObsType
-import io.github.panuwattegif.readyproof.core.RecordKind
+import io.github.panuwattegif.readyproof.core.ReportBuilder
 import io.github.panuwattegif.readyproof.core.ReportText
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Home: is the watcher alive, what it is doing, today's numbers, and the way to every other screen. */
+/** Home: is the watcher alive, today's numbers, and the way to every other screen. */
 class MainActivity : Activity() {
     private val refresh: () -> Unit = { render() }
 
@@ -31,12 +33,11 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        val col = Ui.page(this, "ReadyProof", "แคปหลักฐานแท็บ Ready ของ Grab อัตโนมัติ", back = false)
+        val col = Ui.page(this, "ReadyProof", "แคปหลักฐานออเดอร์ Grab อัตโนมัติ", back = false)
         val cfg = ConfigStore.get(this)
         val zone = ZoneId.systemDefault()
         val enabled = ServiceStatus.isEnabled(this)
-        val service = ProofService.instance
-        val running = service != null
+        val running = ProofService.instance != null
 
         // --- status ---
         val status = Ui.card(col)
@@ -68,7 +69,6 @@ class MainActivity : Activity() {
                 render()
             }
         }
-        service?.engine?.statusLines()?.forEach { Ui.text(status, it, 14f, Ui.TEXT, topDp = 2) }
         val target = cfg.targetPackages.first()
         val installed = ServiceStatus.isInstalled(this, target)
         Ui.text(
@@ -78,6 +78,16 @@ class MainActivity : Activity() {
         )
         val lastEvent = ProofService.lastTargetEventAt
         if (lastEvent > 0) Ui.text(status, "เห็นหน้าจอ Grab ล่าสุด: " + ReportText.time(lastEvent, zone), 14f, Ui.MUTED)
+        Ui.text(status, "เครื่องนี้เฝ้าแคปอย่างเดียว · ไม่ต้องกด Ready บนเครื่องนี้", 14f, Ui.MUTED)
+        val monitorPrefs = ConfigStore.prefs(this)
+        val engineLines = ProofService.instance?.engine?.statusLines()
+        if (engineLines != null) {
+            engineLines.forEach { Ui.text(status, it, 14f, Ui.TEXT, topDp = 2) }
+        } else {
+            monitorPrefs.getString("monitor_status", null)?.let { Ui.text(status, it, 13f, Ui.MUTED, topDp = 4) }
+        }
+        val lastPoll = monitorPrefs.getLong("monitor_last_poll", 0L)
+        if (lastPoll > 0) Ui.text(status, "ตรวจหน้าเฝ้าแคปล่าสุด: " + ReportText.time(lastPoll, zone), 13f, Ui.MUTED)
         if (!ServiceStatus.isIgnoringBattery(this)) {
             Ui.button(status, "อนุญาตให้ทำงานเบื้องหลังตลอด (กันมือถือปิดระบบ)", filled = false) {
                 ServiceStatus.requestIgnoreBattery(this)
@@ -89,50 +99,106 @@ class MainActivity : Activity() {
             }
         }
         if (installed && running) {
-            Ui.button(status, "▶ เปิด Grab ที่แท็บ Ready แล้ววางเครื่องทิ้งไว้") { ServiceStatus.openApp(this, target) }
+            Ui.button(status, "▶ เปิด Grab ที่แท็บ Ready แล้ววางเครื่องทิ้งไว้") {
+                ServiceStatus.openApp(this, target)
+                ProofService.instance?.resumeReadyMonitor()
+            }
         }
+
+        val drive = Ui.card(col)
+        Ui.text(drive, "ร้าน: " + (ShopStore.get(this)?.label ?: "ยังไม่เลือก — หลักฐานใหม่ยังไม่อัปอัตโนมัติ"), 16f, bold = true)
+        Ui.text(drive, DriveSync.summary(this), 13f, Ui.MUTED)
+        Ui.button(drive, "ร้าน / Google Drive / คิวส่งไฟล์", filled = false) { startActivity(Intent(this, DriveActivity::class.java)) }
 
         // --- today ---
         val today = LocalDate.now()
-        val records = RecordStore.load(this, today)
-        val ready = records.filter { it.uri != null }.flatMap { r -> r.items.filter { it.type == ObsType.READY }.map { it.gf } }.toSet()
-        val waiting = service?.engine?.tracker?.present() ?: emptyList()
+        val report = ReportBuilder.build(
+            RecordStore.loadRange(this, today.minusDays(1), today.plusDays(1)),
+            today,
+            zone,
+            cfg,
+            ShopStore.get(this)?.id,
+            DailyExport.reachedEnd(this, today, ShopStore.get(this)?.id),
+        )
+        val waiting = ProofService.instance?.engine?.tracker?.present() ?: emptyList()
         val day = Ui.card(col)
         Ui.text(day, "วันนี้ " + ReportText.date(today), 17f, bold = true)
         Ui.text(
             day,
-            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · รอไรเดอร์ตอนนี้ ${waiting.size} · " +
-                "ภาพหน้าประวัติ ${records.count { it.kind == RecordKind.DELAY && it.uri != null }} · " +
-                "แคปเอง ${records.count { it.kind == RecordKind.MANUAL && it.uri != null }}",
+            "Ready เห็น ${report.readySeenOrders} · มีภาพ ${report.readyOrders} · Pending ${report.pendingReadyProof} · " +
+                "รอไรเดอร์ตอนนี้ ${waiting.size} · " +
+                "History ${report.historyOrders} (เสร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen}) · " +
+                "Delayed ${report.delayed}",
             15f, topDp = 4,
         )
-        service?.engine?.lastShotText?.let { Ui.text(day, "ภาพล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
         Ui.text(
             day,
-            if (cfg.autoEndOfDay) "สรุปสิ้นวันอัตโนมัติหลัง ${cfg.closeTime} + ${cfg.endBufferMinutes} นาที (เมื่อแท็บ Ready ว่าง)"
-            else "สรุปสิ้นวันอัตโนมัติ: ปิดอยู่ (กดปุ่มด้านล่างเอง)",
+            "ตรวจจำนวน Ready ${report.readyOrders} / Completed ${report.completedSeen}: " +
+                (if (report.readyVsCompletedMatch) "MATCH" else "MISMATCH"),
+            14f,
+            if (report.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
+            topDp = 3,
+        )
+        report.grabCompleted?.let { g ->
+            Ui.text(
+                day,
+                "ยอด Grab: เสร็จสมบูรณ์ $g · ยกเลิก ${report.grabCancelled ?: 0} → อ่านรายการได้ " +
+                    (if (report.historyMatchesGrab == true) "ครบ" else "ยังไม่ครบ"),
+                14f, if (report.historyMatchesGrab == true) Ui.GREEN else Ui.AMBER, topDp = 3,
+            )
+        }
+        if (report.delayed > 0) {
+            Ui.text(
+                day,
+                "ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)}) · กดทัน ${report.inTime.size} · " +
+                    "ช้าจริง ${report.late.size} · ไม่มีหลักฐาน ${report.noEvidence.size} → ที่ควรได้ ${ReportText.pct(report.realPct)}",
+                14f, topDp = 3,
+            )
+        }
+        ConfigStore.prefs(this).getString("auto_history_last_result", null)?.let {
+            Ui.text(day, "History ล่าสุด: $it", 13f, Ui.MUTED, topDp = 2)
+        }
+        Ui.text(
+            day,
+            if (cfg.autoEndOfDay) {
+                "ปิดร้าน ${cfg.closeTime} + เผื่อ ${cfg.endBufferMinutes} นาที → ตรวจ Ready + กำลังเตรียม (ยังมีออเดอร์ค้าง: ตรวจใหม่ทุก ${cfg.recheckMinutes} นาที) → ว่างแล้วอ่าน History ทั้งหมดเอง"
+            } else {
+                "สรุปสิ้นวันอัตโนมัติ: ปิดอยู่ (กด \"กวาด History ตอนนี้\" เอง)"
+            },
             13f, Ui.MUTED, topDp = 4,
         )
-        Ui.button(day, "📋 รายงานออเดอร์ล่าช้า + จับคู่หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
-        Ui.button(day, "🧾 สรุปสิ้นวันตอนนี้ (อ่านหน้าประวัติทั้งหมด)", filled = false) {
-            if (service == null) {
-                Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
-            } else {
-                Ui.confirm(
-                    this, "สรุปสิ้นวันตอนนี้?",
-                    "แอปจะเปิด Grab → แท็บประวัติ แล้วเลื่อนอ่านทุกออเดอร์ของวันนี้ แคปออเดอร์ที่ล่าช้า และจับคู่หลักฐาน (ใช้เวลาประมาณ 1–3 นาที ระหว่างนั้นอย่าแตะจอ)",
-                    "เริ่มเลย",
-                ) {
-                    service.runEndOfDayNow()
-                    ServiceStatus.openApp(this, target)
-                }
-            }
+        ConfigStore.prefs(this).getString("closing_history_status", null)?.let {
+            Ui.text(day, it, 13f, Ui.MUTED, topDp = 2)
         }
+        ProofService.lastCaptureText?.let { Ui.text(day, "ล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
+        Ui.button(day, "📋 รายงานออเดอร์ล่าช้า + จับคู่หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
         Ui.button(day, "🖼️ ภาพที่แคปไว้ / ค้นหาเลข GF", filled = false) { startActivity(Intent(this, CapturesActivity::class.java)) }
 
         // --- tools ---
         val tools = Ui.card(col)
+        Ui.button(tools, "🔄 กวาด History ตอนนี้ (สรุปทันที)", filled = false) {
+            val service = ProofService.instance
+            if (service == null) {
+                Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
+            } else {
+                Ui.confirm(
+                    this, "กวาด History ตอนนี้?",
+                    "แอปจะเปิด Grab → แท็บประวัติ เลื่อนอ่านทุกออเดอร์ของวันนี้ แคปออเดอร์ที่ล่าช้า แล้วจับคู่หลักฐาน " +
+                        "(ประมาณ 1–3 นาที ระหว่างนั้นอย่าแตะจอ) · ถ้ากดก่อนปิดร้าน รอบอัตโนมัติตอนเย็นยังทำงานตามปกติ",
+                    "เริ่มเลย",
+                ) {
+                    ServiceStatus.openApp(this, target)
+                    service.requestHistorySweepNow()
+                    Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
+                }
+            }
+        }
+        Ui.button(tools, "กลับไปเฝ้า Ready", filled = false) {
+            ServiceStatus.openApp(this, target)
+            ProofService.instance?.resumeReadyMonitor()
+        }
         Ui.button(tools, "🧪 ทดสอบ: แคปหน้าจอใน 5 วินาที", filled = false) {
+            val service = ProofService.instance
             if (service == null) {
                 Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน แล้วลองใหม่")
             } else {
@@ -145,7 +211,7 @@ class MainActivity : Activity() {
         Ui.button(tools, "📖 คู่มือการใช้งาน", filled = false) { startActivity(Intent(this, GuideActivity::class.java)) }
 
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
-        Ui.text(col, "ReadyProof $version · ไม่ใช้อินเทอร์เน็ต ข้อมูลอยู่ในเครื่องนี้เท่านั้น", 12f, Ui.MUTED, topDp = 4)
+        Ui.text(col, "ReadyProof $version · เก็บในเครื่องก่อน · Drive ส่งแยกเบื้องหลัง", 12f, Ui.MUTED, topDp = 4)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

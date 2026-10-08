@@ -10,14 +10,17 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import io.github.panuwattegif.readyproof.ConfigStore
+import io.github.panuwattegif.readyproof.ShopStore
+import io.github.panuwattegif.readyproof.DailyExport
+import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.EvidenceProvider
 import io.github.panuwattegif.readyproof.MediaSaver
-import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
 import io.github.panuwattegif.readyproof.core.DailyReport
 import io.github.panuwattegif.readyproof.core.DelayCase
 import io.github.panuwattegif.readyproof.core.EvidenceSet
+import io.github.panuwattegif.readyproof.core.Naming
 import io.github.panuwattegif.readyproof.core.Parsers
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.ReportBuilder
@@ -28,10 +31,11 @@ import java.time.ZoneId
 
 /**
  * End of day: Grab's delayed orders (read from the History list) matched with the Ready tab
- * screenshots and split into three groups: proven in time, proven late, no evidence.
- * Each proven order is one set (GF-xxx_READY.jpg + GF-xxx_DELAY.jpg).
+ * screenshots. Delayed orders without a READY match remain first-class report cases and their
+ * DELAY screenshot is still exported, so a real shop delay can never disappear from the report.
  */
 class ReportActivity : Activity() {
+    private var legacy = false
     private var date: LocalDate = LocalDate.now()
     private lateinit var thumbs: Thumbs
     private val refresh: () -> Unit = { render() }
@@ -61,7 +65,8 @@ class ReportActivity : Activity() {
         val zone = ZoneId.systemDefault()
         val cfg = ConfigStore.get(this)
         val records = RecordStore.loadRange(this, date.minusDays(1), date.plusDays(1))
-        val report = ReportBuilder.build(records, date, zone, cfg)
+        val shopId = if (legacy) null else ShopStore.get(this)?.id
+        val report = ReportBuilder.build(records, date, zone, cfg, shopId, DailyExport.reachedEnd(this, date, shopId))
         val col = Ui.page(this, "รายงานออเดอร์ล่าช้า", "จับคู่กับภาพหลักฐานให้อัตโนมัติ")
 
         val nav = Ui.row(this)
@@ -85,20 +90,25 @@ class ReportActivity : Activity() {
             bottomMargin = Ui.dp(this@ReportActivity, 10)
         })
 
+        Ui.button(col, if (legacy) "ดูร้านที่เลือก" else "ดูข้อมูลเดิมที่ยังไม่ระบุร้าน", filled = false) {
+            legacy = !legacy
+            render()
+        }
         summaryCard(col, report, zone)
         if (report.cases.isEmpty()) {
             val c = Ui.card(col)
-            Ui.text(c, if (report.historyRows == 0) "ยังไม่มีข้อมูลจากหน้าประวัติของวันนี้" else "ไม่มีออเดอร์ล่าช้า 🎉", 15f, bold = true)
+            Ui.text(c, if (!report.complete) "ยังตรวจ History ไม่ครบ — ยังสรุปว่าไม่มีออเดอร์ล่าช้าไม่ได้"
+                else "ไม่มีออเดอร์ล่าช้า", 15f, bold = true)
         } else {
-            val sets = Verdict.entries.flatMap { report.sets(it) }.associateBy { it.case }
+            val sets = report.sets().associateBy { it.case }
             for (v in Verdict.entries) {
                 val cases = report.cases.filter { it.verdict == v }
                 if (cases.isEmpty()) continue
-                Ui.text(col, groupTitle(v) + " (${cases.size})", 16f, colorOf(v), bold = true, topDp = 6)
+                Ui.text(col, groupTitle(v) + " ${cases.size} เคส", 17f, colorOf(v), bold = true, topDp = 6)
                 if (v == Verdict.NO_EVIDENCE) {
                     Ui.text(col, "ไม่ได้แปลว่าร้านช้าจริง: ไม่มีภาพในแท็บ Ready ของออเดอร์นี้ (ไม่ได้ผ่านแท็บ Ready หรือระบบจับไม่ได้)", 13f, Ui.MUTED)
                 }
-                cases.forEach { caseCard(col, it, sets[it], zone) }
+                cases.forEach { caseCard(col, it, sets[it], report, zone) }
             }
         }
     }
@@ -117,58 +127,133 @@ class ReportActivity : Activity() {
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
         val s = Ui.card(col)
+        Ui.text(s, "ร้าน: " + (io.github.panuwattegif.readyproof.core.Shop.fromId(r.shopId)?.label ?: "UNKNOWN / ข้อมูลเดิม"), 16f, bold = true)
+        Ui.text(s, if (r.complete) "COMPLETE (ตามรายการที่อ่านได้)" else "INCOMPLETE / PROVISIONAL — จำนวนทั้งวันยัง UNKNOWN", 14f, Ui.AMBER)
+        Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
+            (if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN"), 13f, Ui.MUTED)
+        Ui.button(s, "ดูรายละเอียดความครบของหลักฐาน", filled = false) {
+            Ui.alert(this, "ข้อมูลการเก็บภาพ — ไม่ใช่รายการล่าช้า",
+                "Ready รอภาพ: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" } +
+                    "\nCompleted ขาด Ready: " + r.missingReadyInstances.joinToString().ifEmpty { "-" } +
+                    "\nHistory ขาดภาพ: " + r.missingHistoryInstances.joinToString().ifEmpty { "-" })
+        }
+        Ui.text(
+            s,
+            "History: ${r.historyOrders} ออเดอร์ · เสร็จ ${r.completedSeen} · ยกเลิก ${r.cancelledSeen}",
+            15f,
+            bold = true,
+        )
         if (r.grabCompleted != null) {
-            Ui.text(s, "ยอดจาก Grab: เสร็จสมบูรณ์ ${r.grabCompleted}" + (r.grabCancelled?.let { " · ยกเลิก $it" } ?: ""), 15f)
             Ui.text(
                 s,
-                "อ่านรายการในประวัติได้ ${r.historyRows}/${r.grabCompleted}" + if (r.historyComplete) " ✓ ครบ" else " ⚠ ไม่ครบ",
-                15f, if (r.historyComplete) Ui.GREEN else Ui.AMBER,
+                "ยอดจาก Grab (หัวหน้าประวัติ): เสร็จ ${r.grabCompleted} · ยกเลิก ${r.grabCancelled ?: 0} → " +
+                    if (r.historyMatchesGrab == true) "อ่านครบ ✓" else "⚠ อ่านได้ไม่ครบ",
+                14f, if (r.historyMatchesGrab == true) Ui.GREEN else Ui.AMBER,
             )
         } else {
-            Ui.text(s, "อ่านรายการในประวัติได้ ${r.historyRows} (ยังไม่ได้อ่านยอดรวมจาก Grab)", 15f)
+            Ui.text(s, "ยอดจาก Grab (หัวหน้าประวัติ): ยังอ่านไม่ได้", 13f, Ui.MUTED)
         }
-        Ui.text(s, "มีภาพในแท็บ Ready ${r.rowsWithReady}/${r.historyRows} ออเดอร์", 14f, Ui.MUTED)
-        if (r.rowsWithoutReady.isNotEmpty()) {
-            Ui.text(s, "ไม่มีภาพ Ready: " + r.rowsWithoutReady.take(20).joinToString(", ") + if (r.rowsWithoutReady.size > 20) " …" else "", 13f, Ui.MUTED)
-        }
-        Ui.divider(s)
-        Ui.text(s, "Grab ระบุล่าช้า ${r.delayed} ออเดอร์ = ${ReportText.pct(r.grabPct)} (แบบ Grab คิด)", 16f, bold = true)
+        Ui.text(
+            s,
+            "Ready เห็น ${r.readySeenOrders} · มีภาพ ${r.readyOrders} · Pending ${r.pendingReadyProof} · " +
+                "Completed ${r.completedSeen}: " + (if (r.readyVsCompletedMatch) "MATCH" else "MISMATCH"),
+            14f,
+            if (r.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
+            topDp = 2,
+        )
+        Ui.text(s, "ล่าช้าที่อ่านพบ: ${r.delayed}" + if (!r.complete) " · ยังไม่ยืนยันทั้งวัน" else "", 16f, bold = true, topDp = 6)
         Ui.text(s, "✅ ${Verdict.IN_TIME.label}: ${r.inTime.size}", 15f, Ui.GREEN, topDp = 2)
         Ui.text(s, "⚠️ ${Verdict.LATE.label}: ${r.late.size}", 15f, Ui.AMBER)
         Ui.text(s, "❓ ${Verdict.NO_EVIDENCE.label}: ${r.noEvidence.size}", 15f, Ui.RED)
+        Ui.text(s, "% ล่าช้าแบบ Grab = ${r.delayed} / ${r.base} = ${ReportText.pct(r.grabPct)}", 15f, topDp = 4)
         Ui.text(
             s,
-            "% ล่าช้าที่ร้านควรได้ = (${r.delayed} − ${r.inTime.size}) / ${r.base} = ${ReportText.pct(r.realPct)}",
-            16f, bold = true, topDp = 4,
+            "% ที่ร้านควรได้ = (${r.delayed} − ${r.inTime.size}) / ${r.base} = ${ReportText.pct(r.realPct)}",
+            16f, bold = true,
         )
-        if (r.historyRows == 0) {
+        if (r.historyOrders == 0) {
             Ui.text(
                 s,
-                "ยังไม่มีข้อมูลจากหน้าประวัติ → รอสรุปอัตโนมัติหลังปิดร้าน หรือกด \"สรุปสิ้นวันตอนนี้\" ที่หน้าแรก",
+                "ยังไม่มีข้อมูลจาก History ของวันนี้ — ระบบจะเข้า History เองหลังปิดร้าน หรือกด \"กวาด History ตอนนี้\" ที่หน้าหลักเพื่อทดสอบ",
                 13f, Ui.AMBER, topDp = 8,
             )
+        } else if (!r.readyVsCompletedMatch) {
+            Ui.text(
+                s,
+                "⚠ จำนวน Ready กับ Completed ต่างกัน — ใช้รายออเดอร์ตรวจความครบ รูปที่มีส่งได้เสมอ",
+                13f, Ui.AMBER, topDp = 6,
+            )
         }
-        if (date == LocalDate.now() && ProofService.instance != null) {
-            Ui.button(s, "🧾 อ่านหน้าประวัติใหม่ตอนนี้", filled = false) {
-                ProofService.instance?.runEndOfDayNow()
-                ServiceStatus.openApp(this, ConfigStore.get(this).targetPackages.first())
-            }
-        }
+
         val inTime = r.sets(Verdict.IN_TIME)
-        val files = inTime.sumOf { if (it.delay != null) 2L else 1L }
-        Ui.button(s, "📤 ส่งหลักฐานกดทัน ${inTime.size} ชุด ($files ไฟล์) เข้า Drive") { shareSets(inTime) }
-        val late = r.sets(Verdict.LATE)
-        if (late.isNotEmpty()) {
-            Ui.button(s, "ส่งชุดที่ช้าจริง ${late.size} ชุด (ไว้ตรวจเอง)", filled = false) { shareSets(late) }
+        val inTimeFiles = inTime.sumOf { if (it.delay != null) 2L else 1L }
+        Ui.button(s, "📤 ส่งหลักฐานกดทัน ${inTime.size} ชุด ($inTimeFiles ไฟล์) ให้ Grab") { shareSets(inTime) }
+        val sets = r.sets()
+        val unmatchedDelayFiles = r.withoutEvidence.count { it.delayShot != null }
+        val files = sets.sumOf { if (it.delay != null) 2L else 1L } + unmatchedDelayFiles
+        Ui.button(s, "แชร์ทุกเคสล่าช้า ${r.cases.size} เคส ($files ไฟล์ รวมช้าจริง/ไม่มีหลักฐาน)", filled = false) { shareEvidence(r, sets) }
+
+        if (r.withoutEvidence.any { it.delayShot != null }) {
+            Ui.text(
+                s,
+                "⚠ เคสที่ไม่มีภาพ Ready จะส่งภาพ DELAY ขาเดียวไปด้วย และยังนับเป็น Grab Delayed ตามเดิม",
+                13f, Ui.AMBER, topDp = 4,
+            )
         }
-        if (inTime.any { it.delay == null }) {
-            Ui.text(s, "⚠ บางชุดยังไม่มีภาพหน้าประวัติ — กด \"อ่านหน้าประวัติใหม่ตอนนี้\"", 13f, Ui.AMBER, topDp = 4)
+        if (r.cases.any { it.delayShot == null }) {
+            Ui.text(s, "⚠ บางเคสยังไม่มีภาพ DELAY ที่ใช้ได้ — ระบบจะกวาด History ซ้ำอัตโนมัติ", 13f, Ui.AMBER, topDp = 4)
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
+        Ui.button(s, "📄 แชร์สรุปวันนี้เป็นไฟล์", filled = false) {
+            runCatching {
+                Share.file(this, MediaSaver.saveDownload(this, "${r.shopId ?: "UNKNOWN"}_summary-${r.date}.txt",
+                    "text/plain", ReportText.summary(r, zone).toByteArray()), "text/plain", "ส่งสรุปวันนี้")
+            }.onFailure { Ui.alert(this, "แชร์ไม่ได้", it.message ?: "") }
+        }
+        Ui.button(s, "📤 แชร์ READY + HISTORY ทุกภาพของวัน (แม้ยังไม่ครบ)", filled = false) {
+            val shots = RecordStore.load(this, r.date).filter { it.shopId == r.shopId && it.uri != null }
+            Share.images(this, shots.mapNotNull { shot -> shot.uri?.let(Uri::parse) })
+        }
     }
 
-    /** Each set = GF-xxx_READY.jpg + GF-xxx_DELAY.jpg, named for Drive without copying the images. */
+    /**
+     * Send every delayed case that has an image. Matched cases contribute READY + DELAY; unmatched
+     * cases still contribute DELAY alone instead of being silently dropped from the Drive handoff.
+     */
+    private fun shareEvidence(report: DailyReport, sets: List<EvidenceSet>) {
+        val uris = ArrayList<Uri>()
+        for (set in sets) {
+            evidenceUri(set.ready, set.readyName)?.let { uris += it }
+            val delay = set.delay
+            val name = set.delayName
+            if (delay != null && name != null) evidenceUri(delay, name)?.let { uris += it }
+        }
+        for (case in report.withoutEvidence) {
+            val delay = case.delayShot ?: continue
+            evidenceUri(delay, delayName(report, case))?.let { uris += it }
+        }
+        Share.images(this, uris, "ส่งหลักฐาน ${report.cases.size} เคส")
+    }
+
+    private fun delayName(report: DailyReport, c: DelayCase): String {
+        val repeated = report.cases.count { it.gf == c.gf } > 1
+        val doneAt = c.doneAt
+        val tag = if (repeated && doneAt != null) {
+            c.gf + "_" + Parsers.pad2(doneAt.hour) + Parsers.pad2(doneAt.minute)
+        } else {
+            c.gf
+        }
+        return Naming.setName(tag, "DELAY")
+    }
+
+    private fun evidenceUri(r: Record, name: String): Uri? = try {
+        r.uri?.let { EvidenceProvider.uriFor(Uri.parse(it), name) }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Only the given sets: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg each. */
     private fun shareSets(sets: List<EvidenceSet>) {
         val uris = ArrayList<Uri>()
         for (set in sets) {
@@ -180,29 +265,22 @@ class ReportActivity : Activity() {
         Share.images(this, uris, "ส่งหลักฐาน ${sets.size} ชุด")
     }
 
-    private fun evidenceUri(r: Record, name: String): Uri? = try {
-        r.uri?.let { EvidenceProvider.uriFor(Uri.parse(it), name) }
-    } catch (e: Exception) {
-        null
-    }
-
-    private fun caseCard(col: LinearLayout, c: DelayCase, set: EvidenceSet?, zone: ZoneId) {
+    private fun caseCard(col: LinearLayout, c: DelayCase, set: EvidenceSet?, report: DailyReport, zone: ZoneId) {
         val card = Ui.card(col)
         val head = c.gf + " ล่าช้า " + (c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
         Ui.text(card, head, 16f, colorOf(c.verdict), bold = true)
+        if (c.verdict == Verdict.LATE) Ui.text(card, "ภาพแรกในแท็บ Ready แสดงว่าคนขับมาถึง/Grab เร่งแล้ว", 13f, Ui.AMBER)
         c.doneAt?.let { Ui.text(card, "เสร็จสมบูรณ์ " + Parsers.hhmm(it.toLocalTime()), 14f, Ui.MUTED) }
         c.readyShot?.let {
             Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.time(it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
         }
-        when (c.verdict) {
-            Verdict.LATE -> Ui.text(card, "ภาพแรกในแท็บ Ready แสดงว่าคนขับมาถึง/Grab เร่งแล้ว", 13f, Ui.AMBER, topDp = 2)
-            Verdict.NO_EVIDENCE -> Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ", 13f, Ui.MUTED, topDp = 2)
-            Verdict.IN_TIME -> {}
-        }
-        if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้าประวัติของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
+        c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
+        if (c.matchStatus == "UNKNOWN_INSTANCE") Ui.text(card, "UNKNOWN: ยังยืนยัน instance ไม่ได้ ห้ามใช้ GF อย่างเดียวจับคู่", 13f, Ui.AMBER)
+        if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ — เก็บเคสนี้ไว้ ไม่ตัดออก", 13f, Ui.RED, topDp = 2)
+        if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้า History ของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
         val shots = ArrayList<Pair<Record, String>>()
         c.readyShot?.let { shots += it.record to (set?.readyName ?: "READY") }
-        c.delayShot?.let { shots += it to (set?.delayName ?: "DELAY") }
+        c.delayShot?.let { shots += it to (set?.delayName ?: delayName(report, c)) }
         thumbRow(card, shots)
     }
 

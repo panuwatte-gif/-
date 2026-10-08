@@ -20,12 +20,6 @@ object TimeResolve {
         null
     }
 
-    fun parseDay(s: String?): LocalDate? = try {
-        s?.let { LocalDate.parse(it) }
-    } catch (e: Exception) {
-        null
-    }
-
     fun toLocal(ms: Long, zone: ZoneId): LocalDateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(ms), zone)
 
     fun toMillis(t: LocalDateTime, zone: ZoneId): Long = t.atZone(zone).toInstant().toEpochMilli()
@@ -37,11 +31,11 @@ enum class Verdict(val label: String) {
     IN_TIME("หลักฐานว่าร้านกดทัน"),
     /** First shot already shows the rider there / Grab asking the shop to hurry. */
     LATE("หลักฐานว่าร้านช้าจริง"),
-    /** No Ready-tab shot: no evidence or the phone missed it. Not proof of being late. */
+    /** No usable Ready-tab shot: no evidence or the phone missed it. Not proof of being late. */
     NO_EVIDENCE("ไม่มีหลักฐาน / ระบบจับไม่ได้"),
 }
 
-/** A screenshot showing the order inside the Ready tab, i.e. already marked done. */
+/** A screenshot showing the order inside the Ready tab, i.e. already pressed ready. */
 data class Evidence(val record: Record, val status: String?) {
     val t: Long get() = record.t
 }
@@ -52,18 +46,24 @@ data class DelayCase(
     val delayMin: Int?,
     val doneAt: LocalDateTime?,
     val firstSeen: Long,
-    /** READY shots of the order's stay in the Ready tab, earliest first. */
+    /** READY shots taken before the order finished, earliest first. */
     val evidence: List<Evidence>,
     /** History screenshots that show this order as delayed, latest first. */
     val delayShots: List<Record>,
-    val verdict: Verdict,
+    /** Logged taps on the ready button for this order (text only, for reference). */
+    val presses: List<Long> = emptyList(),
+    val matchStatus: String = if (evidence.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY",
+    val verdict: Verdict = if (evidence.isNotEmpty()) Verdict.IN_TIME else Verdict.NO_EVIDENCE,
 ) {
     val hasEvidence: Boolean get() = evidence.isNotEmpty()
 
-    /** The earliest READY shot: closest to the moment the order was marked done. */
+    /** The earliest READY shot: closest to the press, most likely still "Finding a driver...". */
     val readyShot: Evidence? get() = evidence.firstOrNull()
 
     val delayShot: Record? get() = delayShots.firstOrNull()
+
+    /** Last logged tap before the order finished. */
+    val pressedAt: Long? get() = presses.maxOrNull()
 }
 
 /** The files handed to Grab for one order, named the way the shop already files them. */
@@ -77,44 +77,77 @@ data class EvidenceSet(
 
 data class DailyReport(
     val date: LocalDate,
-    /** Grab's own totals at the top of History; null when they were never read. */
-    val grabCompleted: Int?,
-    val grabCancelled: Int?,
-    /** Finished orders read from the History list. */
-    val historyRows: Int,
+    /** Completed order instances observed during a full History sweep. */
+    val completedSeen: Int,
     val cases: List<DelayCase>,
-    /** Finished orders that have at least one Ready-tab shot. */
-    val rowsWithReady: Int,
-    /** Finished orders without any Ready-tab shot. */
-    val rowsWithoutReady: List<String>,
-    /** Different orders photographed in the Ready tab that day. */
+    /** Distinct order numbers whose ready button tap was logged this date. */
+    val pressedOrders: Int,
+    /** How many of those also got a READY shot this date. */
+    val pressedWithReady: Int,
+    /** Distinct order numbers photographed in the Ready tab this date. */
     val readyOrders: Int,
+    /** Cancelled order instances observed during the History sweep. */
+    val cancelledSeen: Int = 0,
+    /** Distinct GF numbers observed in Ready, including targets still waiting for a valid bitmap. */
+    val readySeenOrders: Int = readyOrders,
+    val shopId: String? = null,
+    val pendingReadyGfs: List<String> = emptyList(),
+    val missingHistoryInstances: List<String> = emptyList(),
+    val unknownHistoryInstances: List<String> = emptyList(),
+    val historyDateVerified: Boolean = false,
+    val sweepReachedEnd: Boolean = false,
+    val missingReadyInstances: List<String> = emptyList(),
+    /** Grab's own totals at the top of History ("Completed 77 · Cancelled 0"); null = never read. */
+    val grabCompleted: Int? = null,
+    val grabCancelled: Int? = null,
 ) {
-    /** What the percentages are taken of: Grab's own count when known. */
-    val base: Int get() = grabCompleted ?: historyRows
     val delayed: Int get() = cases.size
+    val withEvidence: List<DelayCase> get() = cases.filter { it.hasEvidence }
+    val withoutEvidence: List<DelayCase> get() = cases.filter { !it.hasEvidence }
     val inTime: List<DelayCase> get() = cases.filter { it.verdict == Verdict.IN_TIME }
     val late: List<DelayCase> get() = cases.filter { it.verdict == Verdict.LATE }
     val noEvidence: List<DelayCase> get() = cases.filter { it.verdict == Verdict.NO_EVIDENCE }
+    val historyOrders: Int get() = completedSeen + cancelledSeen
+    /** Delayed orders left once the ones proven done in time are taken out. */
+    val actualDelayed: Int get() = delayed - inTime.size
 
-    /** Every History row was read (the count matches Grab's own total). */
-    val historyComplete: Boolean get() = grabCompleted != null && historyRows >= grabCompleted
+    /** Grab's own order total when it was read, otherwise the rows the scanner counted. */
+    val base: Int get() = if (grabCompleted != null) grabCompleted + (grabCancelled ?: 0) else historyOrders
 
-    fun pct(n: Int): Double? = if (base > 0) n * 100.0 / base else null
+    /** The rows read match Grab's own totals (unknown when the totals were never read). */
+    val historyMatchesGrab: Boolean?
+        get() = grabCompleted?.let { completedSeen >= it && cancelledSeen >= (grabCancelled ?: 0) }
+
+    private fun pctOfBase(n: Int): Double? = base.takeIf { it > 0 && n <= it }?.let { n * 100.0 / it }
 
     /** Delay rate as Grab counts it: every delayed order. */
-    val grabPct: Double? get() = pct(delayed)
+    val grabPct: Double? get() = pctOfBase(delayed)
 
     /** Delay rate the shop should get: orders proven done in time are not late. */
-    val realPct: Double? get() = pct(delayed - inTime.size)
+    val realPct: Double? get() = pctOfBase(actualDelayed)
+    val pendingReadyProof: Int get() = maxOf(pendingReadyGfs.size, readySeenOrders - readyOrders, 0)
+    val missingDelayProof: Int get() = cases.count { it.delayShot == null }
+    val complete: Boolean get() = sweepReachedEnd && historyDateVerified &&
+        unknownHistoryInstances.isEmpty() && missingHistoryInstances.isEmpty() &&
+        missingDelayProof == 0 && pendingReadyProof == 0 && missingReadyInstances.isEmpty() &&
+        historyMatchesGrab != false
+    val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen && pendingReadyProof == 0
+
+    /** Provisional percentage based on the History orders the scanner has actually counted. */
+    fun pct(n: Int): Double? = historyOrders.takeIf { it > 0 && delayed <= it }?.let { n * 100.0 / it }
 
     /**
-     * One set per order with a Ready shot: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same
-     * order number was used twice that day, the finish time is added ("GF-613_1147_READY.jpg").
+     * One set per proven order: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same order number
+     * was used twice that day, the finish time is added ("GF-613_1147_READY.jpg").
      */
-    fun sets(verdict: Verdict): List<EvidenceSet> {
+    fun sets(): List<EvidenceSet> = setsOf(withEvidence)
+
+    /** Sets of one verdict group (in time / late). */
+    fun sets(verdict: Verdict): List<EvidenceSet> = setsOf(withEvidence.filter { it.verdict == verdict })
+
+    private fun setsOf(chosen: List<DelayCase>): List<EvidenceSet> {
         val repeated = cases.groupingBy { it.gf }.eachCount().filterValues { it > 1 }.keys
-        return cases.filter { it.verdict == verdict && it.readyShot != null }.map { c ->
+        return chosen.map { c ->
             val tag = if (c.gf in repeated && c.doneAt != null) {
                 c.gf + "_" + Parsers.pad2(c.doneAt.hour) + Parsers.pad2(c.doneAt.minute)
             } else {
@@ -133,91 +166,135 @@ data class DailyReport(
 }
 
 object ReportBuilder {
-    /** READY shots further apart than this belong to different stays (Grab reuses order numbers). */
-    private const val STAY_GAP_MS = 45 * 60_000L
-
-    private class Row(
+    private class Acc(
         val gf: String,
         val doneAt: LocalDateTime?,
         val date: LocalDate,
         val firstSeen: Long,
     ) {
         var delayed = false
+        var cancelled = false
+        var completed = false
         var delayMin: Int? = null
         val delayShots = ArrayList<Record>()
     }
 
     /** [records] should cover the day before and after [date] too, so windows can cross midnight. */
-    fun build(records: List<Record>, date: LocalDate, zone: ZoneId, cfg: Config): DailyReport {
-        val sorted = records.sortedBy { it.t }
-        val rows = LinkedHashMap<String, Row>()
+    fun build(records: List<Record>, date: LocalDate, zone: ZoneId, cfg: Config,
+              shopId: String? = null, sweepReachedEnd: Boolean = false): DailyReport {
+        // Legacy records stay in a separate report; selecting a shop never reassigns old data.
+        val sorted = records.filter { it.shopId == shopId }.sortedBy { it.t }
+        val acc = LinkedHashMap<String, Acc>()
         for (r in sorted) {
             val seen = TimeResolve.toLocal(r.t, zone)
-            val day = TimeResolve.parseDay(r.day)
             for (item in r.items) {
-                if (item.type != ObsType.DONE && item.type != ObsType.DELAY) continue
-                val time = item.doneAt?.let { TimeResolve.parseHHmm(it) }
-                val doneAt = when {
-                    time == null -> null
-                    day != null -> day.atTime(time)
-                    else -> TimeResolve.latestAtOrBefore(time, seen.plusMinutes(1))
+                if (item.type != ObsType.DONE && item.type != ObsType.DELAY && item.type != ObsType.CANCELLED) continue
+                val explicitDate = (item.historyDate ?: r.historyDate)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+                val doneAt = item.doneAt?.let { TimeResolve.parseHHmm(it) }
+                    ?.let { if (explicitDate != null) explicitDate.atTime(it) else TimeResolve.latestAtOrBefore(it, seen.plusMinutes(1)) }
+                val day = doneAt?.toLocalDate() ?: seen.toLocalDate()
+                val key = "${item.gf}|${doneAt ?: "$day|${item.card.joinToString("|")}"}"
+                val a = acc.getOrPut(key) { Acc(item.gf, doneAt, day, r.t) }
+                if (item.type == ObsType.DONE || (item.type == ObsType.DELAY && doneAt != null)) a.completed = true
+                if (item.type == ObsType.CANCELLED) a.cancelled = true
+                if (item.type == ObsType.DELAY) {
+                    a.delayed = true
+                    item.delayMin?.let { m -> a.delayMin = maxOf(a.delayMin ?: 0, m) }
+                    if (r.uri != null && a.delayShots.none { it.id == r.id }) a.delayShots += r
                 }
-                val rowDay = doneAt?.toLocalDate() ?: day ?: seen.toLocalDate()
-                val key = "${item.gf}|${doneAt ?: rowDay}"
-                val row = rows.getOrPut(key) { Row(item.gf, doneAt, rowDay, r.t) }
-                if (item.type == ObsType.DELAY || item.delayMin != null) {
-                    row.delayed = true
-                    item.delayMin?.let { m -> row.delayMin = maxOf(row.delayMin ?: 0, m) }
-                }
-                if (item.type == ObsType.DELAY && r.uri != null && row.delayShots.none { it.id == r.id }) row.delayShots += r
             }
         }
 
-        val onDate = rows.values.filter { it.date == date }
+        val onDate = acc.values.filter { it.date == date }
         val readyShots = sorted.filter { r -> r.uri != null && r.items.any { it.type == ObsType.READY } }
+        val readySeenRecords = sorted.filter { r -> r.items.any { it.type == ObsType.READY } }
+        val presses = sorted.filter { r -> r.items.any { it.type == ObsType.PRESS } }
         val windowMs = cfg.evidenceWindowHours * 3600_000L
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
         val dayEnd = TimeResolve.toMillis(date.plusDays(1).atStartOfDay(), zone)
 
-        fun evidenceFor(row: Row): List<Evidence> {
-            val doneMs = row.doneAt?.let { TimeResolve.toMillis(it, zone) }
-            val from = if (doneMs != null) doneMs - windowMs else dayStart
-            val to = if (doneMs != null) doneMs + 5 * 60_000L else row.firstSeen
-            val shots = readyShots.filter { it.t in from..to }.mapNotNull { r ->
-                r.items.firstOrNull { it.gf == row.gf && it.type == ObsType.READY }?.let { Evidence(r, it.status) }
+        val cases = onDate.filter { it.delayed }.map { a ->
+            val doneMs = a.doneAt?.let { TimeResolve.toMillis(it, zone) }
+            // A GF can be reused. Never borrow a READY image from before its previous terminal row.
+            val sameGf = acc.values.filter { it.gf == a.gf && it.date == date }
+            val previousEnd = sameGf.mapNotNull { it.doneAt }.filter { a.doneAt != null && it < a.doneAt }
+                .maxOrNull()?.let { TimeResolve.toMillis(it, zone) }
+            val ambiguous = doneMs == null || sameGf.any { it.doneAt == null }
+            val from = maxOf(dayStart, (doneMs ?: dayStart) - windowMs, previousEnd?.plus(1) ?: dayStart)
+            val to = doneMs ?: a.firstSeen
+            val ev = readyShots.filter { !ambiguous && it.t in from..to }.mapNotNull { r ->
+                r.items.firstOrNull { it.gf == a.gf && it.type == ObsType.READY }?.let { Evidence(r, it.status) }
             }
-            if (shots.isEmpty()) return shots
-            // Keep only the last stay before the order finished.
-            var start = shots.size - 1
-            while (start > 0 && shots[start].t - shots[start - 1].t <= STAY_GAP_MS) start--
-            return shots.subList(start, shots.size)
-        }
-
-        fun verdictOf(ev: List<Evidence>): Verdict = when {
-            ev.isEmpty() -> Verdict.NO_EVIDENCE
-            TextNorm.containsAny(ev.first().status, cfg.lateStatus) -> Verdict.LATE
-            else -> Verdict.IN_TIME
-        }
-
-        val withEvidence = onDate.associateWith { evidenceFor(it) }
-        val cases = onDate.filter { it.delayed }.map { row ->
-            val ev = withEvidence.getValue(row)
-            DelayCase(row.gf, row.delayMin, row.doneAt, row.firstSeen, ev, row.delayShots.sortedByDescending { it.t }, verdictOf(ev))
+            val taps = presses.filter { it.t in from..to && it.items.any { i -> i.gf == a.gf && i.type == ObsType.PRESS } }.map { it.t }
+            // The first Ready shot of the order decides: rider not there yet = done in time.
+            val verdict = when {
+                ev.isEmpty() -> Verdict.NO_EVIDENCE
+                TextNorm.containsAny(ev.first().status, cfg.lateStatus) -> Verdict.LATE
+                else -> Verdict.IN_TIME
+            }
+            DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps,
+                if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY", verdict)
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
 
-        val stats = sorted.lastOrNull { it.kind == RecordKind.STATS && TimeResolve.parseDay(it.day) == date }
-        val readyGfs = readyShots.filter { it.t in dayStart until dayEnd }
-            .flatMap { r -> r.items.filter { it.type == ObsType.READY }.map { it.gf } }.toSet()
+        fun gfsOf(rs: List<Record>, type: ObsType) =
+            rs.filter { it.t in dayStart until dayEnd }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
+        val pressed = gfsOf(presses, ObsType.PRESS)
+        val ready = gfsOf(readyShots, ObsType.READY)
+        val readySeen = gfsOf(readySeenRecords, ObsType.READY)
+        fun collectReadyInstances(rs: List<Record>): Set<String> = rs.filter { it.t in dayStart until dayEnd }.flatMap { r ->
+            r.items.filter { it.type == ObsType.READY }.map { i ->
+                val local = TimeResolve.toLocal(r.t, zone)
+                val terminal = onDate.filter { it.gf == i.gf && it.doneAt != null && it.doneAt >= local }
+                    .minByOrNull { it.doneAt!! }
+                i.gf + "@" + (terminal?.doneAt?.toLocalTime()?.toString() ?: "UNRESOLVED")
+            }
+        }.toSet()
+        val readyInstances = collectReadyInstances(readyShots)
+        val seenInstances = collectReadyInstances(readySeenRecords)
+        val pendingGfs = seenInstances - readyInstances
 
+        val completedSeen = onDate.count { !it.cancelled && it.completed }
+        val cancelledSeen = onDate.count { it.cancelled }
+        fun tag(a: Acc) = a.gf + "@" + (a.doneAt?.toLocalTime()?.toString() ?: "UNKNOWN")
+        val missingReady = onDate.filter { !it.cancelled }.filter { a ->
+            val end = a.doneAt?.let { TimeResolve.toMillis(it, zone) }
+            val previous = onDate.filter { it.gf == a.gf && it.doneAt != null && a.doneAt != null && it.doneAt < a.doneAt }
+                .map { TimeResolve.toMillis(it.doneAt!!, zone) }.maxOrNull()
+            end == null || onDate.any { it.gf == a.gf && it.doneAt == null } || readyShots.none { r ->
+                r.t >= maxOf(dayStart, end - windowMs, previous?.plus(1) ?: dayStart) && r.t <= end &&
+                    r.items.any { it.gf == a.gf && it.type == ObsType.READY }
+            }
+        }.map(::tag)
+        fun hasHistoryImage(a: Acc) = sorted.any { r -> r.uri != null && r.items.any { i ->
+            i.gf == a.gf && i.doneAt == a.doneAt?.toLocalTime()?.let(Parsers::hhmm) &&
+                (i.type == ObsType.DONE || i.type == ObsType.DELAY || i.type == ObsType.CANCELLED) &&
+                ((i.historyDate ?: r.historyDate) == date.toString() || TimeResolve.toLocal(r.t, zone).toLocalDate() == date)
+        } }
+        // Grab's own totals, read from the top of History for this day (latest reading wins).
+        val stats = sorted.lastOrNull { it.kind == RecordKind.STATS && it.historyDate == date.toString() && it.completed != null }
         return DailyReport(
             date = date,
+            completedSeen = completedSeen,
+            cases = cases,
+            pressedOrders = pressed.size,
+            pressedWithReady = pressed.count { it in ready },
+            readyOrders = readyInstances.size,
+            cancelledSeen = cancelledSeen,
+            readySeenOrders = seenInstances.size,
+            shopId = shopId,
+            pendingReadyGfs = pendingGfs.sorted(),
+            missingHistoryInstances = onDate.filterNot(::hasHistoryImage).map(::tag),
+            unknownHistoryInstances = onDate.filter { it.doneAt == null }.map(::tag),
+            historyDateVerified = onDate.isNotEmpty() && onDate.all { a -> sorted.any { r ->
+                r.items.any { i ->
+                    (i.historyDate ?: r.historyDate) == date.toString() && i.gf == a.gf &&
+                        i.doneAt == a.doneAt?.toLocalTime()?.let(Parsers::hhmm)
+                }
+            } },
+            sweepReachedEnd = sweepReachedEnd,
+            missingReadyInstances = missingReady,
             grabCompleted = stats?.completed,
             grabCancelled = stats?.cancelled,
-            historyRows = onDate.size,
-            cases = cases,
-            rowsWithReady = withEvidence.count { it.value.isNotEmpty() },
-            rowsWithoutReady = withEvidence.filter { it.value.isEmpty() }.keys.map { it.gf },
-            readyOrders = readyGfs.size,
         )
     }
 }
@@ -232,30 +309,39 @@ object ReportText {
 
     fun summary(r: DailyReport, zone: ZoneId): String = buildString {
         append("สรุปออเดอร์ล่าช้า วันที่ ").append(date(r.date)).append('\n')
+        append("ร้าน: ").append(Shop.fromId(r.shopId)?.label ?: "UNKNOWN (ข้อมูลเดิม/ยังไม่เลือกร้าน)").append('\n')
+        append("ความครบ: ").append(if (r.complete) "COMPLETE" else "INCOMPLETE / PROVISIONAL").append('\n')
+        if (!r.complete) append("ยังตรวจ History ไม่ครบ — ยังสรุปว่าไม่มีออเดอร์ล่าช้าไม่ได้\n")
+        append("วันที่ History: ").append(if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN — เวลาอย่างเดียวไม่ยืนยันวันที่").append('\n')
+        append("ถึงท้ายรายการ: ").append(r.sweepReachedEnd).append('\n')
+        append("History ขาดภาพ: ").append(r.missingHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
+        append("Instance UNKNOWN: ").append(r.unknownHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
+        append("Ready รอภาพ: ").append(r.pendingReadyProof).append(" ออเดอร์ (รายละเอียดใน manifest)\n")
+        append("DELAY ขาดภาพ: ").append(r.cases.filter { it.delayShot == null }.joinToString { it.gf + "@" + (it.doneAt?.toLocalTime() ?: "UNKNOWN") }.ifEmpty { "-" }).append('\n')
         if (r.grabCompleted != null) {
             append("• ยอดจาก Grab (หัวหน้าประวัติ): เสร็จสมบูรณ์ ").append(r.grabCompleted)
-            r.grabCancelled?.let { append(" · ยกเลิก ").append(it) }
-            append('\n')
-            append("• อ่านรายการในประวัติได้ ").append(r.historyRows).append('/').append(r.grabCompleted)
-            append(if (r.historyComplete) " ✓ ครบ" else " ⚠ ไม่ครบ").append('\n')
+                .append(" · ยกเลิก ").append(r.grabCancelled ?: 0)
+                .append(if (r.historyMatchesGrab == true) " — อ่านรายการได้ครบ\n" else " — ⚠ อ่านรายการได้ไม่ครบ\n")
         } else {
-            append("• อ่านรายการในประวัติได้ ").append(r.historyRows).append(" (ยังไม่ได้อ่านยอดรวมจาก Grab)\n")
+            append("• ยอดจาก Grab (หัวหน้าประวัติ): ยังอ่านไม่ได้\n")
         }
-        append("• มีภาพในแท็บ Ready: ").append(r.rowsWithReady).append('/').append(r.historyRows).append(" ออเดอร์")
-        if (r.rowsWithoutReady.isNotEmpty()) {
-            append(" (ไม่มีภาพ: ").append(r.rowsWithoutReady.take(15).joinToString(", "))
-            if (r.rowsWithoutReady.size > 15) append(" …")
-            append(')')
-        }
-        append('\n')
-        append('\n')
-        append("Grab ระบุล่าช้า ").append(r.delayed).append(" ออเดอร์ = ").append(pct(r.grabPct)).append(" (แบบ Grab คิด)\n")
+        append("• History ที่แอปสแกนเห็น: ").append(r.historyOrders)
+            .append(" ออเดอร์ (เสร็จ ").append(r.completedSeen)
+            .append(" / ยกเลิก ").append(r.cancelledSeen).append(")\n")
+        append("• Ready เห็น ").append(r.readySeenOrders)
+            .append(" / มีภาพ ").append(r.readyOrders)
+            .append(" / Pending ").append(r.pendingReadyProof).append('\n')
+        append("• Ready proof ").append(r.readyOrders)
+            .append(" / Completed: ").append(r.completedSeen)
+            .append(if (r.readyVsCompletedMatch) " — MATCH\n" else " — MISMATCH\n")
+        append("\nGrab ระบุล่าช้า ").append(r.delayed).append(" ออเดอร์ = ").append(pct(r.grabPct)).append(" (แบบ Grab คิด)\n")
         append("• ").append(Verdict.IN_TIME.label).append(": ").append(r.inTime.size).append('\n')
         append("• ").append(Verdict.LATE.label).append(": ").append(r.late.size).append('\n')
         append("• ").append(Verdict.NO_EVIDENCE.label).append(": ").append(r.noEvidence.size).append('\n')
-        append("% ล่าช้าที่ร้านควรได้ (ตัดออเดอร์ที่มีหลักฐานกดทันออก) = (")
-            .append(r.delayed).append(" − ").append(r.inTime.size).append(") / ").append(r.base)
-            .append(" = ").append(pct(r.realPct)).append('\n')
+        append("% ล่าช้าที่ร้านควรได้ (ตัดออเดอร์ที่มีหลักฐานกดทันออก) = (").append(r.delayed).append(" − ")
+            .append(r.inTime.size).append(") / ").append(r.base).append(" = ").append(pct(r.realPct)).append('\n')
+        append("ตัวเลขเป็นออเดอร์ที่สแกนพบ ไม่ใช่จำนวนภาพ; ถ้ายังไม่ครบ Total ทั้งวัน = UNKNOWN\n")
+        append("% ที่ร้านควรได้ เป็นการคำนวณจากหลักฐาน ไม่ยืนยันว่า Grab ปรับยอดแล้ว\n")
         section(this, "✅ " + Verdict.IN_TIME.label, r.inTime, zone)
         section(this, "⚠️ " + Verdict.LATE.label, r.late, zone)
         section(this, "❓ " + Verdict.NO_EVIDENCE.label + " (ไม่ได้แปลว่าช้าจริง)", r.noEvidence, zone)
@@ -269,19 +355,19 @@ object ReportText {
 
     fun caseLine(c: DelayCase, zone: ZoneId): String = buildString {
         append(c.gf)
+        if (c.matchStatus == "UNKNOWN_INSTANCE") append(" [UNKNOWN_INSTANCE]")
         append(" ล่าช้า ").append(c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
         c.doneAt?.let { append(" (เสร็จ ").append(Parsers.hhmm(it.toLocalTime())).append(')') }
         c.readyShot?.let { e ->
             append(" — อยู่ในแท็บ Ready ตั้งแต่ ").append(time(e.t, zone))
             e.status?.let { append(" \"").append(it).append('"') }
         }
-        if (c.delayShot == null) append(" [ไม่มีภาพหน้าประวัติ]")
     }
 
     fun csv(r: DailyReport, zone: ZoneId): String = buildString {
         append('﻿') // BOM so Excel shows Thai correctly; Google Sheets ignores it
-        append("date,gf,delay_min,done_at,verdict,ready_time,ready_status,ready_file,delay_file\n")
-        val sets = Verdict.entries.flatMap { r.sets(it) }.associateBy { it.case }
+        append("date,gf,delay_min,done_at,has_ready_shot,ready_time,ready_status,pressed_at_log,ready_file,delay_file,shop_id,match_status,verdict\n")
+        val sets = r.sets().associateBy { it.case }
         for (c in r.cases) {
             val set = sets[c]
             val row = listOf(
@@ -289,11 +375,15 @@ object ReportText {
                 c.gf,
                 c.delayMin?.toString().orEmpty(),
                 c.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
-                c.verdict.name,
+                if (c.hasEvidence) "yes" else "no",
                 c.readyShot?.let { time(it.t, zone) }.orEmpty(),
                 c.readyShot?.status.orEmpty(),
+                c.pressedAt?.let { time(it, zone) }.orEmpty(),
                 set?.readyName.orEmpty(),
                 set?.delayName.orEmpty(),
+                r.shopId ?: "UNKNOWN",
+                c.matchStatus,
+                c.verdict.name,
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }

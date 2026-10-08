@@ -10,6 +10,7 @@ import io.github.panuwattegif.readyproof.core.Config
 
 /** Every setting on one page; nothing changes until "บันทึก" passes validation. */
 class SettingsActivity : Activity() {
+    private lateinit var sAutoNavigation: Switch
     private lateinit var sReady: Switch
     private lateinit var sDelay: Switch
     private lateinit var sScroll: Switch
@@ -28,6 +29,7 @@ class SettingsActivity : Activity() {
     private lateinit var fRetention: EditText
     private lateinit var fQuality: EditText
     private lateinit var fReadyTabs: EditText
+    private lateinit var fPreparingTabs: EditText
     private lateinit var fHistoryTabs: EditText
     private lateinit var fTabs: EditText
     private lateinit var fNav: EditText
@@ -38,6 +40,7 @@ class SettingsActivity : Activity() {
     private lateinit var fReadyNone: EditText
     private lateinit var fDoneAny: EditText
     private lateinit var fDelayAny: EditText
+    private lateinit var fCancelAny: EditText
     private lateinit var fWindow: EditText
     private lateinit var fPattern: EditText
     private lateinit var fPrefix: EditText
@@ -54,6 +57,8 @@ class SettingsActivity : Activity() {
 
         val watch = Ui.card(col)
         Ui.text(watch, "ระหว่างวัน (เครื่องที่เปิดแท็บ Ready ค้างไว้)", 17f, bold = true)
+        sAutoNavigation = Ui.switch(watch, "ให้แอปเลื่อนรายการ / แตะแท็บ Grab เอง (ปิดแล้วยังแคปสิ่งที่อยู่บนจอและแชร์เองได้)",
+            ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)) {}
         sReady = Ui.switch(watch, "แคปทุกออเดอร์ที่เข้ามาในแท็บ Ready (ออเดอร์ละครั้ง)", cfg.captureReady) {}
         sScroll = Ui.switch(watch, "เลื่อนรายการเองเมื่อออเดอร์ยาวเกินจอ", cfg.autoScroll) {}
         fSweep = Ui.field(watch, "กวาดรายการ Ready ซ้ำทุกกี่นาที (กันพลาด)", cfg.fullSweepMinutes.toString(),
@@ -77,13 +82,15 @@ class SettingsActivity : Activity() {
 
         val storage = Ui.card(col)
         Ui.text(storage, "การเก็บภาพ", 17f, bold = true)
-        fRetention = Ui.field(storage, "เก็บภาพไว้กี่วัน (เกินนี้ลบอัตโนมัติ)", cfg.retentionDays.toString(), number = true)
+        fRetention = Ui.field(storage, "จำนวนวันสำหรับค้นย้อนหลัง (ไม่ลบหลักฐานอัตโนมัติ)", cfg.retentionDays.toString(), number = true)
         fQuality = Ui.field(storage, "คุณภาพภาพ JPEG (30–100)", cfg.jpegQuality.toString(), number = true)
 
         val adv = Ui.card(col)
         Ui.text(adv, "ขั้นสูง (ปกติไม่ต้องแก้)", 17f, bold = true)
         fReadyTabs = Ui.field(adv, "ชื่อแท็บ Ready", cfg.readyTabLabels.joinToString("\n"),
             help = "ทุกออเดอร์ในแท็บนี้ = ร้านทำเสร็จแล้ว", multiLine = true)
+        fPreparingTabs = Ui.field(adv, "ชื่อแท็บกำลังเตรียม", cfg.preparingTabLabels.joinToString("\n"),
+            help = "สิ้นวันต้องว่างทั้งแท็บ Ready และแท็บนี้ก่อนอ่านประวัติ", multiLine = true)
         fHistoryTabs = Ui.field(adv, "ชื่อแท็บประวัติ", cfg.historyTabLabels.joinToString("\n"), multiLine = true)
         fTabs = Ui.field(adv, "ชื่อแท็บทั้งหมด", cfg.tabLabels.joinToString("\n"),
             help = "ใช้ดูว่าเปิดแท็บไหนอยู่ และหาแถบแท็บที่จะแตะ", multiLine = true)
@@ -93,6 +100,7 @@ class SettingsActivity : Activity() {
         fCancelled = Ui.field(adv, "คำว่า \"Cancelled\" ที่หัวหน้าประวัติ", cfg.cancelledLabels.joinToString("\n"), multiLine = true)
         fDoneAny = Ui.field(adv, "คำว่า \"เสร็จสมบูรณ์\" บนรายการประวัติ", cfg.doneAny.joinToString("\n"), multiLine = true)
         fDelayAny = Ui.field(adv, "คำว่า \"ล่าช้า\" บนรายการประวัติ", cfg.delayAny.joinToString("\n"), multiLine = true)
+        fCancelAny = Ui.field(adv, "คำว่า \"ยกเลิก\" บนรายการประวัติ", cfg.cancelAny.joinToString("\n"), multiLine = true)
         fReadyAny = Ui.field(adv, "สำรอง: คำสถานะที่ถือว่าอยู่ในแท็บ Ready", cfg.readyAny.joinToString("\n"),
             help = "ใช้เฉพาะเมื่อเครื่องบอกไม่ได้ว่าเปิดแท็บไหน", multiLine = true)
         fReadyNone = Ui.field(adv, "สำรอง: ถ้าการ์ดมีคำเหล่านี้ ไม่นับเป็น Ready", cfg.readyNone.joinToString("\n"), multiLine = true)
@@ -149,6 +157,7 @@ class SettingsActivity : Activity() {
             retentionDays = num(fRetention),
             jpegQuality = num(fQuality),
             readyTabLabels = lines(fReadyTabs),
+            preparingTabLabels = lines(fPreparingTabs),
             historyTabLabels = lines(fHistoryTabs),
             tabLabels = lines(fTabs),
             navLabels = lines(fNav),
@@ -157,6 +166,7 @@ class SettingsActivity : Activity() {
             cancelledLabels = lines(fCancelled),
             doneAny = lines(fDoneAny),
             delayAny = lines(fDelayAny),
+            cancelAny = lines(fCancelAny),
             readyAny = lines(fReadyAny),
             readyNone = lines(fReadyNone),
             gfPattern = fPattern.text.toString().trim(),
@@ -165,6 +175,8 @@ class SettingsActivity : Activity() {
             diagnostics = sDiag.isChecked,
         )
         val errors = ConfigStore.save(this, cfg)
+        if (errors.isEmpty()) ConfigStore.prefs(this).edit()
+            .putBoolean("auto_navigation_enabled", sAutoNavigation.isChecked).apply()
         if (errors.isEmpty()) {
             Ui.toast(this, "บันทึกแล้ว")
             finish()

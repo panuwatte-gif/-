@@ -11,7 +11,9 @@ import android.view.accessibility.AccessibilityEvent
 import io.github.panuwattegif.readyproof.core.Box
 import io.github.panuwattegif.readyproof.core.CardView
 import io.github.panuwattegif.readyproof.core.Config
+import io.github.panuwattegif.readyproof.core.DailyReport
 import io.github.panuwattegif.readyproof.core.Deduper
+import io.github.panuwattegif.readyproof.core.HistoryDates
 import io.github.panuwattegif.readyproof.core.HistoryHeader
 import io.github.panuwattegif.readyproof.core.Item
 import io.github.panuwattegif.readyproof.core.ObsType
@@ -19,10 +21,11 @@ import io.github.panuwattegif.readyproof.core.OrderTab
 import io.github.panuwattegif.readyproof.core.ReadyTracker
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.RecordKind
-import io.github.panuwattegif.readyproof.core.ReportBuilder
 import io.github.panuwattegif.readyproof.core.ReportText
 import io.github.panuwattegif.readyproof.core.ScreenAnalysis
+import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
 import io.github.panuwattegif.readyproof.core.TabDetector
+import io.github.panuwattegif.readyproof.core.TextNorm
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,12 +43,14 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 
 /**
- * Runs the dedicated Ready-tab phone:
+ * Runs the dedicated Ready-tab phone (orders are accepted and marked ready on the shop's own
+ * device; this phone only watches):
  *  1. Ready tab: every order listed there gets one verified screenshot per stay; the list is
  *     swept top to bottom by itself when it is longer than the screen.
  *  2. Guard: brings Grab back to the Ready tab when it ends up elsewhere.
- *  3. End of day: after closing time, waits until the Ready tab is empty, reads the whole
- *     History list (photographing every delayed order) and builds the report.
+ *  3. End of day: after closing time + buffer, waits until Ready and Preparing are empty, reads
+ *     the whole History list (Grab's totals, every row, a photo of every delayed row), saves the
+ *     report/manifest (which releases the Drive batch) and notifies.
  * Everything that touches the screen runs one job at a time (the "lane").
  */
 class Engine(private val service: ProofService) {
@@ -62,10 +67,23 @@ class Engine(private val service: ProofService) {
         private const val LAUNCH_GAP_MS = 5 * 60_000L
         private const val BACK_GAP_MS = 10 * 60_000L
         private const val PROBLEM_NOTE_GAP_MS = 30 * 60_000L
-        private const val EOD_DONE_KEY = "eod_done_day"
         private const val BOX_TOLERANCE = 3
         private const val PERSON_GRACE_MS = 20_000L
         private const val SCROLL_BLOCK_MS = 30 * 60_000L
+        private const val MAX_HISTORY_ATTEMPTS = 3
+
+        // Shared with the home screen and the troubleshooting export.
+        const val PREF_EOD_DONE = "eod_done_day"
+        const val PREF_MONITOR_STATUS = "monitor_status"
+        const val PREF_MONITOR_POLL = "monitor_last_poll"
+        const val PREF_CLOSING_STATUS = "closing_history_status"
+        const val PREF_LAST_RESULT = "auto_history_last_result"
+        const val PREF_AUTO_NAVIGATION = "auto_navigation_enabled"
+
+        /** Words meaning the page is still loading or failed: never read as "no orders". */
+        private val NOT_READY_WORDS = listOf(
+            "loading", "กำลังโหลด", "try again", "something went wrong", "ลองใหม่", "เกิดข้อผิดพลาด",
+        )
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -79,6 +97,12 @@ class Engine(private val service: ProofService) {
 
     private val cfg: Config get() = ConfigStore.get(service)
     private val zone: ZoneId get() = ZoneId.systemDefault()
+    private val prefs get() = ConfigStore.prefs(service)
+
+    private fun shop(): String? = ShopStore.get(service)?.id
+
+    /** Settings switch "เปิดหน้า Ready / History อัตโนมัติ": off = only photograph what is shown. */
+    private fun autoNavigation(): Boolean = prefs.getBoolean(PREF_AUTO_NAVIGATION, true)
 
     // ---- state (main thread only) --------------------------------------------------------------
     private var busyDepth = 0
@@ -116,6 +140,7 @@ class Engine(private val service: ProofService) {
     private var eodNextAt = 0L
     private var eodStartedAt = 0L
     private var eodForced = false
+    private var historyAttempts = 0
 
     @Volatile
     var eodStatus: String? = null
@@ -126,12 +151,8 @@ class Engine(private val service: ProofService) {
     fun start() {
         scope.launch {
             try {
-                val today = LocalDate.now()
-                val recent = withContext(Dispatchers.IO) { RecordStore.loadRange(service, today.minusDays(1), today) }
-                tracker.seed(recent, System.currentTimeMillis())
-                historySeen.seed(recent)
-                if (ConfigStore.prefs(service).getString(EOD_DONE_KEY, null) == today.toString()) eod = Eod.DONE
-                withContext(Dispatchers.IO) { Cleanup.runIfDue(service, cfg) }
+                seed()
+                DriveSync.recover(service)
             } catch (e: Exception) {
                 Diagnostics.error(service, "startup", e)
             }
@@ -146,10 +167,34 @@ class Engine(private val service: ProofService) {
         }
     }
 
+    /** Remembers today's shots after a restart so waiting orders are not photographed again. */
+    private suspend fun seed() {
+        val today = LocalDate.now()
+        val shopId = shop()
+        val recent = withContext(Dispatchers.IO) {
+            RecordStore.loadRange(service, today.minusDays(1), today).filter { it.shopId == shopId }
+        }
+        tracker.clear()
+        tracker.seed(recent, System.currentTimeMillis())
+        historySeen.clear()
+        historySeen.seed(recent)
+        if (prefs.getString(PREF_EOD_DONE, null) == today.toString()) eod = Eod.DONE
+    }
+
     fun stop() {
         scope.cancel()
         removeAwake()
         capture.shutdown()
+    }
+
+    /** The phone was bound to a shop: proof taken before belongs to no shop, start fresh. */
+    fun onShopBound() {
+        scope.launch {
+            seed()
+            fingerprint = null
+            prefs.edit().remove(PREF_EOD_DONE).apply()
+            if (eod == Eod.DONE) eod = Eod.IDLE
+        }
     }
 
     // ---- events ---------------------------------------------------------------------------------
@@ -197,7 +242,7 @@ class Engine(private val service: ProofService) {
                 s.a.tab == OrderTab.HISTORY -> onHistory(s)
                 else -> {
                     historyDay = null
-                    where = "Grab เปิดอยู่ แต่ไม่ใช่แท็บ Ready"
+                    setWhere("Grab เปิดอยู่ แต่ไม่ใช่แท็บ Ready")
                 }
             }
         } catch (e: Exception) {
@@ -214,6 +259,14 @@ class Engine(private val service: ProofService) {
     private fun isReady(s: Screen): Boolean =
         s.a.tab == OrderTab.READY || (s.a.tab == null && s.a.readyGfs().isNotEmpty())
 
+    private fun setWhere(text: String) {
+        where = text
+        val now = System.currentTimeMillis()
+        if (prefs.getString(PREF_MONITOR_STATUS, null) != text || now - prefs.getLong(PREF_MONITOR_POLL, 0) > 60_000L) {
+            prefs.edit().putString(PREF_MONITOR_STATUS, text).putLong(PREF_MONITOR_POLL, now).apply()
+        }
+    }
+
     // ---- Ready tab ------------------------------------------------------------------------------
 
     private suspend fun onReady(first: Screen) {
@@ -221,7 +274,7 @@ class Engine(private val service: ProofService) {
         val now = System.currentTimeMillis()
         var s = first
         val listed = s.a.readyGfs()
-        tracker.seen(listed, now)
+        noteSeen(s, now)
         // The whole list is on screen: whatever is not listed has been picked up.
         if (!s.a.canScroll) {
             tracker.complete(listed, now)
@@ -236,15 +289,34 @@ class Engine(private val service: ProofService) {
         val up = SystemClock.uptimeMillis()
         val sweepForPending = pending.isNotEmpty() && up - lastPendingSweepAt > PENDING_SWEEP_GAP_MS
         val personScrolling = up - lastUserTouchAt < PERSON_GRACE_MS
-        if (c.autoScroll && s.a.canScroll && !personScrolling && up > scrollBlockedUntil &&
+        if (c.autoScroll && autoNavigation() && s.a.canScroll && !personScrolling && up > scrollBlockedUntil &&
             (changed || sweepForPending || sweepDue())
         ) {
             if (sweepForPending) lastPendingSweepAt = up
             sweepReady()
-        } else if (s.a.readyViews().any { !it.full && it.gf in pending }) {
+        } else if (autoNavigation() && s.a.readyViews().any { !it.full && it.gf in pending }) {
             automate { fixPartials(s) }
         }
-        where = "เฝ้าแท็บ Ready · รอไรเดอร์ ${tracker.present().size} ออเดอร์"
+        setWhere("เฝ้าแท็บ Ready · รอไรเดอร์ ${tracker.present().size} ออเดอร์")
+    }
+
+    /**
+     * Orders listed in the Ready tab, written down as soon as they are seen (before any shot), so
+     * the report can tell "seen but no photo yet" apart from "never reached the Ready tab".
+     */
+    private fun noteSeen(s: Screen, now: Long) {
+        val views = s.a.readyViews()
+        val fresh = views.filter { tracker.stay(it.gf) == null }
+        tracker.seen(views.map { it.gf }, now)
+        if (fresh.isEmpty()) return
+        RecordStore.append(
+            service,
+            Record(
+                id = "$now-rs${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN,
+                items = fresh.flatMap { v -> v.items.filter { it.type == ObsType.READY } },
+                visible = s.a.visible, note = "READY_SEEN_PENDING_UNTIL_IMAGE", shopId = shop(),
+            ),
+        )
     }
 
     /** Orders still without a good shot that are worth another try. */
@@ -271,8 +343,8 @@ class Engine(private val service: ProofService) {
 
     /**
      * Takes one screenshot for [targets] and keeps it only for the orders whose number and status
-     * line were still in exactly the same place right after the shot. Returns the orders proven
-     * by the saved shot and the screen as read after it.
+     * line were still in the same place right after the shot. Returns the orders proven by the
+     * saved shot and the screen as read after it.
      */
     private suspend fun shoot(
         kind: RecordKind,
@@ -300,10 +372,13 @@ class Engine(private val service: ProofService) {
             Diagnostics.note(service, "discarded $kind shot: screen moved (${targets.joinToString { it.gf }})")
             return emptyList<CardView>() to after
         }
-        val items = ok.flatMap(itemsOf)
-        val record = capture.save(bitmap, kind, t, CaptureMeta(items = items, visible = before.a.visible, day = day))
-            ?: return emptyList<CardView>() to after
+        val items = ok.flatMap(itemsOf).map { if (day != null) it.copy(historyDate = day) else it }
+        val record = capture.save(
+            bitmap, kind, t,
+            CaptureMeta(items = items, visible = before.a.visible, historyDate = day, shopId = shop()),
+        ) ?: return emptyList<CardView>() to after
         lastShotText = record.kind.label + " " + record.gfs.joinToString(", ") + " · " + ReportText.time(record.t, zone)
+        ProofService.lastCaptureText = lastShotText
         Diagnostics.note(service, "shot $kind ${record.gfs.joinToString(",")}")
         if (cfg.showToast) service.toast("📸 ${record.kind.label}: ${record.gfs.joinToString(", ")}")
         return ok to after
@@ -333,9 +408,8 @@ class Engine(private val service: ProofService) {
         val seen = LinkedHashSet<String>()
         pages = 0
         while (true) {
-            val now = System.currentTimeMillis()
             seen += s.a.readyGfs()
-            tracker.seen(s.a.readyGfs(), now)
+            noteSeen(s, System.currentTimeMillis())
             shootReady(s)?.let { s = it }
             fixPartials(s)?.let { s = it }
             if (!isReady(s)) return@automate
@@ -465,54 +539,80 @@ class Engine(private val service: ProofService) {
         s.a.header?.let { h -> h.date?.let { historyDay = it.toString() }; saveStats(h) }
         recordRows(s, historyDay)
         if (c.captureDelay) shootDelays(s, historyDay)
-        where = "Grab เปิดอยู่ที่แท็บประวัติ"
+        setWhere("Grab เปิดอยู่ที่แท็บประวัติ")
     }
 
     private fun saveStats(h: HistoryHeader) {
         val day = h.date ?: return
         if (h.completed == null) return
-        val key = "$day|${h.completed}|${h.cancelled}"
+        val key = "${shop()}|$day|${h.completed}|${h.cancelled}"
         if (key == lastStats) return
         lastStats = key
         val now = System.currentTimeMillis()
         RecordStore.append(
             service,
-            Record("$now-t${seq.incrementAndGet()}", now, RecordKind.STATS, day = day.toString(), completed = h.completed, cancelled = h.cancelled),
+            Record(
+                "$now-t${seq.incrementAndGet()}", now, RecordKind.STATS, shopId = shop(),
+                historyDate = day.toString(), completed = h.completed, cancelled = h.cancelled,
+            ),
         )
     }
 
-    /** Finished orders on screen, written down once each (no screenshot). */
+    /** History rows on screen with their day: from a date header above them, else [day]. */
+    private fun rowsOf(s: Screen, day: String?): List<Item> {
+        val raw = s.a.historyViews().flatMap { v ->
+            v.items.filter { (it.type == ObsType.DONE || it.type == ObsType.CANCELLED || it.type == ObsType.DELAY) && it.doneAt != null }
+        }
+        val fallback = day?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val (dated, _) = HistoryDates.assign(raw, s.a, s.roots, LocalDate.now(), fallback)
+        return dated
+    }
+
+    /** Finished / cancelled orders on screen, written down once each (no screenshot). */
     private fun recordRows(s: Screen, day: String?): List<Item> {
-        val rows = s.a.historyViews().flatMap { v -> v.items.filter { it.type == ObsType.DONE && it.doneAt != null } }
+        val rows = rowsOf(s, day)
+        val terminal = rows.filter { it.type == ObsType.DONE || it.type == ObsType.CANCELLED }
         val now = System.currentTimeMillis()
-        val fresh = historySeen.fresh(rows, now, cfg)
+        val fresh = historySeen.fresh(terminal, now, cfg)
         if (fresh.isNotEmpty()) {
             historySeen.mark(fresh.mapNotNull { Deduper.keyOf(it) }, now)
-            RecordStore.append(service, Record("$now-s${seq.incrementAndGet()}", now, RecordKind.SEEN, items = fresh, visible = s.a.visible, day = day))
+            RecordStore.append(
+                service,
+                Record("$now-s${seq.incrementAndGet()}", now, RecordKind.SEEN, items = fresh, visible = s.a.visible, shopId = shop(), historyDate = day),
+            )
         }
         return rows
     }
 
+    private fun delayKey(v: CardView, day: String?): String? =
+        v.items.firstOrNull { it.type == ObsType.DELAY }?.let { Deduper.keyOf(if (day != null) it.copy(historyDate = day) else it) }
+
     /** Photographs delayed rows that are fully on screen and not photographed yet. */
     private suspend fun shootDelays(s: Screen, day: String?): Screen? {
         val now = System.currentTimeMillis()
-        val targets = s.a.historyViews().filter { v ->
-            v.full && v.items.any { it.type == ObsType.DELAY && historySeen.isFresh(Deduper.keyOf(it)!!, now, 36L * 3600_000) }
-        }
+        val targets = delayPending(s, day).filter { it.full }
         if (targets.isEmpty()) return null
         val (ok, after) = shoot(RecordKind.DELAY, s, targets, day) { v -> v.items.filter { it.type == ObsType.DELAY } }
-        historySeen.mark(ok.flatMap { v -> v.items.filter { it.type == ObsType.DELAY }.mapNotNull { Deduper.keyOf(it) } }, now)
+        historySeen.mark(ok.mapNotNull { delayKey(it, day) }, now)
         return after
     }
 
-    private fun delayPending(s: Screen): List<CardView> {
+    /** Delayed rows on screen still without a photo (only rows whose finish time is readable). */
+    private fun delayPending(s: Screen, day: String?): List<CardView> {
         val now = System.currentTimeMillis()
         return s.a.historyViews().filter { v ->
-            v.items.any { it.type == ObsType.DELAY && historySeen.isFresh(Deduper.keyOf(it)!!, now, 36L * 3600_000) }
+            v.items.any { it.type == ObsType.DELAY && it.doneAt != null } &&
+                delayKey(v, day)?.let { historySeen.isFresh(it, now, 36L * 3600_000) } == true
         }
     }
 
-    private class HistoryResult(val day: String, val header: HistoryHeader?, val rows: Int, val delayed: Int, val unshot: List<String>)
+    private class HistoryResult(
+        val day: String,
+        val header: HistoryHeader?,
+        val rows: Int,
+        val reachedEnd: Boolean,
+        val unshot: List<String>,
+    )
 
     /** Reads the whole History list of the day shown, photographing every delayed order. */
     private suspend fun sweepHistory(): HistoryResult? = automate {
@@ -529,24 +629,32 @@ class Engine(private val service: ProofService) {
             // the list may still be loading
             delay(2_000)
             s = settle() ?: return@automate null
-            header = s.a.header
+            header = s.a.header ?: header
         }
-        val day = (header?.date ?: LocalDate.now()).toString()
+        val dayDate = header?.date ?: LocalDate.now()
+        val day = dayDate.toString()
         historyDay = day
         header?.let { saveStats(it) }
         val rows = LinkedHashMap<String, Item>()
-        val delayed = LinkedHashSet<String>()
+        var reachedEnd = false
 
+        // One pass down the list; [step] moves one page. Stops at the end, at an older day's rows,
+        // or when nothing new appears for three pages.
         suspend fun pass(step: suspend (Screen) -> Boolean) {
             pages = 0
             var still = 0
+            reachedEnd = false
             while (true) {
                 val before = rows.size
-                recordRows(s, day).forEach { rows[Deduper.keyOf(it)!!] = it }
-                s.a.historyViews().filter { it.has(ObsType.DELAY) }.forEach { delayed += it.gf }
+                val onPage = recordRows(s, day)
+                onPage.filter { it.historyDate == day && it.type != ObsType.DELAY }.forEach { rows[Deduper.keyOf(it)!!] = it }
+                if (onPage.any { it.historyDate != null && it.historyDate < day }) {
+                    reachedEnd = true
+                    break
+                }
                 shootDelays(s, day)?.let { s = it }
                 // delayed rows cut off at an edge
-                for (v in delayPending(s).filter { !it.full }) {
+                for (v in delayPending(s, day).filter { !it.full }) {
                     val shown = bringIntoView(s, v) ?: continue
                     s = shown
                     shootDelays(s, day)?.let { s = it }
@@ -557,7 +665,10 @@ class Engine(private val service: ProofService) {
                     // more rows may load at the end of the list
                     delay(1_500)
                     s = settle() ?: return
-                    if (!s.a.canScrollForward) break
+                    if (!s.a.canScrollForward) {
+                        reachedEnd = true
+                        break
+                    }
                 }
                 if (still >= 3) break
                 if (!step(s)) break
@@ -567,7 +678,7 @@ class Engine(private val service: ProofService) {
         }
 
         pass { cur -> actor.scroll(cur.a.scroller, forward = true) || dragPage(cur) }
-        val want = header?.completed
+        val want = header?.completed?.let { it + (header.cancelled ?: 0) }
         if (want != null && rows.size < want) {
             // Second, slower pass with overlapping drags for rows the page jumps skipped.
             Diagnostics.note(service, "history: ${rows.size}/$want rows after first pass, second pass")
@@ -584,10 +695,9 @@ class Engine(private val service: ProofService) {
             if (!actor.scroll(s.a.scroller, forward = false)) break
             s = settle() ?: break
         }
-        val now = System.currentTimeMillis()
-        val unshot = delayPending(s).map { it.gf }
-        Diagnostics.note(service, "history $day: rows=${rows.size}/${want ?: "?"} delayed=${delayed.size}")
-        HistoryResult(day, header, rows.size, delayed.size, unshot).also { lastSweepAt = maxOf(lastSweepAt, now - 1) }
+        val unshot = delayPending(s, day).map { it.gf }
+        Diagnostics.note(service, "history $day: rows=${rows.size}/${want ?: "?"} end=$reachedEnd")
+        HistoryResult(day, header, rows.size, reachedEnd, unshot)
     }
 
     // ---- moving around inside Grab ---------------------------------------------------------------
@@ -626,17 +736,33 @@ class Engine(private val service: ProofService) {
         reader.read(c)?.a?.tab == want
     }
 
+    /**
+     * The open queue tab shows no orders: no order card in its list on two readings 1.5 s apart and
+     * nothing saying it is still loading. Null = could not tell (wrong tab, no screen).
+     */
+    private suspend fun queueEmpty(want: OrderTab): Boolean? {
+        repeat(2) { i ->
+            if (i > 0) delay(1_500)
+            val s = reader.read(cfg) ?: return null
+            if (s.a.tab != want) return null
+            if (s.a.views.any { it.card.inList }) return false
+            val texts = s.roots.flatMap { r -> r.walk().filter { it.shown }.flatMap { it.ownStrings().asSequence() }.toList() }
+            if (texts.any { t -> NOT_READY_WORDS.any { TextNorm.key(t).contains(it) } }) return null
+        }
+        return true
+    }
+
     // ---- the 10-second heartbeat ----------------------------------------------------------------
 
     private suspend fun tick() {
         val c = cfg
         if (!c.enabled) {
             updateAwake(false)
-            where = "ปิดการแคปอัตโนมัติอยู่"
+            setWhere("ปิดการแคปอัตโนมัติอยู่")
             return
         }
         val w = reader.windows(c)
-        if (w.grabVisible) lastGrabSeenAt = SystemClock.uptimeMillis() else where = "Grab ไม่ได้เปิดอยู่บนจอ"
+        if (w.grabVisible) lastGrabSeenAt = SystemClock.uptimeMillis() else setWhere("Grab ไม่ได้เปิดอยู่บนจอ")
         updateAwake(w.grabVisible)
         eodTick()
         guard(w)
@@ -646,7 +772,7 @@ class Engine(private val service: ProofService) {
 
     private suspend fun guard(w: WindowsState) {
         val c = cfg
-        if (!c.guardReadyTab || eod == Eod.RUNNING) return
+        if (!c.guardReadyTab || !autoNavigation() || eod == Eod.RUNNING) return
         val now = SystemClock.uptimeMillis()
         val idleMs = c.guardIdleMinutes * 60_000L
         if (!w.grabVisible) {
@@ -672,6 +798,7 @@ class Engine(private val service: ProofService) {
                 return
             }
             Diagnostics.note(service, "guard: back to the Ready tab from ${s.a.tab}")
+            setWhere("กำลังกลับหน้า Ready อัตโนมัติ")
             if (!openTab(c.readyTabLabels, OrderTab.READY)) problem("พากลับแท็บ Ready ไม่สำเร็จ — กรุณาเปิด Grab ที่แท็บ Ready เอง")
         } finally {
             lane.unlock()
@@ -694,30 +821,50 @@ class Engine(private val service: ProofService) {
 
     // ---- end of day -----------------------------------------------------------------------------
 
-    /** The button "สรุปสิ้นวันตอนนี้": reads History now without waiting for the Ready tab to empty. */
+    /**
+     * The buttons "สรุปสิ้นวันตอนนี้" / "กวาด History ตอนนี้": reads History now without waiting for
+     * the queues to empty. Before closing time it does not replace the evening's automatic run.
+     */
     fun runEndOfDayNow() {
         scope.launch {
             eod = Eod.WAITING
             eodForced = true
+            historyAttempts = 0
             eodStartedAt = System.currentTimeMillis()
             eodNextAt = 0
             eodStep()
         }
     }
 
+    /** "กลับไปเฝ้า Ready": stop any end-of-day wait started by hand and go back to the Ready tab. */
+    fun resumeReadyMonitor() {
+        scope.launch {
+            if (eodForced && eod == Eod.WAITING) eod = Eod.IDLE
+            eodForced = false
+            if (!lane.tryLock()) return@launch
+            try {
+                openTab(cfg.readyTabLabels, OrderTab.READY)
+            } finally {
+                lane.unlock()
+            }
+            scheduleObserve()
+        }
+    }
+
     private suspend fun eodTick() {
         val c = cfg
         val today = LocalDate.now()
-        val doneDay = ConfigStore.prefs(service).getString(EOD_DONE_KEY, null)
+        val doneDay = prefs.getString(PREF_EOD_DONE, null)
         if (eod == Eod.DONE && doneDay != today.toString()) {
             eod = Eod.IDLE
             eodStatus = null
         }
         if (eod == Eod.IDLE) {
             val at = c.endOfDayAt() ?: return
-            if (!c.autoEndOfDay || doneDay == today.toString() || LocalTime.now().isBefore(at)) return
+            if (!c.autoEndOfDay || !autoNavigation() || doneDay == today.toString() || LocalTime.now().isBefore(at)) return
             eod = Eod.WAITING
             eodForced = false
+            historyAttempts = 0
             eodStartedAt = System.currentTimeMillis()
             eodNextAt = 0
             Diagnostics.note(service, "end of day: started")
@@ -744,29 +891,42 @@ class Engine(private val service: ProofService) {
                     return
                 }
             }
-            val waited = System.currentTimeMillis() - eodStartedAt
-            val giveUp = waited >= c.endMaxWaitMinutes * 60_000L
-            if (!eodForced) {
-                if (openTab(c.readyTabLabels, OrderTab.READY)) {
-                    sweepReady()
-                    val left = tracker.present()
-                    if (left.isNotEmpty() && !giveUp) {
-                        later(retryAt, "ยังมี ${left.size} ออเดอร์รอไรเดอร์ในแท็บ Ready (${left.take(5).joinToString(", ")})")
-                        return
-                    }
-                } else if (!giveUp) {
+            val giveUp = System.currentTimeMillis() - eodStartedAt >= c.endMaxWaitMinutes * 60_000L
+            if (!eodForced && !giveUp) {
+                // Ready: sweep it (photographing anything new), then make sure it is really empty.
+                if (!openTab(c.readyTabLabels, OrderTab.READY)) {
                     later(retryAt, "เปิดแท็บ Ready ไม่สำเร็จ")
                     return
                 }
+                sweepReady()
+                val left = tracker.present()
+                val readyEmpty = left.isEmpty() && queueEmpty(OrderTab.READY) == true
+                if (!readyEmpty) {
+                    later(retryAt, if (left.isNotEmpty()) {
+                        "ยังมี ${left.size} ออเดอร์รอไรเดอร์ในแท็บ Ready (${left.take(5).joinToString(", ")})"
+                    } else {
+                        "ยังยืนยันไม่ได้ว่าแท็บ Ready ว่าง"
+                    })
+                    return
+                }
+                // Preparing: an order still cooking will finish later and must be in the report.
+                val preparing = if (openTab(c.preparingTabLabels, OrderTab.PREPARING)) queueEmpty(OrderTab.PREPARING) else null
+                openTab(c.readyTabLabels, OrderTab.READY)
+                if (preparing != true) {
+                    later(retryAt, if (preparing == false) "ยังมีออเดอร์ในแท็บกำลังเตรียม" else "ยังยืนยันไม่ได้ว่าแท็บกำลังเตรียมว่าง")
+                    return
+                }
             }
-            eodStatus = "สิ้นวัน: กำลังอ่านหน้าประวัติทั้งหมด…"
+            setEodStatus("สิ้นวัน: กำลังอ่านหน้าประวัติทั้งหมด…")
+            historyAttempts++
             val result = sweepHistory()
             if (result == null) {
+                openTab(c.readyTabLabels, OrderTab.READY)
                 later(retryAt, "เปิดหน้าประวัติไม่สำเร็จ")
                 return
             }
             openTab(c.readyTabLabels, OrderTab.READY)
-            finishDay(result)
+            finishDay(result, retryAt)
         } catch (e: Exception) {
             Diagnostics.error(service, "eod", e)
             later(System.currentTimeMillis() + c.recheckMinutes * 60_000L, "เกิดข้อผิดพลาด จะลองใหม่")
@@ -776,39 +936,66 @@ class Engine(private val service: ProofService) {
         }
     }
 
+    private fun setEodStatus(text: String) {
+        eodStatus = text
+        prefs.edit().putString(PREF_CLOSING_STATUS, text).apply()
+    }
+
     private fun later(at: Long, why: String) {
         eod = Eod.WAITING
         eodNextAt = at
-        eodStatus = "สิ้นวัน: $why · ตรวจใหม่ ${ReportText.time(at, zone)}"
+        setEodStatus("สิ้นวัน: $why · ตรวจใหม่ ${ReportText.time(at, zone)}")
         Diagnostics.note(service, "end of day: $why")
         Notifier.status(service, "ReadyProof: รอสรุปสิ้นวัน", "$why\nจะตรวจใหม่เวลา ${ReportText.time(at, zone)}")
     }
 
-    private suspend fun finishDay(result: HistoryResult) {
+    private suspend fun finishDay(result: HistoryResult, retryAt: Long) {
         val date = LocalDate.parse(result.day)
-        val report = withContext(Dispatchers.IO) {
-            ReportBuilder.build(RecordStore.loadRange(service, date.minusDays(1), date.plusDays(1)), date, zone, cfg)
+        val shopId = shop()
+        val failure = if (result.reachedEnd) null else "อ่านไม่ถึงท้ายรายการ"
+        // Saves the summary + manifest and, after closing time, releases the Drive batch.
+        val report = withContext(Dispatchers.IO) { DailyExport.save(service, date, shopId, result.reachedEnd, failure) }
+        val incomplete = report.historyMatchesGrab == false || !result.reachedEnd || result.unshot.isNotEmpty()
+        val resultText = resultLine(report, result)
+        prefs.edit().putString(PREF_LAST_RESULT, resultText).apply()
+        if (incomplete && historyAttempts < MAX_HISTORY_ATTEMPTS) {
+            later(retryAt, "อ่านประวัติได้ยังไม่ครบ ($resultText) — จะอ่านใหม่")
+            return
         }
         // A run started by hand before closing time does not replace tonight's automatic run.
         val afterClose = cfg.endOfDayAt()?.let { !LocalTime.now().isBefore(it) } ?: true
         if (!eodForced || afterClose) {
-            ConfigStore.prefs(service).edit().putString(EOD_DONE_KEY, LocalDate.now().toString()).apply()
+            prefs.edit().putString(PREF_EOD_DONE, LocalDate.now().toString()).apply()
             eod = Eod.DONE
         } else {
             eod = Eod.IDLE
         }
         eodForced = false
-        val count = if (report.grabCompleted != null) "${report.historyRows}/${report.grabCompleted}" else "${report.historyRows}"
-        val text = "อ่านประวัติได้ $count ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
+        val text = "อ่านประวัติได้ " + (report.grabCompleted?.let { "${report.completedSeen}/$it" } ?: "${report.completedSeen}") +
+            " ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
             "กดทัน ${report.inTime.size} · ช้าจริง ${report.late.size} · ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
             "% ที่ร้านควรได้ ${ReportText.pct(report.realPct)}" +
-            (if (result.unshot.isNotEmpty()) "\n⚠ แคปหน้าประวัติไม่ได้: ${result.unshot.joinToString(", ")}" else "")
-        eodStatus = "สรุปวันที่ ${ReportText.date(date)} เสร็จแล้ว ${ReportText.time(System.currentTimeMillis(), zone)} · " +
-            "ล่าช้าตาม Grab ${ReportText.pct(report.grabPct)} → ที่ควรได้ ${ReportText.pct(report.realPct)}"
+            (if (incomplete) "\n⚠ ยังไม่ครบ: ดูรายละเอียดในรายงาน" else "")
+        setEodStatus(
+            "สรุปวันที่ ${ReportText.date(date)} เสร็จ ${ReportText.time(System.currentTimeMillis(), zone)} · " +
+                "ล่าช้าตาม Grab ${ReportText.pct(report.grabPct)} → ที่ควรได้ ${ReportText.pct(report.realPct)}",
+        )
         Notifier.cancel(service, Notifier.ID_STATUS)
         Notifier.report(service, "สรุปสิ้นวัน ${ReportText.date(date)} พร้อมแล้ว", text)
-        Diagnostics.note(service, "end of day: done ${report.historyRows} rows, ${report.delayed} delayed, in time ${report.inTime.size}")
+        Diagnostics.note(service, "end of day: done $resultText")
         if (eod == Eod.DONE) updateAwake(false)
+    }
+
+    private fun resultLine(r: DailyReport, h: HistoryResult): String = buildString {
+        append("Ready เห็น ").append(r.readySeenOrders).append(" / มีภาพ ").append(r.readyOrders)
+        append(" / Completed ").append(r.completedSeen)
+        r.grabCompleted?.let { append(" (Grab ").append(it).append(')') }
+        append(" / Cancelled ").append(r.cancelledSeen)
+        append(" / Delayed ").append(r.delayed)
+        append(" / กดทัน ").append(r.inTime.size).append(" ช้าจริง ").append(r.late.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
+        if (!h.reachedEnd) append(" / ไม่ถึงท้ายรายการ")
+        if (h.unshot.isNotEmpty()) append(" / ขาดภาพ DELAY ").append(h.unshot.joinToString(","))
+        append(if (r.complete) " / MATCH" else " / INCOMPLETE")
     }
 
     // ---- keep the screen on while watching --------------------------------------------------------
@@ -859,7 +1046,11 @@ class Engine(private val service: ProofService) {
         return out
     }
 
-    /** Manual shot (accessibility button / test button): whatever is on screen, no checks. */
+    /**
+     * Manual shot (accessibility button / test button): whatever is on screen. Orders count as
+     * Ready evidence only when they are fully visible in the Ready tab; the rest are kept as
+     * "visible" so the photo can still be found by order number.
+     */
     fun manualCapture(note: String?) {
         scope.launch {
             val c = cfg
@@ -875,11 +1066,19 @@ class Engine(private val service: ProofService) {
                 service.toast("⚠️ ${capture.lastError ?: "แคปไม่สำเร็จ"}")
                 return@launch
             }
-            val items = s?.let { io.github.panuwattegif.readyproof.core.ScreenAnalyzer.manualItems(it.a, c) } ?: emptyList()
-            val record = capture.save(bitmap, RecordKind.MANUAL, t, CaptureMeta(items = items, visible = s?.a?.visible ?: emptyList(), note = note))
+            val fullGfs = s?.a?.views?.filter { it.full }?.map { it.gf }?.toSet() ?: emptySet()
+            val fullReady = s?.a?.readyViews()?.filter { it.full }?.map { it.gf }?.toSet() ?: emptySet()
+            val items = s?.let { ScreenAnalyzer.manualItems(it.a, c) }?.map { i ->
+                if (i.type != ObsType.VISIBLE && i.gf !in fullGfs) i.copy(type = ObsType.VISIBLE) else i
+            } ?: emptyList()
+            val record = capture.save(
+                bitmap, RecordKind.MANUAL, t,
+                CaptureMeta(items = items, visible = s?.a?.visible ?: emptyList(), note = note, shopId = shop()),
+            )
             if (record != null) {
-                if (items.any { it.type == ObsType.READY }) tracker.shot(items.filter { it.type == ObsType.READY }.map { it.gf }, t)
+                if (fullReady.isNotEmpty()) tracker.shot(fullReady, t)
                 lastShotText = record.kind.label + " " + record.gfs.joinToString(", ").ifEmpty { "-" } + " · " + ReportText.time(t, zone)
+                ProofService.lastCaptureText = lastShotText
                 service.toast("📸 แคปแล้ว " + record.gfs.take(3).joinToString(", "))
             }
         }

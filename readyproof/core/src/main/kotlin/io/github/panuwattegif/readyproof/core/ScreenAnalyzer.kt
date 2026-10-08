@@ -64,12 +64,22 @@ data class ScreenAnalysis(
 
     fun readyViews(): List<CardView> = views.filter { it.has(ObsType.READY) }
 
-    fun historyViews(): List<CardView> = views.filter { it.has(ObsType.DONE) }
+    /** History rows: finished or cancelled orders. */
+    fun historyViews(): List<CardView> = views.filter { it.has(ObsType.DONE) || it.has(ObsType.CANCELLED) }
 }
 
 object ScreenAnalyzer {
 
-    fun analyze(roots: List<UiNode>, cfg: Config, ctx: ScanContext = ScanContext()): ScreenAnalysis {
+    /**
+     * [allowUnknownDelayed]: keep a "Delayed" row even when its finish time cannot be read (History
+     * sweeps), so the report knows it exists; it can never be paired by order number alone.
+     */
+    fun analyze(
+        roots: List<UiNode>,
+        cfg: Config,
+        ctx: ScanContext = ScanContext(),
+        allowUnknownDelayed: Boolean = false,
+    ): ScreenAnalysis {
         val gfx = cfg.gfExtractor()
         val rules = StatusRules(cfg)
         val tab = TabDetector.openTab(roots, cfg)
@@ -80,8 +90,8 @@ object ScreenAnalyzer {
             visible += finder.visibleGfs()
             val occluderCache = IdentityHashMap<UiNode, List<Box>>()
             for (card in finder.cards()) {
-                val observed = rules.evaluate(card)
-                val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY }
+                val observed = rules.evaluate(card, allowUnknownDelayed || tab == OrderTab.HISTORY)
+                val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
                 val status = statusLine(card, gfx)
                 val ready = when (tab) {
                     // Everything listed under the Ready tab is done and waiting, whatever its status says.
@@ -90,7 +100,7 @@ object ScreenAnalyzer {
                     } else {
                         null
                     }
-                    OrderTab.HISTORY, OrderTab.OTHER -> null
+                    OrderTab.HISTORY, OrderTab.PREPARING, OrderTab.OTHER -> null
                     null -> observed.firstOrNull { it.type == ObsType.READY }
                 }
                 val items = listOfNotNull(ready) + history
@@ -150,6 +160,7 @@ object ScreenAnalyzer {
         val second: UiNode? = when {
             items.any { it.type == ObsType.DELAY } -> nodeWith(card, gfx) { TextNorm.containsAny(it, cfg.delayAny) }
             items.any { it.type == ObsType.DONE } -> nodeWith(card, gfx) { TextNorm.containsAny(it, cfg.doneAny) }
+            items.any { it.type == ObsType.CANCELLED } -> nodeWith(card, gfx) { TextNorm.containsAny(it, cfg.cancelAny) }
             else -> nodeWith(card, gfx) { gfx.extract(it).isEmpty() }
         }
         return listOfNotNull(card.gfNode, second).distinct()

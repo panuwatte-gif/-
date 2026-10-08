@@ -25,6 +25,8 @@ data class Config(
     ),
     /** The tab whose orders are all "done, waiting for the rider": everything there is evidence. */
     val readyTabLabels: List<String> = listOf("Ready", "พร้อมจัดส่ง"),
+    /** Orders still being cooked; at closing time they must be gone too before History is read. */
+    val preparingTabLabels: List<String> = listOf("Preparing", "กำลังเตรียม"),
     val historyTabLabels: List<String> = listOf("History", "ประวัติ"),
     /** Bottom navigation of the Grab app; "Orders" leads back to the order tabs. */
     val navLabels: List<String> = listOf(
@@ -54,6 +56,8 @@ data class Config(
     /** Screenshot the History list where it shows a delayed order. */
     val captureDelay: Boolean = true,
     val doneAny: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
+    /** Cancelled History rows count toward the day total even though they are never delayed. */
+    val cancelAny: List<String> = listOf("Cancelled", "Canceled", "ยกเลิก"),
     val delayAny: List<String> = listOf("Delayed by", "ล่าช้าไป"),
     /** Labels of the totals at the top of History ("Completed 77", "Cancelled 0"). */
     val completedLabels: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
@@ -86,7 +90,7 @@ data class Config(
 
     val showToast: Boolean = false,
     val jpegQuality: Int = 80,
-    /** Screenshots older than this are deleted automatically. */
+    /** How far back the photo search looks (evidence is never deleted automatically). */
     val retentionDays: Int = 30,
     /** Keep text dumps of watched screens for troubleshooting. */
     val diagnostics: Boolean = false,
@@ -103,6 +107,7 @@ data class Config(
         if (targetPackages.isEmpty()) errors += "ต้องมีแอปเป้าหมายอย่างน้อย 1 แอป"
         if (readyTabLabels.isEmpty()) errors += "ต้องมีชื่อแท็บ Ready อย่างน้อย 1 คำ"
         if (tabLabels.size < 3) errors += "ต้องมีชื่อแท็บทั้งหมดอย่างน้อย 3 คำ (ใช้หาแถบแท็บ)"
+        if (preparingTabLabels.isEmpty() && autoEndOfDay) errors += "ต้องมีชื่อแท็บกำลังเตรียมอย่างน้อย 1 คำ (หรือปิดสรุปสิ้นวันอัตโนมัติ)"
         if (historyTabLabels.isEmpty() && autoEndOfDay) errors += "ต้องมีชื่อแท็บ History อย่างน้อย 1 คำ (หรือปิดสรุปสิ้นวันอัตโนมัติ)"
         if (parseTime(closeTime) == null) errors += "เวลาปิดร้านต้องเป็นแบบ 19:00"
         if (endBufferMinutes !in 0..120) errors += "เวลาเผื่อหลังปิดร้านต้องอยู่ระหว่าง 0–120 นาที"
@@ -111,7 +116,7 @@ data class Config(
         if (fullSweepMinutes !in 1..60) errors += "รอบกวาดแท็บ Ready ต้องอยู่ระหว่าง 1–60 นาที"
         if (guardIdleMinutes !in 1..60) errors += "เวลารอก่อนพากลับแท็บ Ready ต้องอยู่ระหว่าง 1–60 นาที"
         if (jpegQuality !in 30..100) errors += "คุณภาพภาพต้องอยู่ระหว่าง 30–100"
-        if (retentionDays !in 1..365) errors += "จำนวนวันที่เก็บภาพต้องอยู่ระหว่าง 1–365"
+        if (retentionDays !in 1..365) errors += "จำนวนวันค้นย้อนหลังต้องอยู่ระหว่าง 1–365"
         if (evidenceWindowHours !in 1..24) errors += "ช่วงเวลาจับคู่หลักฐานต้องอยู่ระหว่าง 1–24 ชั่วโมง"
         return errors
     }
@@ -142,7 +147,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 3
+    const val VERSION = 4
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -153,6 +158,7 @@ object ConfigCodec {
             "gfPrefix" to c.gfPrefix,
             "tabLabels" to c.tabLabels,
             "readyTabLabels" to c.readyTabLabels,
+            "preparingTabLabels" to c.preparingTabLabels,
             "historyTabLabels" to c.historyTabLabels,
             "navLabels" to c.navLabels,
             "ordersNavLabels" to c.ordersNavLabels,
@@ -162,6 +168,7 @@ object ConfigCodec {
             "lateStatus" to c.lateStatus,
             "captureDelay" to c.captureDelay,
             "doneAny" to c.doneAny,
+            "cancelAny" to c.cancelAny,
             "delayAny" to c.delayAny,
             "completedLabels" to c.completedLabels,
             "cancelledLabels" to c.cancelledLabels,
@@ -194,6 +201,7 @@ object ConfigCodec {
             gfPrefix = m.str("gfPrefix") ?: d.gfPrefix,
             tabLabels = m.strList("tabLabels") ?: d.tabLabels,
             readyTabLabels = m.strList("readyTabLabels") ?: d.readyTabLabels,
+            preparingTabLabels = m.strList("preparingTabLabels") ?: d.preparingTabLabels,
             historyTabLabels = m.strList("historyTabLabels") ?: d.historyTabLabels,
             navLabels = m.strList("navLabels") ?: d.navLabels,
             ordersNavLabels = m.strList("ordersNavLabels") ?: d.ordersNavLabels,
@@ -203,6 +211,7 @@ object ConfigCodec {
             lateStatus = m.strList("lateStatus") ?: d.lateStatus,
             captureDelay = m.bool("captureDelay") ?: d.captureDelay,
             doneAny = m.strList("doneAny") ?: d.doneAny,
+            cancelAny = m.strList("cancelAny") ?: d.cancelAny,
             delayAny = m.strList("delayAny") ?: d.delayAny,
             completedLabels = m.strList("completedLabels") ?: d.completedLabels,
             cancelledLabels = m.strList("cancelledLabels") ?: d.cancelledLabels,
@@ -227,24 +236,26 @@ object ConfigCodec {
 
     /**
      * Saved settings from older versions keep what the user typed and gain the newer words:
-     * v1 knew only the Thai screens; v3 is the unattended Ready-tab phone (no pop-up messages,
-     * which could cover an order number in the next shot).
+     * v1 knew only the Thai screens, v3 had no letter-suffixed order numbers (GF-398F), and v4 is
+     * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
+     * next shot). Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {
         if (from >= VERSION) return c
         val d = Config.DEFAULT
         fun merge(saved: List<String>, defaults: List<String>) = (saved + defaults).distinct()
         return c.copy(
-            gfPattern = if (c.gfPattern == V2_GF_PATTERN) d.gfPattern else c.gfPattern,
+            gfPattern = if (c.gfPattern in OLD_GF_PATTERNS) d.gfPattern else c.gfPattern,
             readyAny = merge(c.readyAny, d.readyAny),
             readyNone = merge(c.readyNone, d.readyNone),
             doneAny = merge(c.doneAny, d.doneAny),
+            cancelAny = merge(c.cancelAny, d.cancelAny),
             delayAny = merge(c.delayAny, d.delayAny),
             showToast = false,
         )
     }
 
-    private const val V2_GF_PATTERN = """(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5})(?!\d)"""
+    private val OLD_GF_PATTERNS = setOf("""(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5})(?!\d)""")
 
     /** Never throws: a corrupt save falls back to defaults instead of breaking the app. */
     fun decodeOrDefault(text: String?): Config {
@@ -266,6 +277,7 @@ fun Config.sanitized(): Config {
         gfPattern = if (Config.isUsablePattern(gfPattern)) gfPattern else d.gfPattern,
         tabLabels = tabLabels.cleanList(),
         readyTabLabels = readyTabLabels.cleanList().ifEmpty { d.readyTabLabels },
+        preparingTabLabels = preparingTabLabels.cleanList(),
         historyTabLabels = historyTabLabels.cleanList(),
         navLabels = navLabels.cleanList(),
         ordersNavLabels = ordersNavLabels.cleanList(),
@@ -273,6 +285,7 @@ fun Config.sanitized(): Config {
         readyNone = readyNone.cleanList(),
         lateStatus = lateStatus.cleanList(),
         doneAny = doneAny.cleanList(),
+        cancelAny = cancelAny.cleanList(),
         delayAny = delayAny.cleanList(),
         completedLabels = completedLabels.cleanList(),
         cancelledLabels = cancelledLabels.cleanList(),

@@ -27,7 +27,9 @@ data class CaptureMeta(
     val visible: List<String> = emptyList(),
     val note: String? = null,
     /** Day the History tab showed, for History shots. */
-    val day: String? = null,
+    val historyDate: String? = null,
+    /** Shop the phone is bound to; never changed afterwards (Drive routing depends on it). */
+    val shopId: String? = null,
 )
 
 /**
@@ -99,7 +101,8 @@ class CaptureManager(private val service: AccessibilityService) {
     suspend fun save(bitmap: Bitmap, kind: RecordKind, t: Long, meta: CaptureMeta): Record? = withContext(Dispatchers.IO) {
         try {
             val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(t), ZoneId.systemDefault())
-            val name = Naming.fileName(kind, meta.items, meta.visible, at)
+            // A running number keeps names unique (Drive copies are keyed by name).
+            val name = Naming.fileName(kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
             val uri = MediaSaver.saveJpeg(service, bitmap, name, t, ConfigStore.get(service).jpegQuality)
             val record = Record(
                 id = "$t-${seq.incrementAndGet()}",
@@ -110,9 +113,12 @@ class CaptureManager(private val service: AccessibilityService) {
                 uri = uri.toString(),
                 file = name,
                 note = meta.note,
-                day = meta.day,
+                shopId = meta.shopId,
+                historyDate = meta.historyDate,
             )
             RecordStore.append(service, record)
+            // Optional Drive copy; it never blocks or fails the local capture.
+            DriveSync.offerRecord(service, record)
             record
         } catch (e: Exception) {
             lastError = "บันทึกภาพไม่สำเร็จ: ${e.message}"
