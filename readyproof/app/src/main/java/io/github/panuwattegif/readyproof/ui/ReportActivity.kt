@@ -42,6 +42,14 @@ class ReportActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         thumbs = Thumbs(this)
+        date = savedInstanceState?.getString("report_date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            ?: ConfigStore.prefs(this).getString("manual_history_report_date", null)
+                ?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("report_date", date.toString())
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -63,7 +71,7 @@ class ReportActivity : Activity() {
     private fun render() {
         val zone = ZoneId.systemDefault()
         val cfg = ConfigStore.get(this)
-        val records = RecordStore.loadRange(this, date.minusDays(1), date.plusDays(1))
+        val records = RecordStore.loadReport(this, date)
         val shopId = if (legacy) null else ShopStore.get(this)?.id
         val report = ReportBuilder.build(records, date, zone, cfg, shopId, DailyExport.reachedEnd(this, date, shopId))
         val col = Ui.page(this, "รายงานออเดอร์ล่าช้า", "จับคู่กับภาพหลักฐานให้อัตโนมัติ")
@@ -88,6 +96,10 @@ class ReportActivity : Activity() {
         col.addView(nav, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, WRAP_CONTENT).apply {
             bottomMargin = Ui.dp(this@ReportActivity, 10)
         })
+
+        Ui.button(col, "กวาด History สำหรับวันที่เลือก", filled = false) {
+            HistorySweepUi.choose(this, ConfigStore.get(this).targetPackages.first(), date)
+        }
 
         Ui.button(col, if (legacy) "ดูร้านที่เลือก" else "ดูข้อมูลเดิมที่ยังไม่ระบุร้าน", filled = false) {
             legacy = !legacy
@@ -117,7 +129,7 @@ class ReportActivity : Activity() {
         Ui.text(s, "ร้าน: " + (io.github.panuwattegif.readyproof.core.Shop.fromId(r.shopId)?.label ?: "UNKNOWN / ข้อมูลเดิม"), 16f, bold = true)
         Ui.text(s, if (r.complete) "COMPLETE (ตามรายการที่อ่านได้)" else "INCOMPLETE / PROVISIONAL — จำนวนทั้งวันยัง UNKNOWN", 14f, Ui.AMBER)
         Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
-            (if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN"), 13f, Ui.MUTED)
+            (if (r.historyDateVerified) "ระบุวันไว้แล้ว (หน้าจอหรือวันที่เลือกตอนกวาด)" else "UNKNOWN"), 13f, Ui.MUTED)
         Ui.button(s, "ดูรายละเอียดความครบของหลักฐาน", filled = false) {
             Ui.alert(this, "ข้อมูลการเก็บภาพ — ไม่ใช่รายการล่าช้า",
                 "Ready รอภาพ: " + r.pendingReadyGfs.joinToString().ifEmpty { "-" } +

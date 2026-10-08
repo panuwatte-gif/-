@@ -149,14 +149,7 @@ class MainActivity : Activity() {
         // --- tools ---
         val tools = Ui.card(col)
         Ui.button(tools, "🔄 กวาด History ตอนนี้", filled = false) {
-            val service = ProofService.instance
-            if (service == null) {
-                Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
-            } else {
-                ServiceStatus.openApp(this, target)
-                service.requestHistorySweepNow()
-                Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
-            }
+            HistorySweepUi.choose(this, target)
         }
         Ui.button(tools, "กลับไปเฝ้า Ready", filled = false) {
             ServiceStatus.openApp(this, target)

@@ -29,7 +29,7 @@ object DailyExport {
         val completed = (m["completed"] as Number).toInt()
         val cancelled = (m["cancelled"] as Number).toInt()
         val total = (m["total"] as Number).toInt()
-        val match = completed == report.completedSeen && cancelled == report.cancelledSeen && completed + cancelled == total
+        val match = completed == report.completedSeen && cancelled == report.cancelledSeen && report.historyOrders == total
         return "ยอดหัวหน้า History: ทั้งหมด $total / สำเร็จ $completed / ยกเลิก $cancelled\n" +
             "อ่านรายออเดอร์: สำเร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen} — " +
             (if (match) "จำนวนตรงกัน" else "จำนวนยังไม่ตรง: อย่าถือว่ากวาดครบ")
@@ -43,7 +43,7 @@ object DailyExport {
     fun save(ctx: Context, day: LocalDate, shopId: String?, reachedEnd: Boolean, failureReason: String? = null): DailyReport {
         ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", reachedEnd).apply()
         val zone = ZoneId.of("Asia/Bangkok")
-        val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
+        val records = RecordStore.loadReport(ctx, day)
         val observed = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
         val verifiedEnd = reachedEnd && !countMismatch(ctx, observed)
         ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", verifiedEnd).apply()
@@ -68,7 +68,8 @@ object DailyExport {
                 "gf" to c.gf, "finishedAt" to c.doneAt?.toString(), "matchStatus" to c.matchStatus,
                 "delayMinutes" to c.delayMin, "readyRecordIds" to c.evidence.map { it.record.id },
                 "delayRecordIds" to c.delayShots.map { it.id }) },
-            "records" to records.filter { it.shopId == shopId && RecordStore.dateOf(it.t) == day }
+            "records" to records.filter { r -> r.shopId == shopId && (RecordStore.dateOf(r.t) == day ||
+                r.historyDate == day.toString() || r.items.any { it.historyDate == day.toString() }) }
                 .map { Json.parseObject(RecordCodec.encode(it)) }
         ))
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_manifest-$day.json", manifest)

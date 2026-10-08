@@ -117,6 +117,8 @@ class ProofService : AccessibilityService() {
     private var returnReadyAfterHistory = true
     private var manualHistoryPass = 0
     private var manualHistoryDateLocked = false
+    private val scrollPending = AtomicBoolean(false)
+    private val sweepProgress = io.github.panuwattegif.readyproof.core.SweepProgress()
     private fun autoNavigationEnabled() = io.github.panuwattegif.readyproof.core.ManualWorkflow.autoNavigation
 
     fun resumeReadyMonitor() {
@@ -390,8 +392,12 @@ class ProofService : AccessibilityService() {
     }
 
     /** Manual hook used by the UI for testing; automatic end-of-day scanning uses the same path. */
-    fun requestHistorySweepNow() {
+    fun requestHistorySweepNow(day: LocalDate = LocalDate.now()) {
         if (!::worker.isInitialized) return
+        if (autoHistoryInProgress || forcedHistorySweep || captureInFlight) {
+            toast("รอการแคปหรือกวาดรอบปัจจุบันเสร็จก่อน")
+            return
+        }
         // Claim manual navigation before launching Grab; the old delayed claim raced the monitor.
         manualHistoryHold = true
         returnReadyAfterHistory = false
@@ -399,9 +405,9 @@ class ProofService : AccessibilityService() {
         closingGate = null
         worker.postDelayed({
             manualHistoryPass = 0
-            manualHistoryDateLocked = false
+            manualHistoryDateLocked = true
             closingGate = null
-            startHistorySweep(LocalDate.now(), force = true)
+            startHistorySweep(day, force = true)
         }, 2_500L)
     }
 
@@ -414,7 +420,8 @@ class ProofService : AccessibilityService() {
         autoHistoryTargetDate = day
         sweepShopId = ShopStore.get(this)?.id
         main.post {
-            val clicked = runCatching { clickTab(listOf("History", "ประวัติ")) }.getOrDefault(false)
+            val clicked = DedicatedMonitor.historyOpen(activeGrabSnapshots(), config) ||
+                runCatching { clickTab(listOf("History", "ประวัติ")) }.getOrDefault(false)
             if (clicked) {
                 worker.postDelayed({ confirmHistoryPage(day, SystemClock.uptimeMillis()) }, 1_500L)
             } else {
@@ -433,6 +440,15 @@ class ProofService : AccessibilityService() {
         // When selection is omitted, terminal-row content confirms History, never an empty tree.
         val terminal = analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.CANCELLED, ObsType.DELAY) }
         if (config.enabled && !otherSelected && (selected || terminal)) {
+            val displayedDay = snaps.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }
+                .firstNotNullOfOrNull { HistoryDates.parse(it, LocalDate.now()) }
+            if (manualHistoryDateLocked && displayedDay != null && displayedDay != day) {
+                autoHistoryInProgress = false
+                autoHistoryTargetDate = null
+                closingStatus("วันที่ไม่ตรง: เลือก $day แต่ Grab แสดง $displayedDay — เปลี่ยนวันที่ใน Grab แล้วกดกวาดใหม่")
+                toast("วันที่ History ไม่ตรงกับวันที่เลือก ยังไม่เริ่มกวาด")
+                return
+            }
             if (manualHistoryHold && !manualHistoryDateLocked) {
                 snaps.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }
                     .firstNotNullOfOrNull { HistoryDates.parse(it, LocalDate.now()) }?.let {
@@ -441,6 +457,7 @@ class ProofService : AccessibilityService() {
                     }
             }
             Diagnostics.dump(this, "HISTORY_CONFIRMED manual=$manualHistoryHold terminal=$terminal", snaps, force = true)
+            ConfigStore.prefs(this).edit().putString("manual_history_report_date", autoHistoryTargetDate.toString()).apply()
             forcedHistorySweep = true
             historyLastProgressAt = SystemClock.uptimeMillis()
             resetSweepLoop()
@@ -502,7 +519,7 @@ class ProofService : AccessibilityService() {
     private fun scan() {
         if (SystemClock.uptimeMillis() < monitorNavigationUntil) return
         if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
-        if (returningReadyToTop || returningHistoryToTop || captureInFlight) return
+        if (returningReadyToTop || returningHistoryToTop || captureInFlight || scrollPending.get()) return
         val cfg = config
         if (!cfg.enabled) return
         val roots = targetRoots(cfg)
@@ -513,6 +530,10 @@ class ProofService : AccessibilityService() {
         preserveManualHistory(snaps)
 
         var analysis = ScreenAnalyzer.analyze(snaps, cfg, allowUnknownDelayed = forcedHistorySweep)
+        if (forcedHistorySweep && !DedicatedMonitor.historyOpen(snaps, cfg)) {
+            closingStatus("พักกวาด: หน้าที่อยู่บนจอไม่ใช่ History — เปิด History วันที่เลือกเพื่อทำต่อ")
+            return
+        }
 
         // Reading/capturing a user-opened History page does not authorize a sweep or navigation.
         val manualHistoryMode = (manualHistoryHold || !autoNavigationEnabled()) &&
@@ -533,7 +554,8 @@ class ProofService : AccessibilityService() {
                     }
             }
             DailyExport.captureTotals(this, autoHistoryTargetDate ?: LocalDate.now(), ShopStore.get(this)?.id, snaps)
-            val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
+            val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(),
+                historyHeader ?: if (forcedHistorySweep && manualHistoryDateLocked) autoHistoryTargetDate else null)
             analysis = analysis.copy(items = dated.first)
             historyHeader = dated.second
         }
@@ -589,7 +611,8 @@ class ProofService : AccessibilityService() {
         val olderDateBoundary = terminal.any { i -> i.historyDate?.let { runCatching { LocalDate.parse(it).isBefore(targetDay) }.getOrDefault(false) } == true }
         val newTerminal = terminal.filter { historySeenKeys.add("${it.historyDate}|${Deduper.keyOf(it)}|${it.card}") }
         if (newTerminal.isNotEmpty()) RecordStore.append(this, Record("$now-hs${seq.incrementAndGet()}", now,
-            RecordKind.SEEN, newTerminal, analysis.visible, shopId = ShopStore.get(this)?.id))
+            RecordKind.SEEN, newTerminal, analysis.visible, shopId = ShopStore.get(this)?.id,
+            historyDate = if (historyMode) targetDay.toString() else null))
         // Respect the configured repeat window; polling is not permission to recapture every minute.
         val fresh = deduper.fresh(analysis.items, now, cfg.copy(readyRepeatMinutes = io.github.panuwattegif.readyproof.core.ManualWorkflow.readyRepeatMinutes))
         if (historyMode) historyRowsRead = terminal.isNotEmpty()
@@ -645,7 +668,7 @@ class ProofService : AccessibilityService() {
             // Keys are tentatively marked here to stop duplicate jobs while Android is capturing;
             // on failure or partial batch coverage onCaptureDone() releases every unsaved key.
             if (captureKeys.isNotEmpty()) deduper.mark(captureKeys, now)
-            val job = CaptureJob(kind, now, ShopStore.get(this)?.id)
+            val job = CaptureJob(kind, now, ShopStore.get(this)?.id, if (historyMode) targetDay.toString() else null)
             job.setMeta(
                 CaptureMeta(
                     items = captureItems,
@@ -727,15 +750,13 @@ class ProofService : AccessibilityService() {
     // ---- automatic scrolling ------------------------------------------------------------------
 
     private fun updateSweepSignature(signature: String) {
-        if (signature.isNotEmpty() && signature == lastSweepSignature) {
-            repeatedSweepSignature++
-        } else {
-            lastSweepSignature = signature
-            repeatedSweepSignature = 0
-        }
+        sweepProgress.observe(signature)
+        lastSweepSignature = signature
+        repeatedSweepSignature = sweepProgress.repeated
     }
 
     private fun resetSweepLoop() {
+        sweepProgress.reset()
         historyScrollRetry.reset()
         historyRowsRead = false
         lastSweepSignature = ""
@@ -746,8 +767,11 @@ class ProofService : AccessibilityService() {
     }
 
     private fun continueSweep(readyMode: Boolean? = null) {
+        // Polls and screenshot callbacks may request the same step. Only one may own a scroll.
+        if (!scrollPending.compareAndSet(false, true)) return
         worker.postDelayed({
             main.post {
+                try {
                 if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return@post
                 if (captureInFlight || returningHistoryToTop || returningReadyToTop) return@post
                 if (readyMode == false && !forcedHistorySweep) return@post
@@ -755,7 +779,8 @@ class ProofService : AccessibilityService() {
                 // Stop only when the viewport truly stops moving several times or the safety cap
                 // is reached. The old GF-only signature could stop while the list was still moving.
                 val canContinue = repeatedSweepSignature < 4 && sweepScrolls < MAX_SWEEP_SCROLLS
-                val moved = canContinue && scrollOrderListForward()
+                val moved = canContinue && if (forcedHistorySweep && repeatedSweepSignature >= 2)
+                    swipeHistoryList(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) else scrollOrderListForward()
                 if (forcedHistorySweep && !moved && historyScrollRetry.shouldRetry(false,
                         scrollContainerFound, historyRowsRead)) {
                     historyReachedEnd = false
@@ -769,11 +794,15 @@ class ProofService : AccessibilityService() {
                 if (!moved && forcedHistorySweep) historyReachedEnd = historyAtTop && canContinue &&
                     scrollContainerFound && repeatedSweepSignature < 4
                 if (moved) {
+                    sweepProgress.scrolled()
                     sweepScrolls++
                     lastScrollAt = SystemClock.uptimeMillis()
                     worker.postDelayed({ scheduleScan() }, SCROLL_SETTLE_MS)
                 } else {
                     finishSweep(readyMode ?: false)
+                }
+                } finally {
+                    scrollPending.set(false)
                 }
             }
         }, AUTO_SCROLL_DELAY_MS)
@@ -1109,23 +1138,8 @@ class ProofService : AccessibilityService() {
 
     /** Roots of Grab's application windows (list + any dialog on top). */
     private fun targetRoots(cfg: Config): List<AccessibilityNodeInfo> {
-        val out = ArrayList<AccessibilityNodeInfo>()
-        try {
-            for (w in windows) {
-                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
-                val root = w.root ?: continue
-                val pkg = root.packageName?.toString()
-                if (pkg != null && pkg in cfg.targetPackages) out += root
-            }
-        } catch (e: Exception) {
-            Diagnostics.error(this, "windows", e)
-        }
-        if (out.isEmpty()) {
-            val root = rootInActiveWindow
-            val pkg = root?.packageName?.toString()
-            if (root != null && pkg != null && pkg in cfg.targetPackages) out += root
-        }
-        return out
+        val root = rootInActiveWindow ?: return emptyList()
+        return if (root.packageName?.toString() in cfg.targetPackages) listOf(root) else emptyList()
     }
 
     // ---- manual test capture ------------------------------------------------------------------

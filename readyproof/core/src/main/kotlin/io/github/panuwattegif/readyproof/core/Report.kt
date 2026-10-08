@@ -150,10 +150,11 @@ object ReportBuilder {
             val seen = TimeResolve.toLocal(r.t, zone)
             for (item in r.items) {
                 if (item.type != ObsType.DONE && item.type != ObsType.DELAY && item.type != ObsType.CANCELLED) continue
+                if (r.kind == RecordKind.READY) continue
                 val explicitDate = (item.historyDate ?: r.historyDate)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
                 val doneAt = item.doneAt?.let { TimeResolve.parseHHmm(it) }
                     ?.let { if (explicitDate != null) explicitDate.atTime(it) else TimeResolve.latestAtOrBefore(it, seen.plusMinutes(1)) }
-                val day = doneAt?.toLocalDate() ?: seen.toLocalDate()
+                val day = explicitDate ?: doneAt?.toLocalDate() ?: seen.toLocalDate()
                 val key = "${item.gf}|${doneAt ?: "$day|${item.card.joinToString("|")}"}"
                 val a = acc.getOrPut(key) { Acc(item.gf, doneAt, day, r.t) }
                 if (item.type == ObsType.DONE || (item.type == ObsType.DELAY && doneAt != null)) a.completed = true
@@ -223,7 +224,7 @@ object ReportBuilder {
         fun hasHistoryImage(a: Acc) = sorted.any { r -> r.uri != null && r.items.any { i ->
             i.gf == a.gf && i.doneAt == a.doneAt?.toLocalTime()?.let(Parsers::hhmm) &&
                 (i.type == ObsType.DONE || i.type == ObsType.DELAY || i.type == ObsType.CANCELLED) &&
-                ((i.historyDate ?: r.historyDate) == date.toString() || TimeResolve.toLocal(r.t, zone).toLocalDate() == date)
+                (i.historyDate ?: r.historyDate ?: TimeResolve.toLocal(r.t, zone).toLocalDate().toString()) == date.toString()
         } }
         return DailyReport(
             date = date,
@@ -263,7 +264,7 @@ object ReportText {
         append("ร้าน: ").append(Shop.fromId(r.shopId)?.label ?: "UNKNOWN (ข้อมูลเดิม/ยังไม่เลือกร้าน)").append('\n')
         append("ความครบ: ").append(if (r.complete) "COMPLETE" else "INCOMPLETE / PROVISIONAL").append('\n')
         if (!r.complete) append("ยังตรวจ History ไม่ครบ — ยังสรุปว่าไม่มีออเดอร์ล่าช้าไม่ได้\n")
-        append("วันที่ History: ").append(if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN — เวลาอย่างเดียวไม่ยืนยันวันที่").append('\n')
+        append("วันที่ History: ").append(if (r.historyDateVerified) "ระบุวันไว้แล้ว (หน้าจอหรือวันที่ผู้ใช้เลือกตอนกวาด)" else "UNKNOWN — เวลาอย่างเดียวไม่ยืนยันวันที่").append('\n')
         append("ถึงท้ายรายการ: ").append(r.sweepReachedEnd).append('\n')
         append("History ขาดภาพ: ").append(r.missingHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
         append("Instance UNKNOWN: ").append(r.unknownHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
