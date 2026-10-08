@@ -512,7 +512,8 @@ class ProofService : AccessibilityService() {
 
         val historyMode = forcedHistorySweep || manualHistoryMode
         val readyMode = !historyMode && (analysis.readyTab == true || analysis.items.any { it.type == ObsType.READY })
-        val sweepMode = (readyMode && autoNavigationEnabled()) || forcedHistorySweep
+        // Scroll inside the already-open Ready list for proof coverage; never open/change tabs.
+        val sweepMode = readyMode || forcedHistorySweep
         if (historyMode) {
             DailyExport.captureTotals(this, autoHistoryTargetDate ?: LocalDate.now(), ShopStore.get(this)?.id, snaps)
             val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
