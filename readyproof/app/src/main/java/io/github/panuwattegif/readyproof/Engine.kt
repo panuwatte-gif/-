@@ -636,6 +636,8 @@ class Engine(private val service: ProofService) {
         historyDay = day
         header?.let { saveStats(it) }
         val rows = LinkedHashMap<String, Item>()
+        // Every delayed row of the day met during the sweep (key -> order number), shot or not.
+        val delayedRows = LinkedHashMap<String, String>()
         var reachedEnd = false
 
         // One pass down the list; [step] moves one page. Stops at the end, at an older day's rows,
@@ -648,7 +650,9 @@ class Engine(private val service: ProofService) {
                 val before = rows.size
                 val onPage = recordRows(s, day)
                 onPage.filter { it.historyDate == day && it.type != ObsType.DELAY }.forEach { rows[Deduper.keyOf(it)!!] = it }
-                if (onPage.any { it.historyDate != null && it.historyDate < day }) {
+                onPage.filter { it.historyDate == day && it.type == ObsType.DELAY }
+                    .forEach { d -> Deduper.keyOf(d.copy(historyDate = day))?.let { delayedRows[it] = d.gf } }
+                if (onPage.any { row -> row.historyDate?.let { it < day } == true }) {
                     reachedEnd = true
                     break
                 }
@@ -695,7 +699,8 @@ class Engine(private val service: ProofService) {
             if (!actor.scroll(s.a.scroller, forward = false)) break
             s = settle() ?: break
         }
-        val unshot = delayPending(s, day).map { it.gf }
+        val checkedAt = System.currentTimeMillis()
+        val unshot = delayedRows.filterKeys { historySeen.isFresh(it, checkedAt, 36L * 3600_000) }.values.toList()
         Diagnostics.note(service, "history $day: rows=${rows.size}/${want ?: "?"} end=$reachedEnd")
         HistoryResult(day, header, rows.size, reachedEnd, unshot)
     }
