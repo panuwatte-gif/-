@@ -54,8 +54,10 @@ class Deduper {
             ObsType.PRESS, ObsType.VISIBLE -> null
         }
 
+        /** History rows are photographed once; the Ready tab is handled by [ReadyTracker]. */
+        @Suppress("UNUSED_PARAMETER")
         fun windowMs(type: ObsType, cfg: Config): Long = when (type) {
-            ObsType.READY -> cfg.readyRepeatMinutes * 60_000L
+            ObsType.READY -> 10 * 60_000L
             ObsType.DELAY, ObsType.DONE -> 36L * 3600_000
             ObsType.PRESS, ObsType.VISIBLE -> 0L
         }

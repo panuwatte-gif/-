@@ -4,38 +4,15 @@ import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.Looper
-import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
-import io.github.panuwattegif.readyproof.core.ClickInfo
-import io.github.panuwattegif.readyproof.core.ClickMatcher
 import io.github.panuwattegif.readyproof.core.Config
-import io.github.panuwattegif.readyproof.core.Deduper
-import io.github.panuwattegif.readyproof.core.Item
-import io.github.panuwattegif.readyproof.core.ObsType
-import io.github.panuwattegif.readyproof.core.Record
-import io.github.panuwattegif.readyproof.core.RecordKind
-import io.github.panuwattegif.readyproof.core.ReportText
-import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
-import io.github.panuwattegif.readyproof.core.UiNode
-import java.time.LocalDate
-import java.time.ZoneId
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Watches the target app (GrabMerchant) and takes proof screenshots:
- *  - READY  : orders listed in the Ready tab ("พร้อมจัดส่ง") = pressed ready (once per order)
- *  - DELAY  : the History list shows "Delayed by X mins" / "ล่าช้าไป X นาที" (once per order)
- *  - MANUAL : the accessibility shortcut button, or the test button in the app
- *  - PRESS  : the "Ready" button tap is logged (text only) and, if no READY shot follows,
- *             a reminder to open the Ready tab is shown
- * It only reads the screen; it never taps anything in the target app.
+ * The accessibility service: receives GrabMerchant's screen events and hands them to [Engine],
+ * which does the watching, sweeping, screenshots and the end-of-day run.
+ * Events from any other app are never delivered (packageNames = the apps chosen in Settings).
  */
 class ProofService : AccessibilityService() {
 
@@ -48,76 +25,32 @@ class ProofService : AccessibilityService() {
         @Volatile
         var lastTargetEventAt = 0L
             private set
-
-        @Volatile
-        var lastCaptureText: String? = null
-            private set
-
-        private const val MAX_NODES = 1500
-        private const val SCAN_DELAY_MS = 500L
-        private const val SCAN_MIN_INTERVAL_MS = 1200L
-        private const val SCROLL_SETTLE_MS = 600L
-        private const val TEXT_ONLY_SCAN_INTERVAL_MS = 5_000L
-        private const val PRESS_DEBOUNCE_MS = 600L
-        private const val READY_REMINDER_MS = 20_000L
-        private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
     }
 
     private val main = Handler(Looper.getMainLooper())
-    private lateinit var workerThread: HandlerThread
-    private lateinit var worker: Handler
-    private lateinit var capture: CaptureManager
-    private val deduper = Deduper()
-    private val scanPending = AtomicBoolean(false)
-    private val seq = AtomicInteger()
-
-    /** Last time each order was seen in the Ready tab (for the reminder). */
-    private val readySeenAt = ConcurrentHashMap<String, Long>()
-
-    @Volatile
-    private var config: Config = Config.DEFAULT
-
-    @Volatile
-    private var lastScanAt = 0L
-
-    @Volatile
-    private var lastScrollAt = 0L
-    private var lastPressAt = 0L
-
-    @Volatile
-    private var lastFailToastAt = 0L
     private var buttonCallback: AccessibilityButtonController.AccessibilityButtonCallback? = null
+
+    @Volatile
+    var engine: Engine? = null
+        private set
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        config = ConfigStore.get(this)
-        workerThread = HandlerThread("readyproof-worker").also { it.start() }
-        worker = Handler(workerThread.looper)
-        capture = CaptureManager(this) { job, record, error -> onCaptureDone(job, record, error) }
-        applyServiceInfo()
+        applyServiceInfo(ConfigStore.get(this))
         registerShortcutButton()
+        engine = Engine(this).also { it.start() }
         instance = this
-        worker.post {
-            try {
-                val today = LocalDate.now()
-                deduper.seed(RecordStore.loadRange(this, today.minusDays(1), today))
-                Cleanup.runIfDue(this, config)
-            } catch (e: Exception) {
-                Diagnostics.error(this, "startup", e)
-            }
-        }
     }
 
     fun onConfigChanged(cfg: Config) {
-        config = cfg
-        main.post { applyServiceInfo() }
+        main.post { applyServiceInfo(cfg) }
     }
 
     /** Limits delivered events to the target apps chosen in Settings. */
-    private fun applyServiceInfo() {
+    private fun applyServiceInfo(cfg: Config) {
         try {
             val info = serviceInfo ?: return
-            info.packageNames = config.targetPackages.toTypedArray()
+            info.packageNames = cfg.targetPackages.toTypedArray()
             serviceInfo = info
         } catch (e: Exception) {
             Diagnostics.error(this, "serviceInfo", e)
@@ -125,26 +58,13 @@ class ProofService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || !::worker.isInitialized) return
-        val cfg = config
+        if (event == null) return
+        val cfg = ConfigStore.get(this)
         if (!cfg.enabled) return
         val pkg = event.packageName?.toString() ?: return
         if (pkg !in cfg.targetPackages) return
         lastTargetEventAt = System.currentTimeMillis()
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> onClick(event, cfg)
-            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                lastScrollAt = SystemClock.uptimeMillis()
-                scheduleScan()
-            }
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                // Countdown timers change text every second; those alone only need an occasional look.
-                val types = event.contentChangeTypes
-                val textOnly = types != 0 && (types and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT.inv()) == 0
-                if (!textOnly || SystemClock.uptimeMillis() - lastScanAt > TEXT_ONLY_SCAN_INTERVAL_MS) scheduleScan()
-            }
-            else -> scheduleScan()
-        }
+        engine?.onEvent(event.eventType, event.contentChangeTypes)
     }
 
     override fun onInterrupt() {}
@@ -163,143 +83,11 @@ class ProofService : AccessibilityService() {
         if (instance === this) instance = null
         buttonCallback?.let { runCatching { accessibilityButtonController.unregisterAccessibilityButtonCallback(it) } }
         buttonCallback = null
-        if (::capture.isInitialized) capture.shutdown()
-        if (::workerThread.isInitialized) workerThread.quitSafely()
+        engine?.stop()
+        engine = null
     }
 
-    // ---- PRESS: the "food ready" button -------------------------------------------------------
-
-    private fun onClick(event: AccessibilityEvent, cfg: Config) {
-        val src = event.source
-        val info = ClickInfo(
-            ownText = src?.text?.toString(),
-            desc = src?.contentDescription?.toString() ?: event.contentDescription?.toString(),
-            eventTexts = event.text.map { it.toString() },
-            className = (src?.className ?: event.className)?.toString(),
-            viewId = src?.viewIdResourceName,
-            roleDesc = src?.extras?.getCharSequence(ROLE_DESCRIPTION_KEY)?.toString(),
-        )
-        val now = System.currentTimeMillis()
-        val isPress = ClickMatcher.matches(info, cfg) && now - lastPressAt > PRESS_DEBOUNCE_MS
-        worker.post { ClickLog.add(this, ClickLog.Entry(now, info.label(), info.className, info.viewId, isPress)) }
-        if (!isPress) return
-        lastPressAt = now
-
-        // The evidence is the Ready tab shot; a shot of the tap itself is optional (off by default).
-        val job = if (cfg.capturePress) CaptureJob(RecordKind.PRESS, now).also { capture.submit(it) } else null
-        worker.post {
-            val label = info.label()
-            val p = try {
-                val roots = listOfNotNull(src?.window?.root ?: rootInActiveWindow)
-                val snaps = roots.map { NodeSnapshot.capture(it, MAX_NODES, src) }
-                if (cfg.diagnostics) Diagnostics.dump(this, "PRESS $label", snaps, force = true)
-                ScreenAnalyzer.analyzePress(snaps, cfg)
-            } catch (e: Exception) {
-                Diagnostics.error(this, "press", e)
-                null
-            }
-            val gf = p?.gf
-            val items = if (gf != null) listOf(Item(gf, ObsType.PRESS, status = label, countdown = p.countdown, card = p.card)) else emptyList()
-            val visible = p?.visible ?: emptyList()
-            if (job != null) {
-                job.setMeta(CaptureMeta(items = items, visible = visible, click = label, toast = "📸 ${gf ?: "ไม่พบเลข GF"} กด Ready"))
-            } else {
-                RecordStore.append(this, Record(id = "$now-p${seq.incrementAndGet()}", t = now, kind = RecordKind.PRESS, items = items, visible = visible, click = label))
-            }
-            if (cfg.remindReadyTab && gf != null) worker.postDelayed({ remindIfNoReadyShot(gf, now) }, READY_REMINDER_MS)
-        }
-    }
-
-    /** The order was tapped ready but never appeared in a Ready tab shot: nudge whoever is at the phone. */
-    private fun remindIfNoReadyShot(gf: String, pressedAt: Long) {
-        val cfg = config
-        if (!cfg.enabled || !cfg.captureReady) return
-        if ((readySeenAt[gf] ?: 0L) >= pressedAt) return
-        toast("⏰ $gf ยังไม่มีภาพในแท็บ Ready — เปิดแท็บ Ready ใน Grab 1 ครั้ง")
-    }
-
-    // ---- READY / DELAY / DONE: watching what is on screen -------------------------------------
-
-    private fun scheduleScan() {
-        if (!scanPending.compareAndSet(false, true)) return
-        val sinceLast = SystemClock.uptimeMillis() - lastScanAt
-        worker.postDelayed(scanRunnable, maxOf(SCAN_DELAY_MS, SCAN_MIN_INTERVAL_MS - sinceLast))
-    }
-
-    private val scanRunnable = object : Runnable {
-        override fun run() {
-            // Wait until scrolling stops so the shot shows the rows that were read.
-            val sinceScroll = SystemClock.uptimeMillis() - lastScrollAt
-            if (sinceScroll < SCROLL_SETTLE_MS) {
-                worker.postDelayed(this, SCROLL_SETTLE_MS - sinceScroll)
-                return
-            }
-            scanPending.set(false)
-            lastScanAt = SystemClock.uptimeMillis()
-            try {
-                scan()
-            } catch (e: Exception) {
-                Diagnostics.error(this@ProofService, "scan", e)
-            }
-        }
-    }
-
-    private fun scan() {
-        val cfg = config
-        if (!cfg.enabled) return
-        val snaps = targetRoots(cfg).map { NodeSnapshot.capture(it, MAX_NODES) }
-        if (snaps.isEmpty()) return
-        if (cfg.diagnostics) Diagnostics.dump(this, "SCAN", snaps, force = false)
-        val analysis = ScreenAnalyzer.analyze(snaps, cfg)
-        val now = System.currentTimeMillis()
-        analysis.items.forEach { if (it.type == ObsType.READY) readySeenAt[it.gf] = now }
-        if (analysis.items.isEmpty()) return
-        val fresh = deduper.fresh(analysis.items, now, cfg)
-        if (fresh.isEmpty()) return
-        val keys = fresh.mapNotNull { Deduper.keyOf(it) }
-        deduper.mark(keys, now)
-
-        val ready = cfg.captureReady && fresh.any { it.type == ObsType.READY }
-        val delay = cfg.captureDelay && fresh.any { it.type == ObsType.DELAY }
-        if (ready || delay) {
-            val kind = if (ready) RecordKind.READY else RecordKind.DELAY
-            val job = CaptureJob(kind, now)
-            job.setMeta(CaptureMeta(items = fresh, visible = analysis.visible, dedupeKeys = keys, toast = toastFor(kind, fresh)))
-            capture.submit(job)
-        } else {
-            // Finished orders without a delay: remembered for the daily totals, no screenshot.
-            RecordStore.append(this, Record(id = "$now-s${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN, items = fresh, visible = analysis.visible))
-        }
-    }
-
-    private fun toastFor(kind: RecordKind, items: List<Item>): String = when (kind) {
-        RecordKind.READY -> "📸 READY: " + items.filter { it.type == ObsType.READY }.joinToString(", ") { it.gf }
-        else -> "📸 ล่าช้า: " + items.filter { it.type == ObsType.DELAY }
-            .joinToString(", ") { it.gf + (it.delayMin?.let { m -> " ($m นาที)" } ?: "") }
-    }
-
-    /** Roots of the target app's windows (list + any dialog on top). */
-    private fun targetRoots(cfg: Config): List<AccessibilityNodeInfo> {
-        val out = ArrayList<AccessibilityNodeInfo>()
-        try {
-            for (w in windows) {
-                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
-                val root = w.root ?: continue
-                val pkg = root.packageName?.toString()
-                if (pkg != null && pkg in cfg.targetPackages) out += root
-            }
-        } catch (e: Exception) {
-            Diagnostics.error(this, "windows", e)
-        }
-        if (out.isEmpty()) {
-            val root = rootInActiveWindow
-            val pkg = root?.packageName?.toString()
-            if (root != null && pkg != null && pkg in cfg.targetPackages) out += root
-        }
-        return out
-    }
-
-    // ---- MANUAL: accessibility shortcut button and the in-app test --------------------------
+    // ---- hand captures: accessibility shortcut button and the in-app test --------------------
 
     private fun registerShortcutButton() {
         try {
@@ -317,52 +105,15 @@ class ProofService : AccessibilityService() {
 
     /** Takes a screenshot after [delayMs] (lets the user switch to Grab when testing). */
     fun requestManualCapture(delayMs: Long, note: String?) {
-        worker.postDelayed({ manualCapture(note) }, delayMs)
+        main.postDelayed({ engine?.manualCapture(note) }, delayMs)
     }
 
-    private fun manualCapture(note: String?) {
-        val job = CaptureJob(RecordKind.MANUAL, System.currentTimeMillis())
-        capture.submit(job)
-        val cfg = config
-        val meta = try {
-            val snaps: List<UiNode> = targetRoots(cfg).map { NodeSnapshot.capture(it, MAX_NODES) }
-            if (cfg.diagnostics) Diagnostics.dump(this, "MANUAL", snaps, force = true)
-            val analysis = ScreenAnalyzer.analyze(snaps, cfg)
-            val shown = analysis.visible.take(3).joinToString(", ")
-            CaptureMeta(
-                items = ScreenAnalyzer.manualItems(analysis, cfg),
-                visible = analysis.visible,
-                note = note,
-                toast = "📸 แคปแล้ว" + (if (shown.isNotEmpty()) " $shown" else ""),
-            )
-        } catch (e: Exception) {
-            Diagnostics.error(this, "manual", e)
-            CaptureMeta(note = note, toast = "📸 แคปแล้ว")
-        }
-        job.setMeta(meta)
+    /** The button "สรุปสิ้นวันตอนนี้". */
+    fun runEndOfDayNow() {
+        main.post { engine?.runEndOfDayNow() }
     }
 
-    // ---- results ------------------------------------------------------------------------------
-
-    private fun onCaptureDone(job: CaptureJob, record: Record?, error: String?) {
-        val meta = job.awaitMeta(0)
-        if (record == null) {
-            deduper.forget(meta.dedupeKeys)
-            Diagnostics.error(this, "capture ${job.kind}", RuntimeException(error))
-            // Failures always show (even with toasts off), but at most every 30 s.
-            val now = SystemClock.uptimeMillis()
-            if (now - lastFailToastAt > 30_000L) {
-                lastFailToastAt = now
-                toast("⚠️ ${error ?: "แคปไม่สำเร็จ"} — ถ้าเป็นบ่อยให้ถ่ายหน้าจอเองไปก่อน")
-            }
-            return
-        }
-        lastCaptureText = record.kind.label + " " + record.gfs.joinToString(", ").ifEmpty { "-" } +
-            " · " + ReportText.time(record.t, ZoneId.systemDefault())
-        if (config.showToast) toast(meta.toast ?: "📸 บันทึกแล้ว")
-    }
-
-    private fun toast(msg: String) {
+    fun toast(msg: String) {
         main.post { Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show() }
     }
 }

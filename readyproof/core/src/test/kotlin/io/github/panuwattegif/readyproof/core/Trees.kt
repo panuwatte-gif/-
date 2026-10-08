@@ -14,11 +14,13 @@ object Trees {
         selected: Boolean = false,
         marked: Boolean = false,
         id: String? = null,
+        shown: Boolean = true,
         kids: List<UiNode> = emptyList(),
     ): UiNode {
         val node = UiNode(
             text = text, desc = desc, viewId = id, className = cls, clickable = clickable,
             scrollable = scrollable, collection = collection, selected = selected, marked = marked,
+            shown = shown,
         )
         kids.forEach { node.add(it) }
         return node
@@ -121,7 +123,7 @@ object Trees {
     )
 
     /** The shop's English screenshot (14:27): "Ready" tab with two orders finding a driver. */
-    fun readyTabEn(withBanner: Boolean = true): UiNode = n(
+    fun readyTabEn(withBanner: Boolean = true, fab: UiNode? = null, extra: List<UiNode> = emptyList()): UiNode = n(
         cls = "android.widget.FrameLayout",
         kids = listOfNotNull(
             // In-app banner naming another order: must not count as being in the Ready tab.
@@ -130,6 +132,52 @@ object Trees {
             list(
                 box(n("GF-231"), n("Finding a driver..."), n("1 item"), clickable = true),
                 box(n("GF-439"), n("Finding a driver..."), n("2 items"), clickable = true),
+                *extra.toTypedArray(),
+            ),
+            fab,
+            bottomNavEn(),
+        ),
+    )
+
+    /** Thai Ready tab with five orders (shop screenshot 10:01): the list is longer than the screen. */
+    fun longReadyTabTh(): UiNode = n(
+        cls = "android.widget.FrameLayout",
+        kids = listOf(
+            header(ready = "5", preparing = null, selectedTab = 1),
+            list(
+                box(n("GF-577"), n("คนขับของคุณมาถึงแล้ว"), n("2 รายการ"), clickable = true),
+                box(n("GF-176"), n("โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง"), n("3 รายการ"), clickable = true),
+                box(n("GF-371"), n("คนขับจะมารับใน 10 นาที"), n("2 รายการ"), clickable = true),
+                box(n("GF-081"), n("คนขับจะมารับใน 4 นาที"), n("2 รายการ"), clickable = true),
+                box(n("GF-437"), n("คนขับจะมารับใน 0 นาที"), n("2 รายการ"), clickable = true),
+            ),
+            bottomNav(),
+        ),
+    )
+
+    /** History tab (shop screenshot 21:52): date, Grab's totals, then the order rows. */
+    fun historyWithHeaderEn(): UiNode = n(
+        cls = "android.widget.FrameLayout",
+        kids = listOf(
+            headerEn(selected = "History"),
+            n(
+                cls = "androidx.core.widget.NestedScrollView", scrollable = true,
+                kids = listOf(
+                    box(n("Today, 08 Oct 2026")),
+                    box(
+                        n("Net sales"), n("฿16,035.00"),
+                        box(box(n("Completed"), n("77")), box(n("Cancelled"), n("0"))),
+                        n("See store operations insights"),
+                    ),
+                    n("Orders"),
+                    n(
+                        cls = RECYCLER, collection = true,
+                        kids = listOf(
+                            box(n("GF-133"), n("Completed at 7:32 PM"), n("99.00"), n("Ads"), clickable = true),
+                            box(n("GF-700"), n("Completed at 7:09 PM"), n("Delayed by 3 mins"), n("337.00"), n("New customer"), n("Ads"), clickable = true),
+                        ),
+                    ),
+                ),
             ),
             bottomNavEn(),
         ),

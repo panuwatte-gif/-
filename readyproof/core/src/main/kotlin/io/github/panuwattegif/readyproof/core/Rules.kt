@@ -103,7 +103,4 @@ class StatusRules(private val cfg: Config) {
         }
         return out
     }
-
-    fun countdownOf(texts: List<String>): String? =
-        texts.firstNotNullOfOrNull { Parsers.countdown(it, cfg.countdownKeywords) }
 }

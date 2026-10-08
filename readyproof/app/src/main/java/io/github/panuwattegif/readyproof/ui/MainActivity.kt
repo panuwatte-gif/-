@@ -1,8 +1,11 @@
 package io.github.panuwattegif.readyproof.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.os.Build
 import io.github.panuwattegif.readyproof.ConfigStore
+import io.github.panuwattegif.readyproof.Notifier
 import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
@@ -12,7 +15,7 @@ import io.github.panuwattegif.readyproof.core.ReportText
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Home: is the watcher alive, today's numbers, and the way to every other screen. */
+/** Home: is the watcher alive, what it is doing, today's numbers, and the way to every other screen. */
 class MainActivity : Activity() {
     private val refresh: () -> Unit = { render() }
 
@@ -28,11 +31,12 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        val col = Ui.page(this, "ReadyProof", "แคปหลักฐานออเดอร์ Grab อัตโนมัติ", back = false)
+        val col = Ui.page(this, "ReadyProof", "แคปหลักฐานแท็บ Ready ของ Grab อัตโนมัติ", back = false)
         val cfg = ConfigStore.get(this)
         val zone = ZoneId.systemDefault()
         val enabled = ServiceStatus.isEnabled(this)
-        val running = ProofService.instance != null
+        val service = ProofService.instance
+        val running = service != null
 
         // --- status ---
         val status = Ui.card(col)
@@ -64,6 +68,7 @@ class MainActivity : Activity() {
                 render()
             }
         }
+        service?.engine?.statusLines()?.forEach { Ui.text(status, it, 14f, Ui.TEXT, topDp = 2) }
         val target = cfg.targetPackages.first()
         val installed = ServiceStatus.isInstalled(this, target)
         Ui.text(
@@ -78,38 +83,56 @@ class MainActivity : Activity() {
                 ServiceStatus.requestIgnoreBattery(this)
             }
         }
+        if (!Notifier.canPost(this) && Build.VERSION.SDK_INT >= 33) {
+            Ui.button(status, "อนุญาตการแจ้งเตือน (แจ้งเมื่อสรุปสิ้นวันเสร็จ)", filled = false) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            }
+        }
+        if (installed && running) {
+            Ui.button(status, "▶ เปิด Grab ที่แท็บ Ready แล้ววางเครื่องทิ้งไว้") { ServiceStatus.openApp(this, target) }
+        }
 
         // --- today ---
         val today = LocalDate.now()
         val records = RecordStore.load(this, today)
-        fun gfs(type: ObsType, withImage: Boolean) =
-            records.filter { !withImage || it.uri != null }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
-        val ready = gfs(ObsType.READY, withImage = true)
-        val pressedNoShot = gfs(ObsType.PRESS, withImage = false) - ready
+        val ready = records.filter { it.uri != null }.flatMap { r -> r.items.filter { it.type == ObsType.READY }.map { it.gf } }.toSet()
+        val waiting = service?.engine?.tracker?.present() ?: emptyList()
         val day = Ui.card(col)
         Ui.text(day, "วันนี้ " + ReportText.date(today), 17f, bold = true)
         Ui.text(
             day,
-            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · ภาพหน้า History ${records.count { it.kind == RecordKind.DELAY && it.uri != null }} · " +
+            "มีภาพในแท็บ Ready ${ready.size} ออเดอร์ · รอไรเดอร์ตอนนี้ ${waiting.size} · " +
+                "ภาพหน้าประวัติ ${records.count { it.kind == RecordKind.DELAY && it.uri != null }} · " +
                 "แคปเอง ${records.count { it.kind == RecordKind.MANUAL && it.uri != null }}",
             15f, topDp = 4,
         )
-        if (pressedNoShot.isNotEmpty()) {
-            Ui.text(
-                day,
-                "⏰ กด Ready แล้วแต่ยังไม่มีภาพในแท็บ Ready: " + pressedNoShot.take(6).joinToString(", ") +
-                    (if (pressedNoShot.size > 6) " …" else "") + " → เปิดแท็บ Ready ใน Grab 1 ครั้ง",
-                14f, Ui.AMBER, topDp = 4,
-            )
-        }
-        ProofService.lastCaptureText?.let { Ui.text(day, "ล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
+        service?.engine?.lastShotText?.let { Ui.text(day, "ภาพล่าสุด: $it", 14f, Ui.MUTED, topDp = 2) }
+        Ui.text(
+            day,
+            if (cfg.autoEndOfDay) "สรุปสิ้นวันอัตโนมัติหลัง ${cfg.closeTime} + ${cfg.endBufferMinutes} นาที (เมื่อแท็บ Ready ว่าง)"
+            else "สรุปสิ้นวันอัตโนมัติ: ปิดอยู่ (กดปุ่มด้านล่างเอง)",
+            13f, Ui.MUTED, topDp = 4,
+        )
         Ui.button(day, "📋 รายงานออเดอร์ล่าช้า + จับคู่หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
+        Ui.button(day, "🧾 สรุปสิ้นวันตอนนี้ (อ่านหน้าประวัติทั้งหมด)", filled = false) {
+            if (service == null) {
+                Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
+            } else {
+                Ui.confirm(
+                    this, "สรุปสิ้นวันตอนนี้?",
+                    "แอปจะเปิด Grab → แท็บประวัติ แล้วเลื่อนอ่านทุกออเดอร์ของวันนี้ แคปออเดอร์ที่ล่าช้า และจับคู่หลักฐาน (ใช้เวลาประมาณ 1–3 นาที ระหว่างนั้นอย่าแตะจอ)",
+                    "เริ่มเลย",
+                ) {
+                    service.runEndOfDayNow()
+                    ServiceStatus.openApp(this, target)
+                }
+            }
+        }
         Ui.button(day, "🖼️ ภาพที่แคปไว้ / ค้นหาเลข GF", filled = false) { startActivity(Intent(this, CapturesActivity::class.java)) }
 
         // --- tools ---
         val tools = Ui.card(col)
         Ui.button(tools, "🧪 ทดสอบ: แคปหน้าจอใน 5 วินาที", filled = false) {
-            val service = ProofService.instance
             if (service == null) {
                 Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน แล้วลองใหม่")
             } else {
@@ -123,5 +146,10 @@ class MainActivity : Activity() {
 
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
         Ui.text(col, "ReadyProof $version · ไม่ใช้อินเทอร์เน็ต ข้อมูลอยู่ในเครื่องนี้เท่านั้น", 12f, Ui.MUTED, topDp = 4)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        render()
     }
 }

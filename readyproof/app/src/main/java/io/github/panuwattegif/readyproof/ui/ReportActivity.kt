@@ -12,6 +12,7 @@ import android.widget.TextView
 import io.github.panuwattegif.readyproof.ConfigStore
 import io.github.panuwattegif.readyproof.EvidenceProvider
 import io.github.panuwattegif.readyproof.MediaSaver
+import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
 import io.github.panuwattegif.readyproof.core.DailyReport
@@ -21,12 +22,14 @@ import io.github.panuwattegif.readyproof.core.Parsers
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.ReportBuilder
 import io.github.panuwattegif.readyproof.core.ReportText
+import io.github.panuwattegif.readyproof.core.Verdict
 import java.time.LocalDate
 import java.time.ZoneId
 
 /**
  * End of day: Grab's delayed orders (read from the History list) matched with the Ready tab
- * screenshots, sent as one set per order (GF-xxx_READY.jpg + GF-xxx_DELAY.jpg).
+ * screenshots and split into three groups: proven in time, proven late, no evidence.
+ * Each proven order is one set (GF-xxx_READY.jpg + GF-xxx_DELAY.jpg).
  */
 class ReportActivity : Activity() {
     private var date: LocalDate = LocalDate.now()
@@ -85,38 +88,81 @@ class ReportActivity : Activity() {
         summaryCard(col, report, zone)
         if (report.cases.isEmpty()) {
             val c = Ui.card(col)
-            Ui.text(c, if (report.completedSeen == 0) "ยังไม่มีข้อมูลออเดอร์ล่าช้าของวันนี้" else "ไม่มีออเดอร์ล่าช้า 🎉", 15f, bold = true)
+            Ui.text(c, if (report.historyRows == 0) "ยังไม่มีข้อมูลจากหน้าประวัติของวันนี้" else "ไม่มีออเดอร์ล่าช้า 🎉", 15f, bold = true)
         } else {
-            val sets = report.sets().associateBy { it.case }
-            report.cases.forEach { caseCard(col, it, sets[it], zone) }
+            val sets = Verdict.entries.flatMap { report.sets(it) }.associateBy { it.case }
+            for (v in Verdict.entries) {
+                val cases = report.cases.filter { it.verdict == v }
+                if (cases.isEmpty()) continue
+                Ui.text(col, groupTitle(v) + " (${cases.size})", 16f, colorOf(v), bold = true, topDp = 6)
+                if (v == Verdict.NO_EVIDENCE) {
+                    Ui.text(col, "ไม่ได้แปลว่าร้านช้าจริง: ไม่มีภาพในแท็บ Ready ของออเดอร์นี้ (ไม่ได้ผ่านแท็บ Ready หรือระบบจับไม่ได้)", 13f, Ui.MUTED)
+                }
+                cases.forEach { caseCard(col, it, sets[it], zone) }
+            }
         }
+    }
+
+    private fun groupTitle(v: Verdict): String = when (v) {
+        Verdict.IN_TIME -> "✅ " + v.label
+        Verdict.LATE -> "⚠️ " + v.label
+        Verdict.NO_EVIDENCE -> "❓ " + v.label
+    }
+
+    private fun colorOf(v: Verdict): Int = when (v) {
+        Verdict.IN_TIME -> Ui.GREEN
+        Verdict.LATE -> Ui.AMBER
+        Verdict.NO_EVIDENCE -> Ui.RED
     }
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
         val s = Ui.card(col)
-        Ui.text(s, "ออเดอร์ที่เห็นในหน้า History: ${r.completedSeen}", 15f)
-        Ui.text(s, "Grab ระบุล่าช้า: ${r.delayed} (${ReportText.pct(r.pct(r.delayed))})", 16f, bold = true, topDp = 2)
-        Ui.text(s, "✅ มีภาพในแท็บ Ready (กดเสร็จแล้ว): ${r.withEvidence.size}", 15f, Ui.GREEN, topDp = 2)
-        Ui.text(s, "❌ ไม่มีภาพ: ${r.withoutEvidence.size} → ล่าช้าจริง ${ReportText.pct(r.pct(r.withoutEvidence.size))}", 15f, Ui.RED, topDp = 2)
-        Ui.text(
-            s,
-            if (r.pressedOrders > 0) "กด Ready ${r.pressedOrders} ออเดอร์ · มีภาพในแท็บ Ready ${r.pressedWithReady} ออเดอร์"
-            else "มีภาพในแท็บ Ready ${r.readyOrders} ออเดอร์",
-            13f, Ui.MUTED, topDp = 4,
-        )
-        if (r.completedSeen == 0) {
+        if (r.grabCompleted != null) {
+            Ui.text(s, "ยอดจาก Grab: เสร็จสมบูรณ์ ${r.grabCompleted}" + (r.grabCancelled?.let { " · ยกเลิก $it" } ?: ""), 15f)
             Ui.text(
                 s,
-                "ยังไม่มีข้อมูลจากหน้า History ของวันนี้ → เปิด Grab → Orders → History แล้วเลื่อนดูออเดอร์ของวันนี้ให้ครบ (เลื่อนช้าๆ) แอปจะแคปออเดอร์ที่ Delayed ให้เอง แล้วกลับมาหน้านี้",
+                "อ่านรายการในประวัติได้ ${r.historyRows}/${r.grabCompleted}" + if (r.historyComplete) " ✓ ครบ" else " ⚠ ไม่ครบ",
+                15f, if (r.historyComplete) Ui.GREEN else Ui.AMBER,
+            )
+        } else {
+            Ui.text(s, "อ่านรายการในประวัติได้ ${r.historyRows} (ยังไม่ได้อ่านยอดรวมจาก Grab)", 15f)
+        }
+        Ui.text(s, "มีภาพในแท็บ Ready ${r.rowsWithReady}/${r.historyRows} ออเดอร์", 14f, Ui.MUTED)
+        if (r.rowsWithoutReady.isNotEmpty()) {
+            Ui.text(s, "ไม่มีภาพ Ready: " + r.rowsWithoutReady.take(20).joinToString(", ") + if (r.rowsWithoutReady.size > 20) " …" else "", 13f, Ui.MUTED)
+        }
+        Ui.divider(s)
+        Ui.text(s, "Grab ระบุล่าช้า ${r.delayed} ออเดอร์ = ${ReportText.pct(r.grabPct)} (แบบ Grab คิด)", 16f, bold = true)
+        Ui.text(s, "✅ ${Verdict.IN_TIME.label}: ${r.inTime.size}", 15f, Ui.GREEN, topDp = 2)
+        Ui.text(s, "⚠️ ${Verdict.LATE.label}: ${r.late.size}", 15f, Ui.AMBER)
+        Ui.text(s, "❓ ${Verdict.NO_EVIDENCE.label}: ${r.noEvidence.size}", 15f, Ui.RED)
+        Ui.text(
+            s,
+            "% ล่าช้าที่ร้านควรได้ = (${r.delayed} − ${r.inTime.size}) / ${r.base} = ${ReportText.pct(r.realPct)}",
+            16f, bold = true, topDp = 4,
+        )
+        if (r.historyRows == 0) {
+            Ui.text(
+                s,
+                "ยังไม่มีข้อมูลจากหน้าประวัติ → รอสรุปอัตโนมัติหลังปิดร้าน หรือกด \"สรุปสิ้นวันตอนนี้\" ที่หน้าแรก",
                 13f, Ui.AMBER, topDp = 8,
             )
-            Ui.button(s, "เปิดแอป Grab", filled = false) { ServiceStatus.openApp(this, ConfigStore.get(this).targetPackages.first()) }
         }
-        val sets = r.sets()
-        val files = sets.sumOf { if (it.delay != null) 2L else 1L }
-        Ui.button(s, "📤 ส่งหลักฐาน ${sets.size} ชุด ($files ไฟล์) เข้า Drive") { shareSets(sets) }
-        if (sets.any { it.delay == null }) {
-            Ui.text(s, "⚠ บางชุดยังไม่มีภาพหน้า History — เลื่อนหน้า History ใน Grab ให้ผ่านออเดอร์นั้นอีกครั้ง", 13f, Ui.AMBER, topDp = 4)
+        if (date == LocalDate.now() && ProofService.instance != null) {
+            Ui.button(s, "🧾 อ่านหน้าประวัติใหม่ตอนนี้", filled = false) {
+                ProofService.instance?.runEndOfDayNow()
+                ServiceStatus.openApp(this, ConfigStore.get(this).targetPackages.first())
+            }
+        }
+        val inTime = r.sets(Verdict.IN_TIME)
+        val files = inTime.sumOf { if (it.delay != null) 2L else 1L }
+        Ui.button(s, "📤 ส่งหลักฐานกดทัน ${inTime.size} ชุด ($files ไฟล์) เข้า Drive") { shareSets(inTime) }
+        val late = r.sets(Verdict.LATE)
+        if (late.isNotEmpty()) {
+            Ui.button(s, "ส่งชุดที่ช้าจริง ${late.size} ชุด (ไว้ตรวจเอง)", filled = false) { shareSets(late) }
+        }
+        if (inTime.any { it.delay == null }) {
+            Ui.text(s, "⚠ บางชุดยังไม่มีภาพหน้าประวัติ — กด \"อ่านหน้าประวัติใหม่ตอนนี้\"", 13f, Ui.AMBER, topDp = 4)
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
@@ -142,15 +188,18 @@ class ReportActivity : Activity() {
 
     private fun caseCard(col: LinearLayout, c: DelayCase, set: EvidenceSet?, zone: ZoneId) {
         val card = Ui.card(col)
-        val head = (if (c.hasEvidence) "✅ " else "❌ ") + c.gf + " ล่าช้า " + (c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
-        Ui.text(card, head, 16f, if (c.hasEvidence) Ui.GREEN else Ui.RED, bold = true)
+        val head = c.gf + " ล่าช้า " + (c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
+        Ui.text(card, head, 16f, colorOf(c.verdict), bold = true)
         c.doneAt?.let { Ui.text(card, "เสร็จสมบูรณ์ " + Parsers.hhmm(it.toLocalTime()), 14f, Ui.MUTED) }
         c.readyShot?.let {
             Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.time(it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
         }
-        c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
-        if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ", 13f, Ui.MUTED, topDp = 2)
-        if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้า History ของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
+        when (c.verdict) {
+            Verdict.LATE -> Ui.text(card, "ภาพแรกในแท็บ Ready แสดงว่าคนขับมาถึง/Grab เร่งแล้ว", 13f, Ui.AMBER, topDp = 2)
+            Verdict.NO_EVIDENCE -> Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ", 13f, Ui.MUTED, topDp = 2)
+            Verdict.IN_TIME -> {}
+        }
+        if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้าประวัติของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
         val shots = ArrayList<Pair<Record, String>>()
         c.readyShot?.let { shots += it.record to (set?.readyName ?: "READY") }
         c.delayShot?.let { shots += it to (set?.delayName ?: "DELAY") }
