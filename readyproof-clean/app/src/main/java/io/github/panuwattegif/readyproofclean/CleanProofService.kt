@@ -339,10 +339,13 @@ class CleanProofService : AccessibilityService() {
         if (targetSeen && datedTerminal.any { it.isBefore(target) }) olderBoundarySeen = true
 
         val expected = headerTotal
-        val completeNow = when {
-            expected != null -> historySeen.size >= expected && historyProof.containsAll(historySeen)
-            else -> targetSeen && olderBoundarySeen && historyProof.containsAll(historySeen)
-        }
+        val completeNow = SweepPolicy.complete(
+            expectedTotal = expected,
+            seen = historySeen.size,
+            proof = historyProof.intersect(historySeen).size,
+            targetSeen = targetSeen,
+            olderBoundarySeen = olderBoundarySeen,
+        )
         if (completeNow) {
             finishHistory(true, "กวาดครบ: ${historySeen.size}${expected?.let { "/$it" } ?: ""} ออเดอร์")
             return
