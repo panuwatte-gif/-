@@ -116,6 +116,7 @@ class ProofService : AccessibilityService() {
     @Volatile private var manualHistoryHold = false
     private var returnReadyAfterHistory = true
     private var manualHistoryPass = 0
+    private var manualHistoryDateLocked = false
     private fun autoNavigationEnabled() = io.github.panuwattegif.readyproof.core.ManualWorkflow.autoNavigation
 
     fun resumeReadyMonitor() {
@@ -398,6 +399,7 @@ class ProofService : AccessibilityService() {
         closingGate = null
         worker.postDelayed({
             manualHistoryPass = 0
+            manualHistoryDateLocked = false
             closingGate = null
             startHistorySweep(LocalDate.now(), force = true)
         }, 2_500L)
@@ -431,6 +433,13 @@ class ProofService : AccessibilityService() {
         // When selection is omitted, terminal-row content confirms History, never an empty tree.
         val terminal = analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.CANCELLED, ObsType.DELAY) }
         if (config.enabled && !otherSelected && (selected || terminal)) {
+            if (manualHistoryHold && !manualHistoryDateLocked) {
+                snaps.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }
+                    .firstNotNullOfOrNull { HistoryDates.parse(it, LocalDate.now()) }?.let {
+                        autoHistoryTargetDate = it
+                        manualHistoryDateLocked = true
+                    }
+            }
             Diagnostics.dump(this, "HISTORY_CONFIRMED manual=$manualHistoryHold terminal=$terminal", snaps, force = true)
             forcedHistorySweep = true
             historyLastProgressAt = SystemClock.uptimeMillis()
@@ -516,6 +525,13 @@ class ProofService : AccessibilityService() {
         // Scroll inside the already-open Ready list for proof coverage; never open/change tabs.
         val sweepMode = readyMode || forcedHistorySweep
         if (historyMode) {
+            if (forcedHistorySweep && manualHistoryHold && !manualHistoryDateLocked && historyAtTop) {
+                snaps.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }
+                    .firstNotNullOfOrNull { HistoryDates.parse(it, LocalDate.now()) }?.let {
+                        autoHistoryTargetDate = it
+                        manualHistoryDateLocked = true
+                    }
+            }
             DailyExport.captureTotals(this, autoHistoryTargetDate ?: LocalDate.now(), ShopStore.get(this)?.id, snaps)
             val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
             analysis = analysis.copy(items = dated.first)
