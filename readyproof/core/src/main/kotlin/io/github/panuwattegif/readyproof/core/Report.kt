@@ -224,7 +224,7 @@ object ReportBuilder {
         fun hasHistoryImage(a: Acc) = sorted.any { r -> r.uri != null && r.items.any { i ->
             i.gf == a.gf && i.doneAt == a.doneAt?.toLocalTime()?.let(Parsers::hhmm) &&
                 (i.type == ObsType.DONE || i.type == ObsType.DELAY || i.type == ObsType.CANCELLED) &&
-                ((i.historyDate ?: r.historyDate) == date.toString() || TimeResolve.toLocal(r.t, zone).toLocalDate() == date)
+                (i.historyDate ?: r.historyDate ?: TimeResolve.toLocal(r.t, zone).toLocalDate().toString()) == date.toString()
         } }
         return DailyReport(
             date = date,

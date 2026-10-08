@@ -71,7 +71,7 @@ class ReportActivity : Activity() {
     private fun render() {
         val zone = ZoneId.systemDefault()
         val cfg = ConfigStore.get(this)
-        val records = RecordStore.loadRange(this, date.minusDays(1), date.plusDays(1))
+        val records = RecordStore.loadReport(this, date)
         val shopId = if (legacy) null else ShopStore.get(this)?.id
         val report = ReportBuilder.build(records, date, zone, cfg, shopId, DailyExport.reachedEnd(this, date, shopId))
         val col = Ui.page(this, "รายงานออเดอร์ล่าช้า", "จับคู่กับภาพหลักฐานให้อัตโนมัติ")
