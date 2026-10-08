@@ -3,6 +3,28 @@ package io.github.panuwattegif.readyproof.core
 import kotlin.test.*
 
 class ManualWorkflowTest {
+    @Test fun onlyConfirmedDepartureAcrossFullPassesReleasesReusedGf() {
+        val stays = ReadyStayTracker()
+        stays.observe(listOf("GF-1", "GF-2"))
+        assertTrue(stays.finish(0, true).isEmpty())
+        // Different viewports in one full pass do not make existing orders disappear.
+        stays.observe(listOf("GF-1"))
+        stays.observe(listOf("GF-2", "GF-3"))
+        assertTrue(stays.finish(20_000, true).isEmpty())
+        stays.observe(listOf("GF-1", "GF-3"))
+        assertTrue(stays.finish(40_000, true).isEmpty())
+        stays.observe(listOf("GF-1", "GF-3"))
+        assertEquals(listOf("GF-2"), stays.finish(60_000, true))
+        stays.observe(listOf("GF-1", "GF-2", "GF-3"))
+        assertTrue(stays.finish(80_000, true).isEmpty())
+    }
+    @Test fun incompletePassNeverReleasesExistingOrderProof() {
+        val stays = ReadyStayTracker()
+        stays.observe(listOf("GF-1"))
+        stays.finish(0, true)
+        assertTrue(stays.finish(20_000, false).isEmpty())
+        assertTrue(stays.finish(40_000, false).isEmpty())
+    }
     @Test fun readyDoesNotRepeatByTimeButFailedCaptureRetries() {
         val d = Deduper()
         val item = Item("GF-269", ObsType.READY)

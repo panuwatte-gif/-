@@ -133,6 +133,7 @@ class ProofService : AccessibilityService() {
     private val recentPageCaptures = LinkedHashMap<String, Long>()
     private var readySeenDate: LocalDate = LocalDate.now()
     private val readySeenToday = LinkedHashSet<String>()
+    private val readyStays = io.github.panuwattegif.readyproof.core.ReadyStayTracker()
     private val lastReadyLedgerAt = HashMap<String, Long>()
 
     @Volatile private var autoHistoryInProgress = false
@@ -537,6 +538,7 @@ class ProofService : AccessibilityService() {
             deduper.clear()
             readySeenDate = today
             readySeenToday.clear()
+            readyStays.clear()
             lastReadyLedgerAt.clear()
             historySeenKeys.clear()
         }
@@ -545,6 +547,7 @@ class ProofService : AccessibilityService() {
         // Coverage ledger is written before screenshotting. If Android misses a bitmap we still
         // know exactly which GF reached Ready, while the screenshot deduper keeps it eligible.
         if (readyMode) {
+            readyStays.observe(analysis.items.filter { it.type == ObsType.READY }.map { it.gf })
             val newlySeen = analysis.items.filter { it.type == ObsType.READY }
                 .filter { readySeenToday.add(it.gf) || now - (lastReadyLedgerAt[it.gf] ?: 0) >= 60_000 }
             newlySeen.forEach { lastReadyLedgerAt[it.gf] = now }
@@ -763,6 +766,9 @@ class ProofService : AccessibilityService() {
     private fun finishSweep(wasReady: Boolean) {
         if (closingGate != null || (autoHistoryInProgress && !forcedHistorySweep)) return
         if (wasReady) {
+            val gone = readyStays.finish(SystemClock.uptimeMillis(), scrollContainerFound &&
+                sweepScrolls < MAX_SWEEP_SCROLLS && repeatedSweepSignature < 4)
+            deduper.forget(gone.map { "READY|$it" })
             resetSweepLoop()
             // Always stay on Ready: this phone never accepts or prepares orders.
             startReturnReadyToTop()
