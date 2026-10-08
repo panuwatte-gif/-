@@ -113,6 +113,7 @@ class ReportActivity : Activity() {
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
         val s = Ui.card(col)
+        Ui.text(s, DailyExport.headerSummary(this, r), 14f, Ui.MUTED)
         Ui.text(s, "ร้าน: " + (io.github.panuwattegif.readyproof.core.Shop.fromId(r.shopId)?.label ?: "UNKNOWN / ข้อมูลเดิม"), 16f, bold = true)
         Ui.text(s, if (r.complete) "COMPLETE (ตามรายการที่อ่านได้)" else "INCOMPLETE / PROVISIONAL — จำนวนทั้งวันยัง UNKNOWN", 14f, Ui.AMBER)
         Ui.text(s, "History ขาดภาพ ${r.missingHistoryInstances.size} · Instance UNKNOWN ${r.unknownHistoryInstances.size} · วันที่ " +
@@ -174,14 +175,14 @@ class ReportActivity : Activity() {
             )
         }
         if (r.cases.any { it.delayShot == null }) {
-            Ui.text(s, "⚠ บางเคสยังไม่มีภาพ DELAY ที่ใช้ได้ — ระบบจะกวาด History ซ้ำอัตโนมัติ", 13f, Ui.AMBER, topDp = 4)
+            Ui.text(s, "⚠ บางเคสยังไม่มีภาพ DELAY ที่ใช้ได้ — กลับไปกดกวาด History ใหม่ได้", 13f, Ui.AMBER, topDp = 4)
         }
-        Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
+        Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, DailyExport.summary(this, r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
         Ui.button(s, "📄 แชร์สรุปวันนี้เป็นไฟล์", filled = false) {
             runCatching {
                 Share.file(this, MediaSaver.saveDownload(this, "${r.shopId ?: "UNKNOWN"}_summary-${r.date}.txt",
-                    "text/plain", ReportText.summary(r, zone).toByteArray()), "text/plain", "ส่งสรุปวันนี้")
+                    "text/plain", DailyExport.summary(this, r, zone).toByteArray()), "text/plain", "ส่งสรุปวันนี้")
             }.onFailure { Ui.alert(this, "แชร์ไม่ได้", it.message ?: "") }
         }
         Ui.button(s, "📤 แชร์ READY + HISTORY ทุกภาพของวัน (แม้ยังไม่ครบ)", filled = false) {

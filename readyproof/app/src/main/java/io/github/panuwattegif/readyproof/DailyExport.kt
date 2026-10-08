@@ -9,6 +9,27 @@ import android.util.AtomicFile
 import java.io.File
 
 object DailyExport {
+    fun captureTotals(ctx: Context, day: LocalDate, shopId: String?, roots: List<UiNode>) {
+        val texts = roots.flatMap { it.walk().toList() }.flatMap { it.ownStrings() }
+        val totals = HistoryTotalsParser.parse(texts) ?: return
+        ConfigStore.prefs(ctx).edit().putString("history_totals_${shopId ?: "UNKNOWN"}_$day",
+            Json.write(linkedMapOf("completed" to totals.completed, "cancelled" to totals.cancelled, "total" to totals.total))).apply()
+    }
+
+    fun headerSummary(ctx: Context, report: DailyReport): String {
+        val raw = ConfigStore.prefs(ctx).getString("history_totals_${report.shopId ?: "UNKNOWN"}_${report.date}", null)
+            ?: return "ยอดหัวหน้า History: ยังอ่านไม่ได้ — ไม่ใช้จำนวนภาพแทนจำนวนออเดอร์"
+        val m = Json.parseObject(raw)
+        val completed = (m["completed"] as Number).toInt()
+        val cancelled = (m["cancelled"] as Number).toInt()
+        val total = (m["total"] as Number).toInt()
+        val match = completed == report.completedSeen && cancelled == report.cancelledSeen && completed + cancelled == total
+        return "ยอดหัวหน้า History: ทั้งหมด $total / สำเร็จ $completed / ยกเลิก $cancelled\n" +
+            "อ่านรายออเดอร์: สำเร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen} — " +
+            (if (match) "จำนวนตรงกัน" else "จำนวนยังไม่ตรง: อย่าถือว่ากวาดครบ")
+    }
+
+    fun summary(ctx: Context, report: DailyReport, zone: ZoneId) = ReportText.summary(report, zone) + "\n" + headerSummary(ctx, report) + "\n"
     fun reachedEnd(ctx: Context, date: LocalDate, shopId: String?) =
         ConfigStore.prefs(ctx).getBoolean("history_end_${shopId ?: "UNKNOWN"}_$date", false)
 
@@ -18,7 +39,7 @@ object DailyExport {
         val zone = ZoneId.of("Asia/Bangkok")
         val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
         val report = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
-        val text = ReportText.summary(report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
+        val text = summary(ctx, report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
         val manifest = Json.write(linkedMapOf(
@@ -42,7 +63,7 @@ object DailyExport {
                 .map { Json.parseObject(RecordCodec.encode(it)) }
         ))
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_manifest-$day.json", manifest)
-        if (Shop.fromId(shopId) != null && NightlyUploads.canRelease(day, LocalDateTime.now(zone))) {
+        if (ManualWorkflow.autoUpload && Shop.fromId(shopId) != null && NightlyUploads.canRelease(day, LocalDateTime.now(zone))) {
             // Durable immutable intent also recovers a process death before the outbox task starts.
             saveLocal(ctx, "${shopId}_batch-request-$day.json", Json.write(linkedMapOf(
                 "shopId" to shopId, "date" to day.toString(), "text" to text, "manifest" to manifest)))

@@ -50,8 +50,8 @@ class SettingsActivity : Activity() {
 
         val timing = Ui.card(col)
         Ui.text(timing, "แคปเมื่อไหร่", 17f, bold = true)
-        sAutoNavigation = Ui.switch(timing, "เปิดหน้า Ready / History อัตโนมัติ (ปิดแล้วยังแคปและแชร์เองได้)",
-            ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)) {}
+        sAutoNavigation = Ui.switch(timing, "เปิดหน้าอัตโนมัติ: หยุดใช้งานในรุ่นนี้", false) {}
+        sAutoNavigation.isEnabled = false
         sReady = Ui.switch(timing, "แท็บ Ready (พร้อมจัดส่ง) เปิดอยู่ → แคปทุกออเดอร์ในแท็บ (ออเดอร์ละครั้ง)", cfg.captureReady) {}
         sDelay = Ui.switch(timing, "หน้า History เจอ \"Delayed by / ล่าช้าไป\" → แคป", cfg.captureDelay) {}
         sRemind = Ui.switch(timing, "กด Ready แล้ว 20 วิ ยังไม่มีภาพในแท็บ Ready → เตือน", cfg.remindReadyTab) {}
@@ -82,7 +82,8 @@ class SettingsActivity : Activity() {
             help = "ใช้เฉพาะเมื่อเครื่องบอกไม่ได้ว่าเปิดแท็บไหน", multiLine = true)
         fReadyNone = Ui.field(adv, "สำรอง: ถ้าการ์ดมีคำเหล่านี้ ไม่นับเป็น Ready", cfg.readyNone.joinToString("\n"),
             help = "กันออเดอร์ที่ยังเตรียมอยู่หรือเสร็จไปแล้ว", multiLine = true)
-        fRepeat = Ui.field(adv, "แคป READY ซ้ำ (ระบบใช้ไม่เกิน 1 นาทีเพื่อกัน GF ซ้ำ)", cfg.readyRepeatMinutes.toString(), number = true)
+        fRepeat = Ui.field(adv, "ค่าเดิมเก็บไว้ — รุ่นนี้ไม่ถ่าย READY ซ้ำตามเวลา", cfg.readyRepeatMinutes.toString(), number = true)
+        fRepeat.isEnabled = false
         fDoneAny = Ui.field(adv, "คำว่า \"เสร็จสมบูรณ์\" ในหน้า History", cfg.doneAny.joinToString("\n"), multiLine = true)
         fDelayAny = Ui.field(adv, "คำว่า \"ล่าช้า\" ในหน้า History", cfg.delayAny.joinToString("\n"), multiLine = true)
         fWindow = Ui.field(adv, "จับคู่หลักฐานย้อนหลังกี่ชั่วโมงก่อนเวลาเสร็จ", cfg.evidenceWindowHours.toString(), number = true)

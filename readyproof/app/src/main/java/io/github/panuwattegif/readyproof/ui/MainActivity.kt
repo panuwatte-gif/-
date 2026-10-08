@@ -93,7 +93,7 @@ class MainActivity : Activity() {
         val drive = Ui.card(col)
         Ui.text(drive, "ร้าน: " + (ShopStore.get(this)?.label ?: "ยังไม่เลือก — หลักฐานใหม่ยังไม่อัปอัตโนมัติ"), 16f, bold = true)
         Ui.text(drive, DriveSync.summary(this), 13f, Ui.MUTED)
-        Ui.button(drive, "ร้าน / Google Drive / คิวส่งไฟล์", filled = false) { startActivity(Intent(this, DriveActivity::class.java)) }
+        Ui.button(drive, "เลือกร้าน / วิธีแชร์ขึ้น Google Drive", filled = false) { startActivity(Intent(this, DriveActivity::class.java)) }
 
         // --- today ---
         val today = LocalDate.now()
@@ -138,7 +138,7 @@ class MainActivity : Activity() {
         ConfigStore.prefs(this).getString("auto_history_last_result", null)?.let {
             Ui.text(day, "History ล่าสุด: $it", 13f, Ui.MUTED, topDp = 2)
         }
-        Ui.text(day, "ปิดร้าน 19:00 → ตรวจ Ready + Preparing → ว่างทั้งสองหน้าจึงเปิด History เอง", 13f, Ui.MUTED, topDp = 4)
+        Ui.text(day, "สิ้นวัน: กดกวาด History แล้วเปิดรายงานเพื่อแชร์รูปและสรุปเอง", 13f, Ui.MUTED, topDp = 4)
         ConfigStore.prefs(this).getString("closing_history_status", null)?.let {
             Ui.text(day, it, 13f, Ui.MUTED, topDp = 2)
         }
@@ -176,6 +176,6 @@ class MainActivity : Activity() {
         Ui.button(tools, "📖 คู่มือการใช้งาน", filled = false) { startActivity(Intent(this, GuideActivity::class.java)) }
 
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
-        Ui.text(col, "ReadyProof $version · เก็บในเครื่องก่อน · Drive ส่งแยกเบื้องหลัง", 12f, Ui.MUTED, topDp = 4)
+        Ui.text(col, "ReadyProof $version · เก็บในเครื่อง · แชร์ขึ้น Drive เอง", 12f, Ui.MUTED, topDp = 4)
     }
 }

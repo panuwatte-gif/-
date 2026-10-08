@@ -16,6 +16,7 @@ import java.util.concurrent.locks.ReentrantLock
 
 class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
+        if (!io.github.panuwattegif.readyproof.core.ManualWorkflow.autoUpload) return Result.success()
         // Immediate and periodic workers have different unique names. Serialize only uploads,
         // never capture/staging, so both cannot allocate different IDs for the same pending entry.
         if (!uploadLock.tryLock()) return Result.retry()

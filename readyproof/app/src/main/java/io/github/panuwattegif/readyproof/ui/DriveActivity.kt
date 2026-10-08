@@ -40,6 +40,12 @@ class DriveActivity : Activity() {
             return
         }
         Ui.text(card, "ร้าน: ${shop.label}", 18f, bold = true)
+        if (!io.github.panuwattegif.readyproof.core.ManualWorkflow.autoUpload) {
+            Ui.text(card, "ส่งเองจากหน้ารายงาน: กดแชร์หลักฐาน → เลือก Google Drive → เลือกโฟลเดอร์ร้าน\nไม่ต้องเชื่อม OAuth ใน ReadyProof", 14f, Ui.MUTED)
+            Ui.text(card, "โฟลเดอร์รอตรวจร้านนี้:\n${shop.folderId}", 14f, Ui.MUTED)
+            Ui.button(card, "เปิดรายงานเพื่อแชร์หลักฐาน") { startActivity(Intent(this, ReportActivity::class.java)) }
+            return
+        }
         Ui.text(card, "ปลายทางตายตัว:\n${shop.folderId}\nส่งไฟล์เข้าโฟลเดอร์รอตรวจโดยตรง ไม่สร้างโฟลเดอร์อื่น", 14f, Ui.MUTED)
         val prefs = ConfigStore.prefs(this)
         Ui.text(card, "บัญชี: ${prefs.getString("drive_account", null) ?: "ยังไม่เชื่อม"}", 14f)

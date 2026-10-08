@@ -5,6 +5,21 @@ import kotlin.test.assertEquals
 
 class DedicatedMonitorTest {
     private val cfg = Config.DEFAULT
+    @Test fun manuallyOpenedHistoryWithReadyLabelIsNeverTakenOver() {
+        assertEquals(DedicatedMonitor.Action.IDLE, DedicatedMonitor.decide(listOf(Trees.historyTabEn()), cfg, false))
+        assertEquals(true, DedicatedMonitor.historyOpen(listOf(Trees.historyTabEn()), cfg))
+    }
+    @Test fun thaiTerminalRowsProtectHistoryWhenSelectionIsOmitted() {
+        assertEquals(DedicatedMonitor.Action.IDLE, DedicatedMonitor.decide(listOf(Trees.historyTab()), cfg, false))
+    }
+    @Test fun emptySelectedHistoryIsStillProtected() {
+        val screen = Trees.box(Trees.n("History", selected = true), Trees.n("Ready"), Trees.n("No orders"))
+        assertEquals(DedicatedMonitor.Action.IDLE, DedicatedMonitor.decide(listOf(screen), cfg, false))
+    }
+    @Test fun readyAndPreparingRemainEligibleForNormalMonitoring() {
+        assertEquals(false, DedicatedMonitor.historyOpen(listOf(Trees.readyTab(true)), cfg))
+        assertEquals(false, DedicatedMonitor.historyOpen(listOf(Trees.preparingTab()), cfg))
+    }
     @Test fun readyOnProofPhoneIsWatchedWithoutAnyLocalReadyTap() {
         assertEquals(DedicatedMonitor.Action.WATCH_READY, DedicatedMonitor.decide(listOf(Trees.readyTab(true)), cfg, false))
     }

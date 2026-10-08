@@ -2,6 +2,9 @@ package io.github.panuwattegif.readyproof
 
 import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
+import android.graphics.Rect
 import android.content.Intent
 import android.os.Handler
 import android.os.HandlerThread
@@ -112,7 +115,7 @@ class ProofService : AccessibilityService() {
     private var historyRowsRead = false
     @Volatile private var manualHistoryHold = false
     private var returnReadyAfterHistory = true
-    private fun autoNavigationEnabled() = ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)
+    private fun autoNavigationEnabled() = io.github.panuwattegif.readyproof.core.ManualWorkflow.autoNavigation
 
     fun resumeReadyMonitor() {
         forcedHistorySweep = false
@@ -232,6 +235,7 @@ class ProofService : AccessibilityService() {
             if (!::worker.isInitialized) return
             try {
                 if (config.enabled) {
+                    preserveManualHistory(activeGrabSnapshots())
                     // A missing Grab tree must not strand an authorised pass forever.
                     if (forcedHistorySweep && !captureInFlight && !returningHistoryToTop &&
                         SystemClock.uptimeMillis() - historyLastProgressAt >= 90_000L) {
@@ -264,8 +268,19 @@ class ProofService : AccessibilityService() {
     }
 
     /** Recover supported Grab navigation only; never accept/cancel orders or dismiss dialogs. */
+    private fun preserveManualHistory(snaps: List<UiNode>) {
+        if (autoHistoryInProgress || forcedHistorySweep) return
+        if (!DedicatedMonitor.historyOpen(snaps, config)) return
+        manualHistoryHold = true
+        returnReadyAfterHistory = false
+        returningReadyToTop = false
+        closingGate = null
+        saveMonitorStatus("พักการเปิดหน้าอัตโนมัติ: อยู่ History เพื่อแคปเอง / กลับ Ready เพื่อเฝ้าต่อ")
+    }
+
     private fun superviseDedicatedMonitor() {
         if (!autoNavigationEnabled()) return
+        preserveManualHistory(activeGrabSnapshots())
         if (manualHistoryHold) {
             if (autoHistoryInProgress || forcedHistorySweep) return
             if (selectedTabOpen(activeGrabSnapshots(), config.readyTabLabels)) manualHistoryHold = false
@@ -286,7 +301,8 @@ class ProofService : AccessibilityService() {
                 saveMonitorStatus("กำลังกลับหน้า Ready อัตโนมัติ")
                 main.post {
                     if (!config.enabled || captureInFlight || closingGate != null || autoHistoryInProgress ||
-                        forcedHistorySweep || returningReadyToTop || returningHistoryToTop) return@post
+                        forcedHistorySweep || returningReadyToTop || returningHistoryToTop || manualHistoryHold ||
+                        DedicatedMonitor.historyOpen(activeGrabSnapshots(), config)) return@post
                     val labels = if (action == DedicatedMonitor.Action.OPEN_READY) config.readyTabLabels
                         else listOf("Orders", "คำสั่งซื้อ")
                     clickTab(labels)
@@ -365,13 +381,19 @@ class ProofService : AccessibilityService() {
         nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_CLICK_RETRY_MS
         closingStatus(reason)
         // Continue capturing Ready evidence during the wait; never leave the monitor in Preparing.
-        main.post { if (config.enabled && autoNavigationEnabled()) clickTab(config.readyTabLabels) }
+        main.post { if (config.enabled && autoNavigationEnabled() && !manualHistoryHold &&
+            !DedicatedMonitor.historyOpen(activeGrabSnapshots(), config)) clickTab(config.readyTabLabels) }
         scheduleScan()
     }
 
     /** Manual hook used by the UI for testing; automatic end-of-day scanning uses the same path. */
     fun requestHistorySweepNow() {
         if (!::worker.isInitialized) return
+        // Claim manual navigation before launching Grab; the old delayed claim raced the monitor.
+        manualHistoryHold = true
+        returnReadyAfterHistory = false
+        returningReadyToTop = false
+        closingGate = null
         worker.postDelayed({
             closingGate = null
             startHistorySweep(LocalDate.now(), force = true)
@@ -476,10 +498,11 @@ class ProofService : AccessibilityService() {
         if (snaps.isEmpty()) return
         if (cfg.diagnostics) Diagnostics.dump(this, "SCAN", snaps, force = false)
 
+        preserveManualHistory(snaps)
+
         var analysis = ScreenAnalyzer.analyze(snaps, cfg, allowUnknownDelayed = forcedHistorySweep)
 
-        // An accidental staff tap on History must return to Ready, not launch an unscheduled
-        // History pass. Only the closing workflow / explicit in-app test button authorizes it.
+        // Reading/capturing a user-opened History page does not authorize a sweep or navigation.
         val manualHistoryMode = (manualHistoryHold || !autoNavigationEnabled()) &&
             (selectedTabOpen(snaps, listOf("History", "ประวัติ")) ||
                 analysis.items.any { it.type in listOf(ObsType.DONE, ObsType.DELAY, ObsType.CANCELLED) })
@@ -489,6 +512,7 @@ class ProofService : AccessibilityService() {
         val readyMode = !historyMode && (analysis.readyTab == true || analysis.items.any { it.type == ObsType.READY })
         val sweepMode = (readyMode && autoNavigationEnabled()) || forcedHistorySweep
         if (historyMode) {
+            DailyExport.captureTotals(this, autoHistoryTargetDate ?: LocalDate.now(), ShopStore.get(this)?.id, snaps)
             val dated = HistoryDates.assign(analysis.items, analysis, snaps, LocalDate.now(), historyHeader)
             analysis = analysis.copy(items = dated.first)
             historyHeader = dated.second
@@ -545,7 +569,7 @@ class ProofService : AccessibilityService() {
         if (newTerminal.isNotEmpty()) RecordStore.append(this, Record("$now-hs${seq.incrementAndGet()}", now,
             RecordKind.SEEN, newTerminal, analysis.visible, shopId = ShopStore.get(this)?.id))
         // Respect the configured repeat window; polling is not permission to recapture every minute.
-        val fresh = deduper.fresh(analysis.items, now, cfg)
+        val fresh = deduper.fresh(analysis.items, now, cfg.copy(readyRepeatMinutes = io.github.panuwattegif.readyproof.core.ManualWorkflow.readyRepeatMinutes))
         if (historyMode) historyRowsRead = terminal.isNotEmpty()
 
         // A History row is valid screenshot evidence only when the GF label is actually inside the
@@ -779,7 +803,7 @@ class ProofService : AccessibilityService() {
                     nextAutoHistoryAttemptAt = System.currentTimeMillis() + AUTO_HISTORY_RETRY_MS
                 }
                 edit.apply()
-                closingStatus(if (complete) "กวาด History แล้ว / ครบตามข้อมูลที่อ่านได้" else "กวาด History แล้ว / ยังไม่ครบ จะตรวจซ้ำใน 5 นาที")
+                closingStatus(if (complete) "กวาด History แล้ว / ครบตามข้อมูลที่อ่านได้" else "กวาด History ยังไม่ครบ: ดูจำนวนที่ขาดและกดกวาดใหม่ได้")
                 lastCaptureText = result
                 autoHistoryInProgress = false
                 autoHistoryTargetDate = null
@@ -787,7 +811,7 @@ class ProofService : AccessibilityService() {
                     // Return to the dedicated Ready monitor after every History pass. If counts are
                     // incomplete the scheduled retry will revisit History automatically.
                     if (returnReadyAfterHistory && autoNavigationEnabled()) clickTab(config.readyTabLabels)
-                    toast(if (complete) "✓ History ครบ: $result" else "⚠️ History ยังไม่ครบ: $result — จะลองใหม่")
+                    toast(if (complete) "✓ History ครบ: $result" else "⚠️ History ยังไม่ครบ: $result — กดกวาดใหม่ได้")
                 }
             } catch (e: Exception) {
                 autoHistoryInProgress = false
@@ -818,9 +842,25 @@ class ProofService : AccessibilityService() {
         historyReachedEnd = false
         historyHeader = null
         var attempts = 0
+        var previousViewport = ""
+        var unchanged = 0
         fun step() {
             main.postDelayed({
                 if (!forcedHistorySweep) return@postDelayed
+                val viewport = ScreenAnalyzer.analyze(activeGrabSnapshots(), config).cards.joinToString("|") {
+                    "${it.gf}@${it.node.top}:${it.node.bottom}"
+                }
+                unchanged = if (viewport.isNotEmpty() && viewport == previousViewport) unchanged + 1 else 0
+                previousViewport = viewport
+                if (unchanged >= 3) {
+                    // A dispatched swipe is not proof of movement. Bound top recovery even when
+                    // the list accepts gestures at its boundary; completeness still needs counts.
+                    historyAtTop = scrollContainerFound
+                    returningHistoryToTop = false
+                    resetSweepLoop()
+                    scheduleScan()
+                    return@postDelayed
+                }
                 val moved = attempts < MAX_RETURN_TO_TOP_SCROLLS && scrollOrderListBackward()
                 if (moved) {
                     attempts++
@@ -848,6 +888,11 @@ class ProofService : AccessibilityService() {
     private fun continueReturnReadyToTop() {
         worker.postDelayed({
             main.post {
+                if (!returningReadyToTop || manualHistoryHold || forcedHistorySweep ||
+                    autoHistoryInProgress || DedicatedMonitor.historyOpen(activeGrabSnapshots(), config)) {
+                    returningReadyToTop = false
+                    return@post
+                }
                 val canContinue = returnToTopScrolls < MAX_RETURN_TO_TOP_SCROLLS
                 val moved = canContinue && scrollOrderListBackward()
                 if (moved) {
@@ -874,7 +919,6 @@ class ProofService : AccessibilityService() {
         val candidates = ArrayList<AccessibilityNodeInfo>()
         for (root in roots) collectScrollable(root, candidates, 0)
         scrollContainerFound = candidates.isNotEmpty()
-        if (candidates.isEmpty()) return false
 
         // Prefer the scrollable container that actually contains the most visible GF order IDs.
         // This avoids accidentally scrolling the tab strip or an outer container on Grab builds
@@ -895,7 +939,38 @@ class ProofService : AccessibilityService() {
             if (node.actionList.any { it.id == directional } &&
                 runCatching { node.performAction(directional) }.getOrDefault(false)) return true
         }
-        return false
+        return swipeHistoryList(action)
+    }
+
+    /** Only a user-authorised History pass may use a swipe fallback, never order action buttons. */
+    private fun swipeHistoryList(action: Int): Boolean {
+        if (!forcedHistorySweep) return false
+        val active = rootInActiveWindow ?: return false
+        if (active.packageName?.toString() !in config.targetPackages) return false
+        val snaps = activeGrabSnapshots()
+        if (!DedicatedMonitor.historyOpen(snaps, config)) return false
+        val cards = ScreenAnalyzer.analyze(snaps, config).cards.filter { it.inList && it.node.bottom > it.node.top }
+        if (cards.isEmpty()) return false
+        val window = Rect().also { active.getBoundsInScreen(it) }
+        val top = maxOf(window.top + 80, cards.minOf { it.node.top })
+        val bottom = minOf(window.bottom - 100, cards.maxOf { it.node.bottom })
+        if (bottom - top < 160 || window.width() < 120) return false
+        scrollContainerFound = true
+        val x = window.exactCenterX()
+        val high = top + (bottom - top) * 0.2f
+        val low = top + (bottom - top) * 0.8f
+        val forward = action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        val path = Path().apply { moveTo(x, if (forward) low else high); lineTo(x, if (forward) high else low) }
+        return runCatching {
+            dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 350)).build(),
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription) { scheduleScan() }
+                    override fun onCancelled(gestureDescription: GestureDescription) {
+                        Diagnostics.dump(this@ProofService, "HISTORY_SWIPE_CANCELLED", activeGrabSnapshots(), force = true)
+                        scheduleScan()
+                    }
+                }, main)
+        }.getOrDefault(false)
     }
 
     private fun visibleGfCount(root: AccessibilityNodeInfo): Int {
