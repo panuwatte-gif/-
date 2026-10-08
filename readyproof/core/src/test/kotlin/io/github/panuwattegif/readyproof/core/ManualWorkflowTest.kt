@@ -31,4 +31,10 @@ class ManualWorkflowTest {
         assertEquals(HistoryTotals(77, 0, 77), HistoryTotalsParser.parseRoots(listOf(header), Config.DEFAULT))
         assertNull(HistoryTotalsParser.parseRoots(listOf(Trees.historyTabEn()), Config.DEFAULT))
     }
+    @Test fun explicitHistoryDateAvoidsAssigningPreviousDayToToday() {
+        val today = java.time.LocalDate.of(2026, 10, 9)
+        assertEquals(today.minusDays(1), HistoryDates.parse("Today, 08 Oct 2026", today))
+        assertEquals(java.time.LocalDate.of(2026, 10, 3), HistoryDates.parse("ส. 3 ต.ค. 2569", today))
+        assertNull(HistoryDates.parse("Completed at 1:35 PM", today))
+    }
 }
