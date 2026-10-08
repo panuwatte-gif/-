@@ -3,7 +3,6 @@ package io.github.panuwattegif.readyproof.core
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -44,6 +43,13 @@ class ScreenTest {
         )
         assertEquals(listOf("GF-613" to 4, "GF-120" to 1), ofType(a, ObsType.DELAY).map { it.gf to it.delayMin })
         assertTrue(ofType(a, ObsType.READY).isEmpty())
+    }
+
+    @Test
+    fun englishReadyButtonTapFindsItsOrder() {
+        val p = ScreenAnalyzer.analyzePress(listOf(Trees.preparingTabEn(pressOn = "GF-861")), cfg)
+        assertEquals("GF-861", p.gf)
+        assertEquals("9:32", p.countdown)
     }
 
     @Test
@@ -137,6 +143,28 @@ class ScreenTest {
     }
 
     @Test
+    fun pressFindsTheCardOfTheTappedButton() {
+        val p = ScreenAnalyzer.analyzePress(listOf(Trees.preparingTab(pressOn = "GF-147")), cfg)
+        assertEquals("GF-147", p.gf)
+        assertEquals("5:53", p.countdown)
+        assertTrue(p.card.contains("พร้อมจัดส่งใน: 5:53 นาที"))
+        assertEquals(4, p.visible.size)
+    }
+
+    @Test
+    fun pressWithoutMarkedNodeAndManyOrdersIsUnknown() {
+        val p = ScreenAnalyzer.analyzePress(listOf(Trees.preparingTab(pressOn = null)), cfg)
+        assertNull(p.gf)
+        assertEquals(4, p.visible.size)
+    }
+
+    @Test
+    fun pressOnDetailPageButtonOutsideCard() {
+        val p = ScreenAnalyzer.analyzePress(listOf(Trees.detailPage(markButton = true)), cfg)
+        assertEquals("GF-613", p.gf)
+    }
+
+    @Test
     fun manualCaptureKeepsWhatTheScreenProves() {
         val ready = ScreenAnalyzer.manualItems(analyze(Trees.readyTabEn()), cfg)
         // READY for the listed orders, VISIBLE for the banner's order number
@@ -162,214 +190,5 @@ class ScreenTest {
         assertTrue(dump.contains("\"GF-961\""))
         assertTrue(dump.contains("[Button]{CM} \"พร้อมจัดส่ง\""))
         assertFalse(dump.contains("truncated"))
-    }
-
-    // ---- v3: is the order number really in the picture? ------------------------------------
-
-    private fun laid(root: UiNode, listHeight: Int? = null, scrollY: Int = 0, ctx: ScanContext = ScanContext()) =
-        ScreenAnalyzer.analyze(listOf(Layout.of(root, listHeight, scrollY)), cfg, ctx)
-
-    private fun full(a: ScreenAnalysis) = a.views.filter { it.full }.map { it.gf }
-
-    @Test
-    fun ordersFullyOnScreenAreReadyToShoot() {
-        val a = laid(Trees.readyTabEn(withBanner = false))
-        assertEquals(listOf("GF-231", "GF-439"), a.readyGfs())
-        assertEquals(listOf("GF-231", "GF-439"), full(a))
-        assertTrue(a.views.all { it.keyBoxes.size == 2 })
-        assertFalse(a.canScroll)
-    }
-
-    @Test
-    fun orderCutAtTheBottomIsNotShot() {
-        // GF-439's number is on screen but its status line is below the edge
-        val a = laid(Trees.readyTabEn(withBanner = false), listHeight = 200)
-        assertEquals(listOf("GF-231", "GF-439"), a.readyGfs())
-        assertEquals(listOf("GF-231"), full(a))
-        assertTrue(a.canScrollForward)
-        assertFalse(a.canScrollBackward)
-    }
-
-    @Test
-    fun orderCutAtTheTopIsNotShot() {
-        val a = laid(Trees.readyTabEn(withBanner = false), listHeight = 200, scrollY = 100)
-        assertEquals(listOf("GF-439"), full(a))
-        assertTrue(a.canScrollBackward)
-        assertFalse(a.canScrollForward)
-    }
-
-    @Test
-    fun somethingCoveringTheNumberMeansNoShot() {
-        // another app's window (a floating button, the keyboard ...) over GF-231's number
-        val covered = laid(Trees.readyTabEn(withBanner = false), ctx = ScanContext(listOf(Box(0, 470, 720, 500))))
-        assertEquals(listOf("GF-439"), full(covered))
-        // Grab's own floating button drawn over GF-439's number
-        val fab = Layout.fix(Trees.n(desc = "Scan", cls = "android.widget.ImageButton", clickable = true), Box(560, 600, 700, 700))
-        assertEquals(listOf("GF-231"), full(laid(Trees.readyTabEn(withBanner = false, fab = fab))))
-        // ... its box reaches under the button but the letters are clear of it: still a good shot
-        val fab2 = Layout.fix(Trees.n(desc = "Scan", cls = "android.widget.ImageButton", clickable = true), Box(560, 560, 700, 700))
-        val ink = ScanContext { n -> if (n.text?.startsWith("GF-") == true || n.text?.startsWith("Finding") == true) Box(n.left, n.top + 5, n.left + 200, n.bottom - 5) else null }
-        val laidFab = Layout.of(Trees.readyTabEn(withBanner = false, fab = fab2))
-        assertEquals(listOf("GF-231"), full(ScreenAnalyzer.analyze(listOf(laidFab), cfg)))
-        assertEquals(listOf("GF-231", "GF-439"), full(ScreenAnalyzer.analyze(listOf(laidFab), cfg, ink)))
-        // ... but only over the "2 items" line: still a good shot
-        val low = Layout.fix(Trees.n(desc = "Scan", cls = "android.widget.ImageButton", clickable = true), Box(560, 660, 700, 700))
-        assertEquals(listOf("GF-231", "GF-439"), full(laid(Trees.readyTabEn(withBanner = false, fab = low))))
-    }
-
-    @Test
-    fun hiddenCardsAreNotOnScreen() {
-        val hidden = Trees.box(Trees.n("GF-999", shown = false), Trees.n("Finding a driver...", shown = false), clickable = true)
-        val a = laid(Trees.readyTabEn(withBanner = false, extra = listOf(hidden)))
-        assertEquals(listOf("GF-231", "GF-439"), a.visible)
-        assertEquals(listOf("GF-231", "GF-439"), a.readyGfs())
-    }
-
-    @Test
-    fun numberOnScreenButStatusLineScrolledAwayIsNotFull() {
-        val cut = Trees.box(Trees.n("GF-500"), Trees.n("Finding a driver...", shown = false), clickable = true)
-        val a = laid(Trees.readyTabEn(withBanner = false, extra = listOf(cut)))
-        assertTrue("GF-500" in a.readyGfs())
-        assertFalse("GF-500" in full(a))
-        assertEquals("Finding a driver...", a.views.first { it.gf == "GF-500" }.status)
-    }
-
-    @Test
-    fun aShortListInsideTheTabPagerIsNotScrollable() {
-        // Grab's tabs as a sideways pager: scrolling it would switch tab, so it is never "the list"
-        val pager = UiNode(className = "androidx.viewpager.widget.ViewPager", scrollable = true, canScrollForward = true, horizontal = true)
-        val shortList = UiNode(className = Trees.RECYCLER, collection = true)
-        shortList.add(Trees.box(Trees.n("GF-231"), Trees.n("Finding a driver..."), clickable = true))
-        pager.add(shortList)
-        val root = Trees.n(cls = "android.widget.FrameLayout", kids = listOf(Trees.box(Trees.tab("Preparing", null), Trees.tab("Ready", null, selected = true), Trees.tab("History", null)), pager))
-        val a = analyze(root)
-        assertEquals(listOf("GF-231"), a.readyGfs())
-        assertTrue(a.scroller !== pager)
-        assertFalse(a.canScroll)
-    }
-
-    @Test
-    fun backupCheckNeedsOnlyTheNumberClearOfOtherWindows() {
-        // status line scrolled out of view: not fully checked, but the number itself is clear
-        val cut = Trees.box(Trees.n("GF-500"), Trees.n("Finding a driver...", shown = false), clickable = true)
-        val a = laid(Trees.readyTabEn(withBanner = false, extra = listOf(cut)))
-        val v = a.views.first { it.gf == "GF-500" }
-        assertFalse(v.full)
-        assertTrue(v.gfClear)
-        // Grab's own overlay over GF-439's number: not checked, still clear for a backup
-        val fab = Layout.fix(Trees.n(desc = "Scan", cls = "android.widget.ImageButton", clickable = true), Box(560, 600, 700, 700))
-        val b = laid(Trees.readyTabEn(withBanner = false, fab = fab)).views.first { it.gf == "GF-439" }
-        assertFalse(b.full)
-        assertTrue(b.gfClear)
-        // another window over the number, or the number cut at the edge: no backup either
-        val covered = laid(Trees.readyTabEn(withBanner = false), ctx = ScanContext(listOf(Box(0, 470, 720, 500)))).views.first { it.gf == "GF-231" }
-        assertFalse(covered.gfClear)
-        val edge = laid(Trees.readyTabEn(withBanner = false), listHeight = 200, scrollY = 100).views.first { it.gf == "GF-231" }
-        assertFalse(edge.gfClear)
-    }
-
-    @Test
-    fun treesWithoutPositionsNeverCountAsFullyVisible() {
-        val a = analyze(Trees.readyTabEn())
-        assertTrue(a.views.none { it.full })
-    }
-
-    @Test
-    fun longThaiReadyListAndItsBadge() {
-        val a = laid(Trees.longReadyTabTh(), listHeight = 600)
-        assertEquals(OrderTab.READY, a.tab)
-        assertEquals(5, a.readyCount)
-        assertEquals(listOf("GF-577", "GF-176", "GF-371", "GF-081", "GF-437"), a.readyGfs())
-        assertEquals(listOf("GF-577", "GF-176", "GF-371", "GF-081"), full(a).take(4))
-        assertFalse("GF-437" in full(a))
-        assertTrue(a.canScrollForward)
-        assertEquals("คนขับของคุณมาถึงแล้ว", a.views.first().status)
-        assertTrue(a.tabsVisible)
-    }
-
-    @Test
-    fun flattenedListNeedsTheStatusLineToo() {
-        val a = laid(Trees.flattenedList())
-        val v396 = a.views.first { it.gf == "GF-396" }
-        assertTrue(v396.full)
-        assertEquals(2, v396.keyBoxes.size)
-    }
-
-    @Test
-    fun historyRowsNeedTheDelayLine() {
-        val a = laid(Trees.historyWithHeaderEn())
-        assertEquals(OrderTab.HISTORY, a.tab)
-        val v700 = a.views.first { it.gf == "GF-700" }
-        assertTrue(v700.full)
-        assertTrue(v700.has(ObsType.DELAY))
-        assertEquals(listOf("GF-133" to "19:32", "GF-700" to "19:09"), a.historyViews().map { it.gf to it.items.first { i -> i.type == ObsType.DONE }.doneAt })
-    }
-
-    @Test
-    fun historyHeaderTotalsAndDate() {
-        val h = laid(Trees.historyWithHeaderEn()).header!!
-        assertEquals(java.time.LocalDate.of(2026, 10, 8), h.date)
-        assertEquals(77, h.completed)
-        assertEquals(0, h.cancelled)
-        // without positions the number right after the label is used
-        val plain = HistoryReader.read(listOf(Trees.historyWithHeaderEn()), cfg)
-        assertEquals(77, plain.completed)
-        assertEquals(0, plain.cancelled)
-    }
-
-    @Test
-    fun historyHeaderLaidOutAsAGrid() {
-        // Thai screen: labels on one row, numbers on the next
-        val f = Layout::fix
-        val root = Trees.n(
-            cls = "android.widget.FrameLayout",
-            kids = listOf(
-                Trees.n("ส. 3 ต.ค. 2569"),
-                Trees.box(
-                    f(Trees.n("เสร็จสมบูรณ์"), Box(80, 760, 235, 790)),
-                    f(Trees.n("ยกเลิก"), Box(296, 760, 436, 790)),
-                    f(Trees.n("39"), Box(80, 810, 125, 850)),
-                    f(Trees.n("2"), Box(296, 810, 320, 850)),
-                ),
-                Trees.list(Trees.box(Trees.n("GF-716"), Trees.n("เสร็จสมบูรณ์เมื่อ 3:48 PM"))),
-            ),
-        )
-        val h = HistoryReader.read(listOf(Layout.of(root)), cfg)
-        assertEquals(java.time.LocalDate.of(2026, 10, 3), h.date)
-        assertEquals(39, h.completed)
-        assertEquals(2, h.cancelled)
-    }
-
-    @Test
-    fun tapTargetsAreOnlyEverTabsOrTheBottomBar() {
-        val gfx = cfg.gfExtractor()
-        val ready = TabDetector.tapTarget(listOf(Trees.preparingTabEn()), cfg.readyTabLabels, cfg.tabLabels, gfx)
-        assertNotNull(ready)
-        assertEquals("androidx.appcompat.app.ActionBar.Tab", ready.className)
-        assertEquals("Ready", ready.children.first().text)
-        // a screen with the order's "Ready" button but no tab bar: nothing to tap
-        val noBar = Trees.n(
-            cls = "android.widget.FrameLayout",
-            kids = listOf(Trees.list(Trees.box(Trees.n("GF-861"), Trees.n("Ready in: 9:32 min"), Trees.button("Ready")))),
-        )
-        assertNull(TabDetector.tapTarget(listOf(noBar), cfg.readyTabLabels, cfg.tabLabels, gfx))
-        val history = TabDetector.tapTarget(listOf(Trees.readyTab()), cfg.historyTabLabels, cfg.tabLabels, gfx)
-        assertEquals("ประวัติ", history?.children?.first()?.text)
-        // "Orders": the bottom bar item, not the page title
-        val orders = TabDetector.tapTarget(listOf(Trees.historyWithHeaderEn()), cfg.ordersNavLabels, cfg.navLabels, gfx)
-        assertNotNull(orders)
-        assertTrue(orders.parent!!.children.any { it.text == "Home" })
-        assertTrue(TabDetector.barVisible(listOf(Trees.readyTabEn()), cfg.tabLabels, gfx))
-        assertFalse(TabDetector.barVisible(listOf(noBar), cfg.tabLabels, gfx))
-    }
-
-    @Test
-    fun badgeCountOnTheReadyTab() {
-        assertEquals(2, TabDetector.readyCount(listOf(Trees.readyTabEn()), cfg))
-        assertEquals(3, TabDetector.readyCount(listOf(Trees.readyTab()), cfg))
-        val inline = Trees.box(Trees.tab("Preparing", null), Trees.n("Ready (4)", selected = true), Trees.tab("History", null))
-        assertEquals(4, TabDetector.readyCount(listOf(inline), cfg))
-        val none = Trees.box(Trees.tab("Preparing", null), Trees.tab("Ready", null, selected = true), Trees.tab("History", null))
-        assertNull(TabDetector.readyCount(listOf(none), cfg))
     }
 }

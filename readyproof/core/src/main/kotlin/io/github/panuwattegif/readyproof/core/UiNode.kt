@@ -20,22 +20,7 @@ class UiNode(
     val top: Int = 0,
     val right: Int = 0,
     val bottom: Int = 0,
-    /** A list that can still scroll down / up (more orders below / above). */
-    val canScrollForward: Boolean = false,
-    val canScrollBackward: Boolean = false,
-    /**
-     * Drawn on screen right now. Hidden elements (an off-screen tab, the page of another tab kept
-     * in memory) are kept only so tabs can be found; they never count as orders on screen.
-     */
-    val shown: Boolean = true,
-    /** Scrolls sideways (a tab pager, a tab strip): never the order list. */
-    val horizontal: Boolean = false,
 ) {
-    /** The live element behind this copy (set by the Android layer, used to scroll the real list). */
-    var ref: Any? = null
-
-    fun box(): Box = Box(left, top, right, bottom)
-
     private val _children = ArrayList<UiNode>()
     val children: List<UiNode> get() = _children
     var parent: UiNode? = null
@@ -106,10 +91,6 @@ object TreeDump {
                 if (n.collection) append('L')
                 if (n.selected) append('*')
                 if (n.marked) append('M')
-                if (n.canScrollForward) append('v')
-                if (n.canScrollBackward) append('^')
-                if (!n.shown) append('h')
-                if (n.horizontal) append('>')
             }
             if (flags.isNotEmpty()) sb.append('{').append(flags).append('}')
             n.text?.let { sb.append(" \"").append(TextNorm.clean(it)).append('"') }
@@ -121,19 +102,4 @@ object TreeDump {
         if (lines >= maxLines) sb.append("... (truncated)\n")
         return sb.toString()
     }
-}
-
-/** Screen rectangle in pixels. An empty box means "position unknown". */
-data class Box(val left: Int, val top: Int, val right: Int, val bottom: Int) {
-    val width: Int get() = right - left
-    val height: Int get() = bottom - top
-    val isEmpty: Boolean get() = width <= 0 || height <= 0
-
-    fun intersects(o: Box): Boolean =
-        !isEmpty && !o.isEmpty && left < o.right && o.left < right && top < o.bottom && o.top < bottom
-
-    /** Same place on screen give or take [tolerance] pixels. */
-    fun near(o: Box, tolerance: Int = 3): Boolean =
-        kotlin.math.abs(left - o.left) <= tolerance && kotlin.math.abs(top - o.top) <= tolerance &&
-            kotlin.math.abs(right - o.right) <= tolerance && kotlin.math.abs(bottom - o.bottom) <= tolerance
 }

@@ -1,11 +1,9 @@
 package io.github.panuwattegif.readyproof.core
 
-import java.time.LocalTime
-
 /**
  * Every behaviour the app has is driven by this object. Defaults cover GrabMerchant in both
  * English and Thai (tabs "Preparing / Ready / Upcoming / History" =
- * "กำลังเตรียม / พร้อมจัดส่ง / ที่กำลังจะถึง / ประวัติ", order numbers "GF-123", "GF-398F").
+ * "กำลังเตรียม / พร้อมจัดส่ง / ที่กำลังจะถึง / ประวัติ", order numbers "GF-123").
  * Adding a setting = add a field here + in [ConfigCodec] + a row in the Settings screen.
  */
 data class Config(
@@ -13,110 +11,73 @@ data class Config(
     val enabled: Boolean = true,
     /** Apps whose screens are watched. Nothing outside these packages is ever read. */
     val targetPackages: List<String> = listOf("com.grab.merchant"),
-    /** Order number pattern; group 1 (if present) is the number part (letter suffix allowed: GF-398F). */
-    val gfPattern: String = """(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5}[A-Za-z]?)(?![A-Za-z0-9])""",
+    /** Order number pattern; group 1 (if present) is the number part. */
+    val gfPattern: String = """(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5})(?!\d)""",
     /** Prefix put in front of group 1 to build the canonical order number. */
     val gfPrefix: String = "GF-",
 
-    /** Labels of the order tabs; used to tell which tab is open and to switch tabs. */
+    /** Labels of the order tabs; used to tell which tab is open. */
     val tabLabels: List<String> = listOf(
         "Preparing", "Ready", "Upcoming", "History",
         "กำลังเตรียม", "พร้อมจัดส่ง", "ที่กำลังจะถึง", "ประวัติ",
     ),
-    /** The tab whose orders are all "done, waiting for the rider": everything there is evidence. */
+    /** The tab whose orders are all "pressed ready": everything shown there is evidence. */
     val readyTabLabels: List<String> = listOf("Ready", "พร้อมจัดส่ง"),
-    /** Orders still being cooked; at closing time they must be gone too before History is read. */
-    val preparingTabLabels: List<String> = listOf("Preparing", "กำลังเตรียม"),
-    val historyTabLabels: List<String> = listOf("History", "ประวัติ"),
-    /** Bottom navigation of the Grab app; "Orders" leads back to the order tabs. */
-    val navLabels: List<String> = listOf(
-        "Home", "Orders", "Menu", "Cashier", "More",
-        "หน้าแรก", "คำสั่งซื้อ", "เมนู", "แคชเชียร์", "เพิ่มเติม",
-    ),
-    val ordersNavLabels: List<String> = listOf("Orders", "คำสั่งซื้อ"),
 
-    /** Screenshot every order in the Ready tab, once per order. */
+    /** Screenshot orders shown in the Ready tab (once per order). */
     val captureReady: Boolean = true,
     /**
-     * Only used when the phone does not report which tab is open: a card with one of these
+     * Only used when the app does not report which tab is open: a card with one of these
      * (and none of [readyNone]) counts as being in the Ready tab.
      */
-    val readyAny: List<String> = listOf(
-        "Finding a driver", "Driver", "กำลังค้นหาคนขับ", "คนขับ", "โปรดเตรียมคำสั่งซื้อนี้",
-    ),
+    val readyAny: List<String> = listOf("Finding a driver", "Driver", "กำลังค้นหาคนขับ", "คนขับ"),
     val readyNone: List<String> = listOf("Ready in", "พร้อมจัดส่งใน", "Completed", "เสร็จสมบูรณ์", "Cancelled", "ยกเลิก"),
-    /**
-     * Status shown when the order first appeared in the Ready tab that means the shop was late:
-     * the rider was already there, or Grab asked the shop to get the order ready.
-     */
-    val lateStatus: List<String> = listOf(
-        "มาถึงแล้ว", "arrived", "โปรดเตรียมคำสั่งซื้อนี้", "prepare this order", "get this order ready",
-    ),
+    /** The same order is photographed as READY again only after this many minutes. */
+    val readyRepeatMinutes: Int = 90,
 
-    /** Screenshot the History list where it shows a delayed order. */
+    /**
+     * Button labels that mean "food is ready". Exact match by default;
+     * "text*" = starts with, "*text*" = contains, "id:xyz" = view id contains xyz.
+     */
+    val pressTriggers: List<String> = listOf("Ready", "พร้อมจัดส่ง"),
+    /** Taps on widgets whose class/role contains these tokens are ignored (the tab of the same name). */
+    val pressExcludeHints: List<String> = listOf("tab", "แท็บ"),
+    /** Label of the prep countdown on a card, e.g. "Ready in: 9:32 min". */
+    val countdownKeywords: List<String> = listOf("Ready in", "พร้อมจัดส่งใน"),
+    /** After the button is tapped, remind to open the Ready tab if no READY shot follows. */
+    val remindReadyTab: Boolean = true,
+    /** Also screenshot the moment the button is tapped (not needed as evidence). */
+    val capturePress: Boolean = false,
+
+    /** Screenshot the history list when it shows a delayed order. */
     val captureDelay: Boolean = true,
     val doneAny: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
-    /** Cancelled History rows count toward the day total even though they are never delayed. */
+    /** Cancelled History rows still count toward the day total even though they are not delayed. */
     val cancelAny: List<String> = listOf("Cancelled", "Canceled", "ยกเลิก"),
     val delayAny: List<String> = listOf("Delayed by", "ล่าช้าไป"),
-    /** Labels of the totals at the top of History ("Completed 77", "Cancelled 0"). */
-    val completedLabels: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
-    val cancelledLabels: List<String> = listOf("Cancelled", "ยกเลิก"),
 
     /** A READY shot counts for a delayed order if taken within this many hours before it finished. */
     val evidenceWindowHours: Int = 4,
 
-    // ---- the phone dedicated to watching the Ready tab ----
-    /** Scroll the Ready list by itself so orders below the screen are photographed too. */
-    val autoScroll: Boolean = true,
-    /** Re-check the whole Ready list from the top at least this often (minutes). */
-    val fullSweepMinutes: Int = 5,
-    /** Keep the screen on while the Grab app is open. */
-    val keepScreenOn: Boolean = true,
-    /**
-     * Bring the phone back to Grab's Ready tab when it ends up elsewhere (Grab switched tabs by
-     * itself, or someone used the phone and walked away [guardIdleMinutes] ago).
-     */
-    val guardReadyTab: Boolean = true,
-    val guardIdleMinutes: Int = 2,
-    /** End of day: after [closeTime] + [endBufferMinutes], once the Ready tab is empty, read History and report. */
-    val autoEndOfDay: Boolean = true,
-    val closeTime: String = "19:00",
-    val endBufferMinutes: Int = 5,
-    /** While orders are still waiting in the Ready tab, check again every this many minutes. */
-    val recheckMinutes: Int = 5,
-    /** Read History anyway after waiting this long for the Ready tab to empty (an order stuck there). */
-    val endMaxWaitMinutes: Int = 120,
-
-    val showToast: Boolean = false,
+    val showToast: Boolean = true,
     val jpegQuality: Int = 80,
-    /** How far back the photo search looks (evidence is never deleted automatically). */
+    /** Screenshots older than this are deleted automatically. */
     val retentionDays: Int = 30,
     /** Keep text dumps of watched screens for troubleshooting. */
     val diagnostics: Boolean = false,
 ) {
     fun gfExtractor(): GfExtractor = GfExtractor(gfPattern, gfPrefix)
 
-    /** [closeTime] + [endBufferMinutes], or null when the time is not valid. */
-    fun endOfDayAt(): LocalTime? = parseTime(closeTime)?.plusMinutes(endBufferMinutes.toLong())
-
     /** Human readable problems; empty = valid. */
     fun validate(): List<String> {
         val errors = ArrayList<String>()
         if (!isUsablePattern(gfPattern)) errors += "รูปแบบเลขออเดอร์ไม่ถูกต้อง (ว่าง, ผิดรูปแบบ หรือจับข้อความว่างได้)"
         if (targetPackages.isEmpty()) errors += "ต้องมีแอปเป้าหมายอย่างน้อย 1 แอป"
-        if (readyTabLabels.isEmpty()) errors += "ต้องมีชื่อแท็บ Ready อย่างน้อย 1 คำ"
-        if (tabLabels.size < 3) errors += "ต้องมีชื่อแท็บทั้งหมดอย่างน้อย 3 คำ (ใช้หาแถบแท็บ)"
-        if (preparingTabLabels.isEmpty() && autoEndOfDay) errors += "ต้องมีชื่อแท็บกำลังเตรียมอย่างน้อย 1 คำ (หรือปิดสรุปสิ้นวันอัตโนมัติ)"
-        if (historyTabLabels.isEmpty() && autoEndOfDay) errors += "ต้องมีชื่อแท็บ History อย่างน้อย 1 คำ (หรือปิดสรุปสิ้นวันอัตโนมัติ)"
-        if (parseTime(closeTime) == null) errors += "เวลาปิดร้านต้องเป็นแบบ 19:00"
-        if (endBufferMinutes !in 0..120) errors += "เวลาเผื่อหลังปิดร้านต้องอยู่ระหว่าง 0–120 นาที"
-        if (recheckMinutes !in 1..60) errors += "เวลารอตรวจซ้ำต้องอยู่ระหว่าง 1–60 นาที"
-        if (endMaxWaitMinutes !in 5..600) errors += "เวลารอออเดอร์ค้างนานสุดต้องอยู่ระหว่าง 5–600 นาที"
-        if (fullSweepMinutes !in 1..60) errors += "รอบกวาดแท็บ Ready ต้องอยู่ระหว่าง 1–60 นาที"
-        if (guardIdleMinutes !in 1..60) errors += "เวลารอก่อนพากลับแท็บ Ready ต้องอยู่ระหว่าง 1–60 นาที"
+        if (readyTabLabels.isEmpty() && captureReady) errors += "ต้องมีชื่อแท็บ Ready อย่างน้อย 1 คำ (หรือปิดการแคปแท็บ Ready)"
+        if (pressTriggers.isEmpty() && (capturePress || remindReadyTab)) errors += "ต้องมีคำบนปุ่มอย่างน้อย 1 คำ (หรือปิดการเตือน/การแคปตอนกดปุ่ม)"
         if (jpegQuality !in 30..100) errors += "คุณภาพภาพต้องอยู่ระหว่าง 30–100"
-        if (retentionDays !in 1..365) errors += "จำนวนวันค้นย้อนหลังต้องอยู่ระหว่าง 1–365"
+        if (retentionDays !in 1..365) errors += "จำนวนวันที่เก็บภาพต้องอยู่ระหว่าง 1–365"
+        if (readyRepeatMinutes !in 1..1440) errors += "เวลาแคป READY ซ้ำต้องอยู่ระหว่าง 1–1440 นาที"
         if (evidenceWindowHours !in 1..24) errors += "ช่วงเวลาจับคู่หลักฐานต้องอยู่ระหว่าง 1–24 ชั่วโมง"
         return errors
     }
@@ -131,14 +92,6 @@ data class Config(
             false
         }
 
-        /** "19:00" / "7:05" -> time; anything else -> null. */
-        fun parseTime(s: String): LocalTime? {
-            val m = Regex("""^\s*(\d{1,2})[:.](\d{2})\s*$""").find(s) ?: return null
-            val h = m.groupValues[1].toInt()
-            val min = m.groupValues[2].toInt()
-            return if (h in 0..23 && min in 0..59) LocalTime.of(h, min) else null
-        }
-
         /** Splits a multi-line settings field into clean, unique, non-empty entries. */
         fun lines(text: String): List<String> =
             text.split('\n').map { TextNorm.clean(it) }.filter { it.isNotEmpty() }.distinct()
@@ -147,7 +100,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 4
+    const val VERSION = 3
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -158,31 +111,20 @@ object ConfigCodec {
             "gfPrefix" to c.gfPrefix,
             "tabLabels" to c.tabLabels,
             "readyTabLabels" to c.readyTabLabels,
-            "preparingTabLabels" to c.preparingTabLabels,
-            "historyTabLabels" to c.historyTabLabels,
-            "navLabels" to c.navLabels,
-            "ordersNavLabels" to c.ordersNavLabels,
             "captureReady" to c.captureReady,
             "readyAny" to c.readyAny,
             "readyNone" to c.readyNone,
-            "lateStatus" to c.lateStatus,
+            "readyRepeatMinutes" to c.readyRepeatMinutes,
+            "pressTriggers" to c.pressTriggers,
+            "pressExcludeHints" to c.pressExcludeHints,
+            "countdownKeywords" to c.countdownKeywords,
+            "remindReadyTab" to c.remindReadyTab,
+            "capturePress" to c.capturePress,
             "captureDelay" to c.captureDelay,
             "doneAny" to c.doneAny,
             "cancelAny" to c.cancelAny,
             "delayAny" to c.delayAny,
-            "completedLabels" to c.completedLabels,
-            "cancelledLabels" to c.cancelledLabels,
             "evidenceWindowHours" to c.evidenceWindowHours,
-            "autoScroll" to c.autoScroll,
-            "fullSweepMinutes" to c.fullSweepMinutes,
-            "keepScreenOn" to c.keepScreenOn,
-            "guardReadyTab" to c.guardReadyTab,
-            "guardIdleMinutes" to c.guardIdleMinutes,
-            "autoEndOfDay" to c.autoEndOfDay,
-            "closeTime" to c.closeTime,
-            "endBufferMinutes" to c.endBufferMinutes,
-            "recheckMinutes" to c.recheckMinutes,
-            "endMaxWaitMinutes" to c.endMaxWaitMinutes,
             "showToast" to c.showToast,
             "jpegQuality" to c.jpegQuality,
             "retentionDays" to c.retentionDays,
@@ -201,31 +143,20 @@ object ConfigCodec {
             gfPrefix = m.str("gfPrefix") ?: d.gfPrefix,
             tabLabels = m.strList("tabLabels") ?: d.tabLabels,
             readyTabLabels = m.strList("readyTabLabels") ?: d.readyTabLabels,
-            preparingTabLabels = m.strList("preparingTabLabels") ?: d.preparingTabLabels,
-            historyTabLabels = m.strList("historyTabLabels") ?: d.historyTabLabels,
-            navLabels = m.strList("navLabels") ?: d.navLabels,
-            ordersNavLabels = m.strList("ordersNavLabels") ?: d.ordersNavLabels,
             captureReady = m.bool("captureReady") ?: d.captureReady,
             readyAny = m.strList("readyAny") ?: d.readyAny,
             readyNone = m.strList("readyNone") ?: d.readyNone,
-            lateStatus = m.strList("lateStatus") ?: d.lateStatus,
+            readyRepeatMinutes = m.int("readyRepeatMinutes") ?: d.readyRepeatMinutes,
+            pressTriggers = m.strList("pressTriggers") ?: d.pressTriggers,
+            pressExcludeHints = m.strList("pressExcludeHints") ?: d.pressExcludeHints,
+            countdownKeywords = m.strList("countdownKeywords") ?: d.countdownKeywords,
+            remindReadyTab = m.bool("remindReadyTab") ?: d.remindReadyTab,
+            capturePress = m.bool("capturePress") ?: d.capturePress,
             captureDelay = m.bool("captureDelay") ?: d.captureDelay,
             doneAny = m.strList("doneAny") ?: d.doneAny,
             cancelAny = m.strList("cancelAny") ?: d.cancelAny,
             delayAny = m.strList("delayAny") ?: d.delayAny,
-            completedLabels = m.strList("completedLabels") ?: d.completedLabels,
-            cancelledLabels = m.strList("cancelledLabels") ?: d.cancelledLabels,
             evidenceWindowHours = m.int("evidenceWindowHours") ?: d.evidenceWindowHours,
-            autoScroll = m.bool("autoScroll") ?: d.autoScroll,
-            fullSweepMinutes = m.int("fullSweepMinutes") ?: d.fullSweepMinutes,
-            keepScreenOn = m.bool("keepScreenOn") ?: d.keepScreenOn,
-            guardReadyTab = m.bool("guardReadyTab") ?: d.guardReadyTab,
-            guardIdleMinutes = m.int("guardIdleMinutes") ?: d.guardIdleMinutes,
-            autoEndOfDay = m.bool("autoEndOfDay") ?: d.autoEndOfDay,
-            closeTime = m.str("closeTime") ?: d.closeTime,
-            endBufferMinutes = m.int("endBufferMinutes") ?: d.endBufferMinutes,
-            recheckMinutes = m.int("recheckMinutes") ?: d.recheckMinutes,
-            endMaxWaitMinutes = m.int("endMaxWaitMinutes") ?: d.endMaxWaitMinutes,
             showToast = m.bool("showToast") ?: d.showToast,
             jpegQuality = m.int("jpegQuality") ?: d.jpegQuality,
             retentionDays = m.int("retentionDays") ?: d.retentionDays,
@@ -235,27 +166,29 @@ object ConfigCodec {
     }
 
     /**
-     * Saved settings from older versions keep what the user typed and gain the newer words:
-     * v1 knew only the Thai screens, v3 had no letter-suffixed order numbers (GF-398F), and v4 is
-     * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
-     * next shot). Settings of the old "Ready button" feature are simply ignored.
+     * v1 only knew the Thai screens and screenshotted every button tap. Saved v1 settings get the
+     * English words added (nothing the user typed is removed) and the tap screenshot turned off.
      */
     fun migrate(c: Config, from: Int): Config {
-        if (from >= VERSION) return c
         val d = Config.DEFAULT
         fun merge(saved: List<String>, defaults: List<String>) = (saved + defaults).distinct()
-        return c.copy(
-            gfPattern = if (c.gfPattern in OLD_GF_PATTERNS) d.gfPattern else c.gfPattern,
-            readyAny = merge(c.readyAny, d.readyAny),
-            readyNone = merge(c.readyNone, d.readyNone),
-            doneAny = merge(c.doneAny, d.doneAny),
-            cancelAny = merge(c.cancelAny, d.cancelAny),
-            delayAny = merge(c.delayAny, d.delayAny),
-            showToast = false,
-        )
+        var out = c
+        if (from < 2) {
+            out = out.copy(
+                pressTriggers = merge(out.pressTriggers, d.pressTriggers),
+                countdownKeywords = merge(out.countdownKeywords, d.countdownKeywords),
+                readyAny = merge(out.readyAny, d.readyAny),
+                readyNone = merge(out.readyNone, d.readyNone),
+                doneAny = merge(out.doneAny, d.doneAny),
+                delayAny = merge(out.delayAny, d.delayAny),
+                capturePress = false,
+            )
+        }
+        if (from < 3) {
+            out = out.copy(cancelAny = merge(out.cancelAny, d.cancelAny))
+        }
+        return out
     }
-
-    private val OLD_GF_PATTERNS = setOf("""(?<![A-Za-z0-9])GF\s*-\s*(\d{2,5})(?!\d)""")
 
     /** Never throws: a corrupt save falls back to defaults instead of breaking the app. */
     fun decodeOrDefault(text: String?): Config {
@@ -276,27 +209,18 @@ fun Config.sanitized(): Config {
         targetPackages = targetPackages.cleanList().ifEmpty { d.targetPackages },
         gfPattern = if (Config.isUsablePattern(gfPattern)) gfPattern else d.gfPattern,
         tabLabels = tabLabels.cleanList(),
-        readyTabLabels = readyTabLabels.cleanList().ifEmpty { d.readyTabLabels },
-        preparingTabLabels = preparingTabLabels.cleanList(),
-        historyTabLabels = historyTabLabels.cleanList(),
-        navLabels = navLabels.cleanList(),
-        ordersNavLabels = ordersNavLabels.cleanList(),
+        readyTabLabels = readyTabLabels.cleanList(),
         readyAny = readyAny.cleanList(),
         readyNone = readyNone.cleanList(),
-        lateStatus = lateStatus.cleanList(),
+        pressTriggers = pressTriggers.cleanList(),
+        pressExcludeHints = pressExcludeHints.cleanList(),
+        countdownKeywords = countdownKeywords.cleanList(),
         doneAny = doneAny.cleanList(),
         cancelAny = cancelAny.cleanList(),
         delayAny = delayAny.cleanList(),
-        completedLabels = completedLabels.cleanList(),
-        cancelledLabels = cancelledLabels.cleanList(),
-        closeTime = if (Config.parseTime(closeTime) != null) closeTime.trim() else d.closeTime,
-        endBufferMinutes = endBufferMinutes.coerceIn(0, 120),
-        recheckMinutes = recheckMinutes.coerceIn(1, 60),
-        endMaxWaitMinutes = endMaxWaitMinutes.coerceIn(5, 600),
-        fullSweepMinutes = fullSweepMinutes.coerceIn(1, 60),
-        guardIdleMinutes = guardIdleMinutes.coerceIn(1, 60),
         jpegQuality = jpegQuality.coerceIn(30, 100),
         retentionDays = retentionDays.coerceIn(1, 365),
+        readyRepeatMinutes = readyRepeatMinutes.coerceIn(1, 1440),
         evidenceWindowHours = evidenceWindowHours.coerceIn(1, 24),
     )
 }

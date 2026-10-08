@@ -3,16 +3,27 @@ package io.github.panuwattegif.readyproof.core
 import java.time.LocalDate
 
 object HistoryDates {
-    /**
-     * Deliberately narrow: an explicit day + month + year ("Today, 08 Oct 2026", "ส. 3 ต.ค. 2569"),
-     * a bare Today / Yesterday, or an ISO date. Anything else remains UNKNOWN, never guessed.
-     */
+    private val months = listOf(
+        listOf("jan", "january", "ม.ค.", "มกราคม"), listOf("feb", "february", "ก.พ.", "กุมภาพันธ์"),
+        listOf("mar", "march", "มี.ค.", "มีนาคม"), listOf("apr", "april", "เม.ย.", "เมษายน"),
+        listOf("may", "พ.ค.", "พฤษภาคม"), listOf("jun", "june", "มิ.ย.", "มิถุนายน"),
+        listOf("jul", "july", "ก.ค.", "กรกฎาคม"), listOf("aug", "august", "ส.ค.", "สิงหาคม"),
+        listOf("sep", "sept", "september", "ก.ย.", "กันยายน"), listOf("oct", "october", "ต.ค.", "ตุลาคม"),
+        listOf("nov", "november", "พ.ย.", "พฤศจิกายน"), listOf("dec", "december", "ธ.ค.", "ธันวาคม")
+    )
+    private fun datedHeader(text: String): LocalDate? {
+        val match = Regex("(?<!\\d)(\\d{1,2})\\s+([A-Za-zก-๿.]+)\\s*,?\\s+(\\d{4})(?!\\d)").find(text) ?: return null
+        val month = months.indexOfFirst { keys -> keys.any { it.equals(match.groupValues[2], true) } } + 1
+        if (month == 0) return null
+        val year = match.groupValues[3].toInt().let { if (it > 2400) it - 543 else it }
+        return runCatching { LocalDate.of(year, month, match.groupValues[1].toInt()) }.getOrNull()
+    }
+    /** Deliberately narrow: unsupported localized headers remain UNKNOWN, never guessed. */
     fun parse(text: String, today: LocalDate): LocalDate? {
-        HistoryReader.parseDate(text)?.let { return it }
         return when (TextNorm.key(text)) {
             "today", "วันนี้" -> today
             "yesterday", "เมื่อวาน", "เมื่อวานนี้" -> today.minusDays(1)
-            else -> runCatching { LocalDate.parse(text.trim()) }.getOrNull()
+            else -> datedHeader(text) ?: runCatching { LocalDate.parse(text.trim()) }.getOrNull()
         }
     }
 

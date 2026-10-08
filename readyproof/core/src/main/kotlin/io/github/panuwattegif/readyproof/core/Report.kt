@@ -25,16 +25,6 @@ object TimeResolve {
     fun toMillis(t: LocalDateTime, zone: ZoneId): Long = t.atZone(zone).toInstant().toEpochMilli()
 }
 
-/** What the Ready-tab evidence says about a delayed order. */
-enum class Verdict(val label: String) {
-    /** First shot shows the order waiting for a rider who had not arrived yet. */
-    IN_TIME("หลักฐานว่าร้านกดทัน"),
-    /** First shot already shows the rider there / Grab asking the shop to hurry. */
-    LATE("หลักฐานว่าร้านช้าจริง"),
-    /** No usable Ready-tab shot: no evidence or the phone missed it. Not proof of being late. */
-    NO_EVIDENCE("ไม่มีหลักฐาน / ระบบจับไม่ได้"),
-}
-
 /** A screenshot showing the order inside the Ready tab, i.e. already pressed ready. */
 data class Evidence(val record: Record, val status: String?) {
     val t: Long get() = record.t
@@ -53,7 +43,6 @@ data class DelayCase(
     /** Logged taps on the ready button for this order (text only, for reference). */
     val presses: List<Long> = emptyList(),
     val matchStatus: String = if (evidence.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY",
-    val verdict: Verdict = if (evidence.isNotEmpty()) Verdict.IN_TIME else Verdict.NO_EVIDENCE,
 ) {
     val hasEvidence: Boolean get() = evidence.isNotEmpty()
 
@@ -97,40 +86,17 @@ data class DailyReport(
     val historyDateVerified: Boolean = false,
     val sweepReachedEnd: Boolean = false,
     val missingReadyInstances: List<String> = emptyList(),
-    /** Grab's own totals at the top of History ("Completed 77 · Cancelled 0"); null = never read. */
-    val grabCompleted: Int? = null,
-    val grabCancelled: Int? = null,
 ) {
     val delayed: Int get() = cases.size
     val withEvidence: List<DelayCase> get() = cases.filter { it.hasEvidence }
     val withoutEvidence: List<DelayCase> get() = cases.filter { !it.hasEvidence }
-    val inTime: List<DelayCase> get() = cases.filter { it.verdict == Verdict.IN_TIME }
-    val late: List<DelayCase> get() = cases.filter { it.verdict == Verdict.LATE }
-    val noEvidence: List<DelayCase> get() = cases.filter { it.verdict == Verdict.NO_EVIDENCE }
     val historyOrders: Int get() = completedSeen + cancelledSeen
-    /** Delayed orders left once the ones proven done in time are taken out. */
-    val actualDelayed: Int get() = delayed - inTime.size
-
-    /** Grab's own order total when it was read, otherwise the rows the scanner counted. */
-    val base: Int get() = if (grabCompleted != null) grabCompleted + (grabCancelled ?: 0) else historyOrders
-
-    /** The rows read match Grab's own totals (unknown when the totals were never read). */
-    val historyMatchesGrab: Boolean?
-        get() = grabCompleted?.let { completedSeen >= it && cancelledSeen >= (grabCancelled ?: 0) }
-
-    private fun pctOfBase(n: Int): Double? = base.takeIf { it > 0 && n <= it }?.let { n * 100.0 / it }
-
-    /** Delay rate as Grab counts it: every delayed order. */
-    val grabPct: Double? get() = pctOfBase(delayed)
-
-    /** Delay rate the shop should get: orders proven done in time are not late. */
-    val realPct: Double? get() = pctOfBase(actualDelayed)
+    val actualDelayed: Int get() = withoutEvidence.size
     val pendingReadyProof: Int get() = maxOf(pendingReadyGfs.size, readySeenOrders - readyOrders, 0)
     val missingDelayProof: Int get() = cases.count { it.delayShot == null }
     val complete: Boolean get() = sweepReachedEnd && historyDateVerified &&
         unknownHistoryInstances.isEmpty() && missingHistoryInstances.isEmpty() &&
-        missingDelayProof == 0 && pendingReadyProof == 0 && missingReadyInstances.isEmpty() &&
-        historyMatchesGrab != false
+        missingDelayProof == 0 && pendingReadyProof == 0 && missingReadyInstances.isEmpty()
     val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen && pendingReadyProof == 0
 
     /** Provisional percentage based on the History orders the scanner has actually counted. */
@@ -140,14 +106,9 @@ data class DailyReport(
      * One set per proven order: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg. When the same order number
      * was used twice that day, the finish time is added ("GF-613_1147_READY.jpg").
      */
-    fun sets(): List<EvidenceSet> = setsOf(withEvidence)
-
-    /** Sets of one verdict group (in time / late). */
-    fun sets(verdict: Verdict): List<EvidenceSet> = setsOf(withEvidence.filter { it.verdict == verdict })
-
-    private fun setsOf(chosen: List<DelayCase>): List<EvidenceSet> {
+    fun sets(): List<EvidenceSet> {
         val repeated = cases.groupingBy { it.gf }.eachCount().filterValues { it > 1 }.keys
-        return chosen.map { c ->
+        return withEvidence.map { c ->
             val tag = if (c.gf in repeated && c.doneAt != null) {
                 c.gf + "_" + Parsers.pad2(c.doneAt.hour) + Parsers.pad2(c.doneAt.minute)
             } else {
@@ -226,14 +187,8 @@ object ReportBuilder {
                 r.items.firstOrNull { it.gf == a.gf && it.type == ObsType.READY }?.let { Evidence(r, it.status) }
             }
             val taps = presses.filter { it.t in from..to && it.items.any { i -> i.gf == a.gf && i.type == ObsType.PRESS } }.map { it.t }
-            // The first Ready shot of the order decides: rider not there yet = done in time.
-            val verdict = when {
-                ev.isEmpty() -> Verdict.NO_EVIDENCE
-                TextNorm.containsAny(ev.first().status, cfg.lateStatus) -> Verdict.LATE
-                else -> Verdict.IN_TIME
-            }
             DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps,
-                if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY", verdict)
+                if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY")
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
 
         fun gfsOf(rs: List<Record>, type: ObsType) =
@@ -270,8 +225,6 @@ object ReportBuilder {
                 (i.type == ObsType.DONE || i.type == ObsType.DELAY || i.type == ObsType.CANCELLED) &&
                 ((i.historyDate ?: r.historyDate) == date.toString() || TimeResolve.toLocal(r.t, zone).toLocalDate() == date)
         } }
-        // Grab's own totals, read from the top of History for this day (latest reading wins).
-        val stats = sorted.lastOrNull { it.kind == RecordKind.STATS && it.historyDate == date.toString() && it.completed != null }
         return DailyReport(
             date = date,
             completedSeen = completedSeen,
@@ -293,8 +246,6 @@ object ReportBuilder {
             } },
             sweepReachedEnd = sweepReachedEnd,
             missingReadyInstances = missingReady,
-            grabCompleted = stats?.completed,
-            grabCancelled = stats?.cancelled,
         )
     }
 }
@@ -305,7 +256,7 @@ object ReportText {
 
     fun time(ms: Long, zone: ZoneId): String = Parsers.hhmm(TimeResolve.toLocal(ms, zone).toLocalTime())
 
-    fun pct(v: Double?): String = if (v == null) "-" else String.format(Locale.ROOT, "%.2f%%", v)
+    fun pct(v: Double?): String = if (v == null) "-" else String.format(Locale.ROOT, "%.1f%%", v)
 
     fun summary(r: DailyReport, zone: ZoneId): String = buildString {
         append("สรุปออเดอร์ล่าช้า วันที่ ").append(date(r.date)).append('\n')
@@ -318,13 +269,6 @@ object ReportText {
         append("Instance UNKNOWN: ").append(r.unknownHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
         append("Ready รอภาพ: ").append(r.pendingReadyProof).append(" ออเดอร์ (รายละเอียดใน manifest)\n")
         append("DELAY ขาดภาพ: ").append(r.cases.filter { it.delayShot == null }.joinToString { it.gf + "@" + (it.doneAt?.toLocalTime() ?: "UNKNOWN") }.ifEmpty { "-" }).append('\n')
-        if (r.grabCompleted != null) {
-            append("• ยอดจาก Grab (หัวหน้าประวัติ): เสร็จสมบูรณ์ ").append(r.grabCompleted)
-                .append(" · ยกเลิก ").append(r.grabCancelled ?: 0)
-                .append(if (r.historyMatchesGrab == true) " — อ่านรายการได้ครบ\n" else " — ⚠ อ่านรายการได้ไม่ครบ\n")
-        } else {
-            append("• ยอดจาก Grab (หัวหน้าประวัติ): ยังอ่านไม่ได้\n")
-        }
         append("• History ที่แอปสแกนเห็น: ").append(r.historyOrders)
             .append(" ออเดอร์ (เสร็จ ").append(r.completedSeen)
             .append(" / ยกเลิก ").append(r.cancelledSeen).append(")\n")
@@ -334,23 +278,21 @@ object ReportText {
         append("• Ready proof ").append(r.readyOrders)
             .append(" / Completed: ").append(r.completedSeen)
             .append(if (r.readyVsCompletedMatch) " — MATCH\n" else " — MISMATCH\n")
-        append("\nGrab ระบุล่าช้า ").append(r.delayed).append(" ออเดอร์ = ").append(pct(r.grabPct)).append(" (แบบ Grab คิด)\n")
-        append("• ").append(Verdict.IN_TIME.label).append(": ").append(r.inTime.size).append('\n')
-        append("• ").append(Verdict.LATE.label).append(": ").append(r.late.size).append('\n')
-        append("• ").append(Verdict.NO_EVIDENCE.label).append(": ").append(r.noEvidence.size).append('\n')
-        append("% ล่าช้าที่ร้านควรได้ (ตัดออเดอร์ที่มีหลักฐานกดทันออก) = (").append(r.delayed).append(" − ")
-            .append(r.inTime.size).append(") / ").append(r.base).append(" = ").append(pct(r.realPct)).append('\n')
+        append("• Grab ระบุล่าช้า: ").append(r.delayed).append('\n')
+        append("• มีภาพในแท็บ Ready (กดเสร็จแล้ว): ").append(r.withEvidence.size).append('\n')
+        append("• ไม่มีภาพ Ready / เหลือล่าช้าตามหลักฐาน: ").append(r.withoutEvidence.size).append('\n')
+        append("• % Grab จาก History: ").append(pct(r.pct(r.delayed))).append('\n')
+        append("• % Actual จากหลักฐาน: ").append(pct(r.pct(r.actualDelayed))).append('\n')
         append("ตัวเลขเป็นออเดอร์ที่สแกนพบ ไม่ใช่จำนวนภาพ; ถ้ายังไม่ครบ Total ทั้งวัน = UNKNOWN\n")
-        append("% ที่ร้านควรได้ เป็นการคำนวณจากหลักฐาน ไม่ยืนยันว่า Grab ปรับยอดแล้ว\n")
-        section(this, "✅ " + Verdict.IN_TIME.label, r.inTime, zone)
-        section(this, "⚠️ " + Verdict.LATE.label, r.late, zone)
-        section(this, "❓ " + Verdict.NO_EVIDENCE.label + " (ไม่ได้แปลว่าช้าจริง)", r.noEvidence, zone)
-    }
-
-    private fun section(sb: StringBuilder, title: String, cases: List<DelayCase>, zone: ZoneId) {
-        if (cases.isEmpty()) return
-        sb.append('\n').append(title).append('\n')
-        cases.forEach { sb.append(caseLine(it, zone)).append('\n') }
+        append("Actual เป็นการคำนวณหักหลักฐาน Ready ไม่ยืนยันว่า Grab ปรับยอดแล้ว\n")
+        if (r.withEvidence.isNotEmpty()) {
+            append("\n✅ มีหลักฐาน\n")
+            r.withEvidence.forEach { append(caseLine(it, zone)).append('\n') }
+        }
+        if (r.withoutEvidence.isNotEmpty()) {
+            append("\n❌ ไม่มีหลักฐาน\n")
+            r.withoutEvidence.forEach { append(caseLine(it, zone)).append('\n') }
+        }
     }
 
     fun caseLine(c: DelayCase, zone: ZoneId): String = buildString {
@@ -366,7 +308,7 @@ object ReportText {
 
     fun csv(r: DailyReport, zone: ZoneId): String = buildString {
         append('﻿') // BOM so Excel shows Thai correctly; Google Sheets ignores it
-        append("date,gf,delay_min,done_at,has_ready_shot,ready_time,ready_status,pressed_at_log,ready_file,delay_file,shop_id,match_status,verdict\n")
+        append("date,gf,delay_min,done_at,has_ready_shot,ready_time,ready_status,pressed_at_log,ready_file,delay_file,shop_id,match_status\n")
         val sets = r.sets().associateBy { it.case }
         for (c in r.cases) {
             val set = sets[c]
@@ -383,7 +325,6 @@ object ReportText {
                 set?.delayName.orEmpty(),
                 r.shopId ?: "UNKNOWN",
                 c.matchStatus,
-                c.verdict.name,
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }

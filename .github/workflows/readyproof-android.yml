@@ -10,6 +10,11 @@ on:
       - "readyproof/**"
       - ".github/workflows/readyproof-android.yml"
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Optional known-good tag/commit to rebuild as a newer installable update; leave empty for current code'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -26,6 +31,8 @@ jobs:
         working-directory: readyproof
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - uses: actions/setup-java@v4
         with:
@@ -55,6 +62,8 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk dist/ReadyProof.apk
           sha256sum dist/ReadyProof.apk | tee dist/ReadyProof.apk.sha256
           keytool -list -v -storetype PKCS12 -keystore keystore/readyproof.p12 -storepass readyproof -alias readyproof > dist/signing-certificate.txt
+          SIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          "$SIGNER" verify --verbose --print-certs dist/ReadyProof.apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -67,15 +76,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="1.0.${GITHUB_RUN_NUMBER}"
+          SOURCE_SHA=$(git rev-parse HEAD)
           gh release create "readyproof-v${VERSION}" dist/ReadyProof.apk dist/ReadyProof.apk.sha256 dist/signing-certificate.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --target "$SOURCE_SHA" \
             --title "ReadyProof ${VERSION}" \
             --notes "Local-first READY/History proof, daily summary and optional shop-bound Google Drive upload. OAuth console setup and first consent required; live device verification still required. See readyproof/END_TO_END.md. Build ${GITHUB_RUN_NUMBER} @ ${GITHUB_SHA}." \
             --latest
           if gh release view readyproof-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload readyproof-latest dist/ReadyProof.apk dist/ReadyProof.apk.sha256 dist/signing-certificate.txt --repo "$GITHUB_REPOSITORY" --clobber
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/readyproof-latest" -f sha="$GITHUB_SHA" -F force=true
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/readyproof-latest" -f sha="$SOURCE_SHA" -F force=true
             gh release edit readyproof-latest --repo "$GITHUB_REPOSITORY" --title "ReadyProof ${VERSION} (ล่าสุด)" --notes "ดาวน์โหลด APK แล้วติดตั้งทับได้ · OAuth และการอนุญาต Google ครั้งแรกยังจำเป็น · อ่าน readyproof/END_TO_END.md · build ${GITHUB_RUN_NUMBER} @ ${GITHUB_SHA}" --latest
           else
             gh release create readyproof-latest dist/ReadyProof.apk dist/ReadyProof.apk.sha256 dist/signing-certificate.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ReadyProof ${VERSION} (ล่าสุด)" --notes "See readyproof/END_TO_END.md for Google OAuth setup and device limitations." --latest

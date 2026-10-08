@@ -20,6 +20,13 @@ data class UploadEntry(val key: String, val shopId: String?, val name: String, v
 
 /** Durable private copies + a journal. Capture never waits for network, auth or this executor. */
 object DriveSync {
+    private fun stopAutomaticUploads(ctx: Context) {
+        ConfigStore.prefs(ctx).edit().putBoolean("drive_enabled", false).apply()
+        runCatching {
+            WorkManager.getInstance(ctx).cancelUniqueWork("readyproof-drive")
+            WorkManager.getInstance(ctx).cancelUniqueWork("readyproof-drive-recovery")
+        }
+    }
     private val io = Executors.newSingleThreadExecutor()
     private val lock = Any()
     private fun root(ctx: Context) = File(ctx.filesDir, "outbox").apply { mkdirs() }
@@ -35,6 +42,7 @@ object DriveSync {
     }
 
     fun offerRecord(ctx: Context, r: Record) {
+        if (!ManualWorkflow.autoUpload) return
         val app = ctx.applicationContext
         // All exceptions are confined to the sidecar executor; the local capture has already committed.
         runCatching { io.execute {
@@ -50,6 +58,7 @@ object DriveSync {
     }
 
     fun offerBytes(ctx: Context, shopId: String?, name: String, mime: String, bytes: ByteArray) {
+        if (!ManualWorkflow.autoUpload) return
         val app = ctx.applicationContext
         runCatching { io.execute {
             runCatching { stage(app, shopId, name, mime, bytes) }
@@ -73,6 +82,7 @@ object DriveSync {
 
     /** Release after a local History report commits. Missing photos never block the valid subset. */
     fun offerDailyBatch(ctx: Context, day: LocalDate, shopId: String?, records: List<Record>, text: String, manifest: String) {
+        if (!ManualWorkflow.autoUpload) return
         val app = ctx.applicationContext
         runCatching { io.execute {
             runCatching {
@@ -150,6 +160,7 @@ object DriveSync {
     }
 
     fun schedule(ctx: Context) {
+        if (!ManualWorkflow.autoUpload) { stopAutomaticUploads(ctx); return }
         runCatching {
             if (!ConfigStore.prefs(ctx).getBoolean("drive_enabled", false)) return@runCatching
             val manager = WorkManager.getInstance(ctx)
@@ -163,6 +174,7 @@ object DriveSync {
     }
 
     fun recover(ctx: Context) {
+        if (!ManualWorkflow.autoUpload) { stopAutomaticUploads(ctx); return }
         val app = ctx.applicationContext
         runCatching { io.execute {
             // Reconcile the entire retained journal, including captures made while auto-upload was off.
@@ -185,6 +197,7 @@ object DriveSync {
     }
 
     fun summary(ctx: Context): String {
+        if (!ManualWorkflow.autoUpload) return "เก็บหลักฐานในเครื่อง · กดแชร์รายงานและภาพ แล้วเลือก Google Drive เอง"
         val shop = ShopStore.get(ctx)
         val es = entries(ctx).filter { it.shopId == shop?.id }
         val released = shop?.let { releasedEntries(ctx, it.id) } ?: emptyList()

@@ -1,17 +1,16 @@
 package io.github.panuwattegif.readyproof.ui
 
-import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.os.Build
 import io.github.panuwattegif.readyproof.ConfigStore
 import io.github.panuwattegif.readyproof.ShopStore
 import io.github.panuwattegif.readyproof.DailyExport
 import io.github.panuwattegif.readyproof.DriveSync
-import io.github.panuwattegif.readyproof.Notifier
 import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
+import io.github.panuwattegif.readyproof.core.ObsType
+import io.github.panuwattegif.readyproof.core.RecordKind
 import io.github.panuwattegif.readyproof.core.ReportBuilder
 import io.github.panuwattegif.readyproof.core.ReportText
 import java.time.LocalDate
@@ -80,11 +79,8 @@ class MainActivity : Activity() {
         if (lastEvent > 0) Ui.text(status, "เห็นหน้าจอ Grab ล่าสุด: " + ReportText.time(lastEvent, zone), 14f, Ui.MUTED)
         Ui.text(status, "เครื่องนี้เฝ้าแคปอย่างเดียว · ไม่ต้องกด Ready บนเครื่องนี้", 14f, Ui.MUTED)
         val monitorPrefs = ConfigStore.prefs(this)
-        val engineLines = ProofService.instance?.engine?.statusLines()
-        if (engineLines != null) {
-            engineLines.forEach { Ui.text(status, it, 14f, Ui.TEXT, topDp = 2) }
-        } else {
-            monitorPrefs.getString("monitor_status", null)?.let { Ui.text(status, it, 13f, Ui.MUTED, topDp = 4) }
+        monitorPrefs.getString("monitor_status", null)?.let {
+            Ui.text(status, it, 13f, Ui.MUTED, topDp = 4)
         }
         val lastPoll = monitorPrefs.getLong("monitor_last_poll", 0L)
         if (lastPoll > 0) Ui.text(status, "ตรวจหน้าเฝ้าแคปล่าสุด: " + ReportText.time(lastPoll, zone), 13f, Ui.MUTED)
@@ -93,25 +89,15 @@ class MainActivity : Activity() {
                 ServiceStatus.requestIgnoreBattery(this)
             }
         }
-        if (!Notifier.canPost(this) && Build.VERSION.SDK_INT >= 33) {
-            Ui.button(status, "อนุญาตการแจ้งเตือน (แจ้งเมื่อสรุปสิ้นวันเสร็จ)", filled = false) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-            }
-        }
-        if (installed && running) {
-            Ui.button(status, "▶ เปิด Grab ที่แท็บ Ready แล้ววางเครื่องทิ้งไว้") {
-                ServiceStatus.openApp(this, target)
-                ProofService.instance?.resumeReadyMonitor()
-            }
-        }
 
         val drive = Ui.card(col)
         Ui.text(drive, "ร้าน: " + (ShopStore.get(this)?.label ?: "ยังไม่เลือก — หลักฐานใหม่ยังไม่อัปอัตโนมัติ"), 16f, bold = true)
         Ui.text(drive, DriveSync.summary(this), 13f, Ui.MUTED)
-        Ui.button(drive, "ร้าน / Google Drive / คิวส่งไฟล์", filled = false) { startActivity(Intent(this, DriveActivity::class.java)) }
+        Ui.button(drive, "เลือกร้าน / วิธีแชร์ขึ้น Google Drive", filled = false) { startActivity(Intent(this, DriveActivity::class.java)) }
 
         // --- today ---
         val today = LocalDate.now()
+        val records = ShopStore.reportRecords(this, RecordStore.load(this, today))
         val report = ReportBuilder.build(
             RecordStore.loadRange(this, today.minusDays(1), today.plusDays(1)),
             today,
@@ -120,13 +106,15 @@ class MainActivity : Activity() {
             ShopStore.get(this)?.id,
             DailyExport.reachedEnd(this, today, ShopStore.get(this)?.id),
         )
-        val waiting = ProofService.instance?.engine?.tracker?.present() ?: emptyList()
+        fun gfs(type: ObsType, withImage: Boolean) =
+            records.filter { !withImage || it.uri != null }.flatMap { r -> r.items.filter { it.type == type }.map { it.gf } }.toSet()
+        val ready = gfs(ObsType.READY, withImage = true)
+        val pressedNoShot = gfs(ObsType.PRESS, withImage = false) - ready
         val day = Ui.card(col)
         Ui.text(day, "วันนี้ " + ReportText.date(today), 17f, bold = true)
         Ui.text(
             day,
             "Ready เห็น ${report.readySeenOrders} · มีภาพ ${report.readyOrders} · Pending ${report.pendingReadyProof} · " +
-                "รอไรเดอร์ตอนนี้ ${waiting.size} · " +
                 "History ${report.historyOrders} (เสร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen}) · " +
                 "Delayed ${report.delayed}",
             15f, topDp = 4,
@@ -139,34 +127,18 @@ class MainActivity : Activity() {
             if (report.readyVsCompletedMatch) Ui.GREEN else Ui.AMBER,
             topDp = 3,
         )
-        report.grabCompleted?.let { g ->
+        if (pressedNoShot.isNotEmpty()) {
             Ui.text(
                 day,
-                "ยอด Grab: เสร็จสมบูรณ์ $g · ยกเลิก ${report.grabCancelled ?: 0} → อ่านรายการได้ " +
-                    (if (report.historyMatchesGrab == true) "ครบ" else "ยังไม่ครบ"),
-                14f, if (report.historyMatchesGrab == true) Ui.GREEN else Ui.AMBER, topDp = 3,
-            )
-        }
-        if (report.delayed > 0) {
-            Ui.text(
-                day,
-                "ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)}) · กดทัน ${report.inTime.size} · " +
-                    "ช้าจริง ${report.late.size} · ไม่มีหลักฐาน ${report.noEvidence.size} → ที่ควรได้ ${ReportText.pct(report.realPct)}",
-                14f, topDp = 3,
+                "⏰ กด Ready แล้วแต่ยังไม่มีภาพในแท็บ Ready: " + pressedNoShot.take(6).joinToString(", ") +
+                    (if (pressedNoShot.size > 6) " …" else "") + " → ระบบจะคงเป็น PENDING และสแกนซ้ำ",
+                14f, Ui.AMBER, topDp = 4,
             )
         }
         ConfigStore.prefs(this).getString("auto_history_last_result", null)?.let {
             Ui.text(day, "History ล่าสุด: $it", 13f, Ui.MUTED, topDp = 2)
         }
-        Ui.text(
-            day,
-            if (cfg.autoEndOfDay) {
-                "ปิดร้าน ${cfg.closeTime} + เผื่อ ${cfg.endBufferMinutes} นาที → ตรวจ Ready + กำลังเตรียม (ยังมีออเดอร์ค้าง: ตรวจใหม่ทุก ${cfg.recheckMinutes} นาที) → ว่างแล้วอ่าน History ทั้งหมดเอง"
-            } else {
-                "สรุปสิ้นวันอัตโนมัติ: ปิดอยู่ (กด \"กวาด History ตอนนี้\" เอง)"
-            },
-            13f, Ui.MUTED, topDp = 4,
-        )
+        Ui.text(day, "สิ้นวัน: กดกวาด History แล้วเปิดรายงานเพื่อแชร์รูปและสรุปเอง", 13f, Ui.MUTED, topDp = 4)
         ConfigStore.prefs(this).getString("closing_history_status", null)?.let {
             Ui.text(day, it, 13f, Ui.MUTED, topDp = 2)
         }
@@ -176,21 +148,14 @@ class MainActivity : Activity() {
 
         // --- tools ---
         val tools = Ui.card(col)
-        Ui.button(tools, "🔄 กวาด History ตอนนี้ (สรุปทันที)", filled = false) {
+        Ui.button(tools, "🔄 กวาด History ตอนนี้", filled = false) {
             val service = ProofService.instance
             if (service == null) {
                 Ui.alert(this, "ระบบยังไม่ทำงาน", "เปิดสิทธิ์การช่วยเหลือพิเศษให้ ReadyProof ก่อน")
             } else {
-                Ui.confirm(
-                    this, "กวาด History ตอนนี้?",
-                    "แอปจะเปิด Grab → แท็บประวัติ เลื่อนอ่านทุกออเดอร์ของวันนี้ แคปออเดอร์ที่ล่าช้า แล้วจับคู่หลักฐาน " +
-                        "(ประมาณ 1–3 นาที ระหว่างนั้นอย่าแตะจอ) · ถ้ากดก่อนปิดร้าน รอบอัตโนมัติตอนเย็นยังทำงานตามปกติ",
-                    "เริ่มเลย",
-                ) {
-                    ServiceStatus.openApp(this, target)
-                    service.requestHistorySweepNow()
-                    Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
-                }
+                ServiceStatus.openApp(this, target)
+                service.requestHistorySweepNow()
+                Ui.toast(this, "กำลังเปิด History และกวาดรายการอัตโนมัติ", long = true)
             }
         }
         Ui.button(tools, "กลับไปเฝ้า Ready", filled = false) {
@@ -211,11 +176,6 @@ class MainActivity : Activity() {
         Ui.button(tools, "📖 คู่มือการใช้งาน", filled = false) { startActivity(Intent(this, GuideActivity::class.java)) }
 
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
-        Ui.text(col, "ReadyProof $version · เก็บในเครื่องก่อน · Drive ส่งแยกเบื้องหลัง", 12f, Ui.MUTED, topDp = 4)
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        render()
+        Ui.text(col, "ReadyProof $version · เก็บในเครื่อง · แชร์ขึ้น Drive เอง", 12f, Ui.MUTED, topDp = 4)
     }
 }
