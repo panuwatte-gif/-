@@ -71,6 +71,10 @@ class Engine(private val service: ProofService) {
         private const val PERSON_GRACE_MS = 20_000L
         private const val SCROLL_BLOCK_MS = 30 * 60_000L
         private const val MAX_HISTORY_ATTEMPTS = 3
+        /** An order without a fully checked photo this long gets a backup photo (number checked only). */
+        private const val BACKUP_AFTER_MS = 30_000L
+        /** An order without any photo this long raises a warning notification. */
+        private const val WARN_AFTER_MS = 2 * 60_000L
 
         // Shared with the home screen and the troubleshooting export.
         const val PREF_EOD_DONE = "eod_done_day"
@@ -115,7 +119,7 @@ class Engine(private val service: ProofService) {
     private var lastLaunchAt = 0L
     private var lastBackAt = 0L
     private var lastPendingSweepAt = 0L
-    private var lastProblemAt = 0L
+    private val problemAt = HashMap<String, Long>()
     private var scrollBlockedUntil = 0L
     private var fingerprint: String? = null
     private var historyDay: String? = null
@@ -282,6 +286,8 @@ class Engine(private val service: ProofService) {
         }
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
         shootReady(s)?.let { s = it }
+        backupReady(s)?.let { s = it }
+        warnUnphotographed()
         val fp = fingerprintOf(s.a)
         val changed = fp != fingerprint
         fingerprint = fp
@@ -342,6 +348,38 @@ class Engine(private val service: ProofService) {
     }
 
     /**
+     * Safety net: an order that could not get a fully checked photo within [BACKUP_AFTER_MS] gets
+     * a backup photo as soon as at least its order number is completely inside the list and not
+     * covered by another window. Better a photo with the number than no evidence at all; the
+     * app keeps trying for a fully checked one.
+     */
+    private suspend fun backupReady(s: Screen): Screen? {
+        if (!cfg.captureReady) return null
+        val t = System.currentTimeMillis()
+        val due = tracker.needBackup(t, BACKUP_AFTER_MS).toSet()
+        if (due.isEmpty()) return null
+        val targets = s.a.readyViews().filter { it.gf in due && it.gfClear }
+        if (targets.isEmpty()) return null
+        val (ok, after) = shoot(
+            RecordKind.READY, s, targets, null, note = ReadyTracker.BACKUP_NOTE,
+            stillGood = { b, a -> a.gfClear && sameBoxes(listOf(a.card.gfNode.box()), listOf(b.card.gfNode.box())) },
+        ) { v -> v.items.filter { it.type == ObsType.READY } }
+        tracker.backup(ok.map { it.gf }, t)
+        if (ok.isNotEmpty()) Diagnostics.note(service, "backup Ready photo ${ok.joinToString { it.gf }}")
+        return after
+    }
+
+    /** Warns (notification) about any order that has sat in the Ready tab without a photo. */
+    private fun warnUnphotographed() {
+        val missing = tracker.unphotographed(System.currentTimeMillis(), WARN_AFTER_MS)
+        if (missing.isEmpty()) return
+        problem(
+            "ออเดอร์ ${missing.joinToString(", ")} อยู่ในแท็บ Ready เกิน 2 นาทีแต่ยังแคปไม่ได้ — ดูหน้าจอมือถือเครื่องเฝ้า หรือแคปเองด้วยปุ่มลอย",
+            kind = "unphotographed:" + missing.joinToString(","),
+        )
+    }
+
+    /**
      * Takes one screenshot for [targets] and keeps it only for the orders whose number and status
      * line were still in the same place right after the shot. Returns the orders proven by the
      * saved shot and the screen as read after it.
@@ -351,21 +389,21 @@ class Engine(private val service: ProofService) {
         before: Screen,
         targets: List<CardView>,
         day: String?,
+        note: String? = null,
+        stillGood: (before: CardView, after: CardView) -> Boolean = { b, a -> a.full && sameBoxes(a.keyBoxes, b.keyBoxes) },
         itemsOf: (CardView) -> List<Item>,
     ): Pair<List<CardView>, Screen?> {
         val t = System.currentTimeMillis()
         val bitmap = capture.take()
         if (bitmap == null) {
-            problem("แคปหน้าจอไม่สำเร็จ: ${capture.lastError ?: "-"}")
+            problem("แคปหน้าจอไม่สำเร็จ: ${capture.lastError ?: "-"}", kind = "capture")
             return emptyList<CardView>() to null
         }
         val after = reader.read(cfg)
         val ok = if (after == null) {
             emptyList()
         } else {
-            targets.filter { tv ->
-                after.a.views.any { v -> v.gf == tv.gf && v.full && sameBoxes(v.keyBoxes, tv.keyBoxes) }
-            }
+            targets.filter { tv -> after.a.views.any { v -> v.gf == tv.gf && stillGood(tv, v) } }
         }
         if (ok.isEmpty()) {
             bitmap.recycle()
@@ -375,7 +413,7 @@ class Engine(private val service: ProofService) {
         val items = ok.flatMap(itemsOf).map { if (day != null) it.copy(historyDate = day) else it }
         val record = capture.save(
             bitmap, kind, t,
-            CaptureMeta(items = items, visible = before.a.visible, historyDate = day, shopId = shop()),
+            CaptureMeta(items = items, visible = before.a.visible, note = note, historyDate = day, shopId = shop()),
         ) ?: return emptyList<CardView>() to after
         lastShotText = record.kind.label + " " + record.gfs.joinToString(", ") + " · " + ReportText.time(record.t, zone)
         ProofService.lastCaptureText = lastShotText
@@ -412,6 +450,7 @@ class Engine(private val service: ProofService) {
             noteSeen(s, System.currentTimeMillis())
             shootReady(s)?.let { s = it }
             fixPartials(s)?.let { s = it }
+            backupReady(s)?.let { s = it }
             if (!isReady(s)) return@automate
             seen += s.a.readyGfs()
             if (!s.a.canScrollForward || pages++ >= MAX_PAGES) break
@@ -816,10 +855,12 @@ class Engine(private val service: ProofService) {
         return (pm?.isInteractive ?: false) && !(km?.isKeyguardLocked ?: true)
     }
 
-    private fun problem(text: String) {
+    /** Notifies a problem; the same kind of problem at most every 30 minutes. */
+    private fun problem(text: String, kind: String = text) {
         val now = SystemClock.uptimeMillis()
-        if (now - lastProblemAt < PROBLEM_NOTE_GAP_MS && lastProblemAt != 0L) return
-        lastProblemAt = now
+        val last = problemAt[kind]
+        if (last != null && now - last < PROBLEM_NOTE_GAP_MS) return
+        problemAt[kind] = now
         Diagnostics.note(service, "problem: $text")
         Notifier.status(service, "ReadyProof ต้องการความช่วยเหลือ", text, Notifier.ID_PROBLEM)
     }
@@ -988,7 +1029,6 @@ class Engine(private val service: ProofService) {
         Notifier.cancel(service, Notifier.ID_STATUS)
         Notifier.report(service, "สรุปสิ้นวัน ${ReportText.date(date)} พร้อมแล้ว", text)
         Diagnostics.note(service, "end of day: done $resultText")
-        if (eod == Eod.DONE) updateAwake(false)
     }
 
     private fun resultLine(r: DailyReport, h: HistoryResult): String = buildString {
@@ -1007,7 +1047,9 @@ class Engine(private val service: ProofService) {
 
     private fun updateAwake(grabVisible: Boolean) {
         val c = cfg
-        val want = c.enabled && c.keepScreenOn && grabVisible && eod != Eod.DONE
+        // Always on while Grab is shown: the phone is left on the Ready tab day and night, so the
+        // next morning needs nobody to wake it.
+        val want = c.enabled && c.keepScreenOn && grabVisible
         if (want && awake == null) addAwake() else if (!want && awake != null) removeAwake()
     }
 
@@ -1044,6 +1086,7 @@ class Engine(private val service: ProofService) {
     fun statusLines(): List<String> {
         val out = ArrayList<String>()
         out += where
+        if (!autoNavigation()) out += "⚠ ปิดการเลื่อน/แตะแท็บอัตโนมัติอยู่ (ตั้งค่า) — จะไม่กวาดรายการ ไม่พากลับแท็บ Ready และไม่สรุปสิ้นวันเอง"
         if (lastSweepAt > 0) out += "กวาดรายการ Ready ล่าสุด " + ReportText.time(lastSweepAt, zone)
         val unshot = tracker.pending()
         if (unshot.isNotEmpty()) out += "⚠ ยังแคปไม่ได้: " + unshot.joinToString(", ")

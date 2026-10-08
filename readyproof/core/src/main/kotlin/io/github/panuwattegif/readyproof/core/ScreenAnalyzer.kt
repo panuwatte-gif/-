@@ -25,6 +25,12 @@ data class CardView(
     /** Where those lines are; a shot is kept only if they have not moved while it was taken. */
     val keyBoxes: List<Box>,
     val status: String?,
+    /**
+     * Backup check: at least the order number is completely inside the list and no other window
+     * covers it (the status line and Grab's own overlays are not checked). Used only when an order
+     * could not get a fully checked shot for a while, so no order is left without any photo.
+     */
+    val gfClear: Boolean = false,
 ) {
     val gf: String get() = card.gf
 
@@ -110,7 +116,8 @@ object ScreenAnalyzer {
                 val boxes = keys.map { it.box() }
                 // A key line that is not drawn at all (scrolled away) also means "not in the picture".
                 val full = keys.isNotEmpty() && keys.all { it.shown } && keys.all { k -> clear(k, vp, occluders, ctx) }
-                views += CardView(card, items, full, boxes, status)
+                val gfClear = card.gfNode.shown && clear(card.gfNode, vp, ctx.occluders, ctx)
+                views += CardView(card, items, full, boxes, status, gfClear)
             }
         }
         val scroller = pickScroller(roots, views)

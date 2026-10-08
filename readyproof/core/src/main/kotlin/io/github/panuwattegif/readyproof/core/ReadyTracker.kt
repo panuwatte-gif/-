@@ -18,9 +18,18 @@ class ReadyTracker(
         var missingSince: Long? = null
         /** Shot attempts that could not be verified (order cut off, list moved ...). */
         var failures: Int = 0
+        /** Time of the backup shot (order number checked only), null = none yet. */
+        var backupAt: Long? = null
+        /** When the "cannot photograph" warning was raised for this stay. */
+        var warnedAt: Long? = null
     }
 
     private val stays = LinkedHashMap<String, Stay>()
+
+    companion object {
+        /** Note on a backup Ready photo (order number checked only). */
+        const val BACKUP_NOTE = "READY_BACKUP"
+    }
 
     /** Orders seen in the Ready list now. Returns the ones that still need a shot. */
     @Synchronized
@@ -61,6 +70,26 @@ class ReadyTracker(
         }
     }
 
+    /** A backup shot was saved; the order stays pending until a fully checked shot exists. */
+    @Synchronized
+    fun backup(gfs: Collection<String>, now: Long) {
+        for (gf in gfs) stays[gf]?.backupAt = now
+    }
+
+    /**
+     * Orders listed for at least [afterMs] that still have neither a checked nor a backup shot,
+     * i.e. the ones a backup shot should be taken for now.
+     */
+    @Synchronized
+    fun needBackup(now: Long, afterMs: Long): List<String> =
+        stays.values.filter { it.shotAt == null && it.backupAt == null && it.missingSince == null && now - it.since >= afterMs }.map { it.gf }
+
+    /** Orders listed for at least [afterMs] with no photo of any kind, not yet warned about. */
+    @Synchronized
+    fun unphotographed(now: Long, afterMs: Long): List<String> =
+        stays.values.filter { it.shotAt == null && it.backupAt == null && it.missingSince == null && it.warnedAt == null && now - it.since >= afterMs }
+            .onEach { it.warnedAt = now }.map { it.gf }
+
     @Synchronized
     fun failed(gfs: Collection<String>) {
         for (gf in gfs) stays[gf]?.let { it.failures++ }
@@ -91,7 +120,7 @@ class ReadyTracker(
             for (item in r.items) {
                 if (item.type != ObsType.READY) continue
                 val s = stays.getOrPut(item.gf) { Stay(item.gf, r.t) }
-                s.shotAt = r.t
+                if (r.note == BACKUP_NOTE) s.backupAt = r.t else s.shotAt = r.t
                 s.lastSeen = r.t
             }
         }

@@ -19,9 +19,11 @@ import io.github.panuwattegif.readyproof.ui.ReportActivity
 object Notifier {
     private const val CH_STATUS = "status"
     private const val CH_REPORT = "report"
+    private const val CH_PROBLEM = "problem"
     const val ID_STATUS = 1
     const val ID_REPORT = 2
     const val ID_PROBLEM = 3
+    const val ID_WATCH = 4
 
     fun canPost(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 33 ||
@@ -35,11 +37,15 @@ object Notifier {
         if (nm.getNotificationChannel(CH_REPORT) == null) {
             nm.createNotificationChannel(NotificationChannel(CH_REPORT, "สรุปสิ้นวัน", NotificationManager.IMPORTANCE_DEFAULT))
         }
+        if (nm.getNotificationChannel(CH_PROBLEM) == null) {
+            nm.createNotificationChannel(NotificationChannel(CH_PROBLEM, "ปัญหาที่ต้องแก้", NotificationManager.IMPORTANCE_DEFAULT))
+        }
         return nm
     }
 
+    /** Silent progress messages; [ID_PROBLEM] / [ID_WATCH] go to the audible "problem" channel. */
     fun status(ctx: Context, title: String, text: String, id: Int = ID_STATUS) =
-        post(ctx, id, CH_STATUS, title, text, MainActivity::class.java)
+        post(ctx, id, if (id == ID_PROBLEM || id == ID_WATCH) CH_PROBLEM else CH_STATUS, title, text, MainActivity::class.java)
 
     fun report(ctx: Context, title: String, text: String) =
         post(ctx, ID_REPORT, CH_REPORT, title, text, ReportActivity::class.java)

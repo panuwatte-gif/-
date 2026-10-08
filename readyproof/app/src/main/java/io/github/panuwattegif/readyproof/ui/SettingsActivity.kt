@@ -65,7 +65,7 @@ class SettingsActivity : Activity() {
             help = "ปกติแอปกวาดทันทีเมื่อรายการเปลี่ยน ค่านี้คือรอบสำรอง", number = true)
         sGuard = Ui.switch(watch, "พากลับแท็บ Ready เองเมื่อหลุดไปหน้าอื่น", cfg.guardReadyTab) {}
         fIdle = Ui.field(watch, "ถ้ามีคนใช้เครื่องอยู่ รอให้ว่างกี่นาทีก่อนพากลับ", cfg.guardIdleMinutes.toString(), number = true)
-        sAwake = Ui.switch(watch, "ไม่ให้จอดับระหว่างเปิด Grab (จนสรุปสิ้นวันเสร็จ)", cfg.keepScreenOn) {}
+        sAwake = Ui.switch(watch, "ไม่ให้จอดับระหว่างเปิด Grab (เสียบชาร์จไว้)", cfg.keepScreenOn) {}
         sToast = Ui.switch(watch, "แสดงข้อความเด้งหลังแคป (อาจบังจอ ไม่แนะนำ)", cfg.showToast) {}
 
         val eod = Ui.card(col)

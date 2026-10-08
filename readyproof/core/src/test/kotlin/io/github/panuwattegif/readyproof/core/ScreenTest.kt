@@ -249,6 +249,26 @@ class ScreenTest {
     }
 
     @Test
+    fun backupCheckNeedsOnlyTheNumberClearOfOtherWindows() {
+        // status line scrolled out of view: not fully checked, but the number itself is clear
+        val cut = Trees.box(Trees.n("GF-500"), Trees.n("Finding a driver...", shown = false), clickable = true)
+        val a = laid(Trees.readyTabEn(withBanner = false, extra = listOf(cut)))
+        val v = a.views.first { it.gf == "GF-500" }
+        assertFalse(v.full)
+        assertTrue(v.gfClear)
+        // Grab's own overlay over GF-439's number: not checked, still clear for a backup
+        val fab = Layout.fix(Trees.n(desc = "Scan", cls = "android.widget.ImageButton", clickable = true), Box(560, 600, 700, 700))
+        val b = laid(Trees.readyTabEn(withBanner = false, fab = fab)).views.first { it.gf == "GF-439" }
+        assertFalse(b.full)
+        assertTrue(b.gfClear)
+        // another window over the number, or the number cut at the edge: no backup either
+        val covered = laid(Trees.readyTabEn(withBanner = false), ctx = ScanContext(listOf(Box(0, 470, 720, 500)))).views.first { it.gf == "GF-231" }
+        assertFalse(covered.gfClear)
+        val edge = laid(Trees.readyTabEn(withBanner = false), listHeight = 200, scrollY = 100).views.first { it.gf == "GF-231" }
+        assertFalse(edge.gfClear)
+    }
+
+    @Test
     fun treesWithoutPositionsNeverCountAsFullyVisible() {
         val a = analyze(Trees.readyTabEn())
         assertTrue(a.views.none { it.full })

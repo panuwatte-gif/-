@@ -65,4 +65,37 @@ class TrackerTest {
         )
         assertEquals(listOf("GF-2", "GF-3"), t.seen(listOf("GF-1", "GF-2", "GF-3"), now))
     }
+
+    @Test
+    fun ordersWithoutAnyPhotoGetABackupAndAWarningOnce() {
+        val t = ReadyTracker()
+        t.seen(listOf("GF-1", "GF-2"), 0)
+        t.shot(listOf("GF-1"), 1_000)
+        assertTrue(t.needBackup(10_000, 30_000).isEmpty())
+        assertEquals(listOf("GF-2"), t.needBackup(31_000, 30_000))
+        t.backup(listOf("GF-2"), 31_000)
+        assertTrue(t.needBackup(40_000, 30_000).isEmpty())
+        // still pending: the app keeps trying for a fully checked photo
+        assertEquals(listOf("GF-2"), t.pending())
+        // a third order that never gets any photo is warned about once
+        t.seen(listOf("GF-3"), 50_000)
+        assertTrue(t.unphotographed(100_000, 120_000).isEmpty())
+        assertEquals(listOf("GF-3"), t.unphotographed(171_000, 120_000))
+        assertTrue(t.unphotographed(300_000, 120_000).isEmpty())
+    }
+
+    @Test
+    fun restartKnowsBackupPhotosFromFullyCheckedOnes() {
+        val t = ReadyTracker()
+        val now = 10 * 3_600_000L
+        t.seed(
+            listOf(
+                Record("a", now - 60_000, RecordKind.READY, listOf(Item("GF-1", ObsType.READY)), uri = "content://1", note = ReadyTracker.BACKUP_NOTE),
+                Record("b", now - 60_000, RecordKind.READY, listOf(Item("GF-2", ObsType.READY)), uri = "content://2"),
+            ),
+            now,
+        )
+        assertEquals(listOf("GF-1"), t.seen(listOf("GF-1", "GF-2"), now))
+        assertTrue(t.needBackup(now + 60_000, 30_000).isEmpty())
+    }
 }
