@@ -22,7 +22,7 @@ object DailyExport {
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
         val manifest = Json.write(linkedMapOf(
-            "schema" to 2, "shopId" to shopId, "date" to day.toString(),
+            "schema" to 3, "shopId" to shopId, "date" to day.toString(),
             "historyFailure" to failureReason,
             "complete" to report.complete, "historyDateVerified" to report.historyDateVerified,
             "sweepReachedEnd" to reachedEnd, "observedTotalOrders" to report.historyOrders,
@@ -30,12 +30,18 @@ object DailyExport {
             "grabDelayed" to report.delayed, "readyEvidenceCount" to report.withEvidence.size,
             "actualDelayed" to report.actualDelayed, "grabPercentProvisional" to report.pct(report.delayed),
             "actualPercentProvisional" to report.pct(report.actualDelayed),
+            // Grab's own totals from the History header and the evidence verdicts (schema 3).
+            "grabCompleted" to report.grabCompleted, "grabCancelled" to report.grabCancelled,
+            "historyMatchesGrab" to report.historyMatchesGrab,
+            "inTime" to report.inTime.size, "late" to report.late.size, "noEvidence" to report.noEvidence.size,
+            "grabPercent" to report.grabPct, "shopPercent" to report.realPct,
             "pendingReadyGF" to report.pendingReadyGfs,
             "missingReadyInstances" to report.missingReadyInstances,
             "missingHistoryInstances" to report.missingHistoryInstances,
             "unknownHistoryInstances" to report.unknownHistoryInstances,
             "cases" to report.cases.map { c -> linkedMapOf(
                 "gf" to c.gf, "finishedAt" to c.doneAt?.toString(), "matchStatus" to c.matchStatus,
+                "verdict" to c.verdict.name,
                 "delayMinutes" to c.delayMin, "readyRecordIds" to c.evidence.map { it.record.id },
                 "delayRecordIds" to c.delayShots.map { it.id }) },
             "records" to records.filter { it.shopId == shopId && RecordStore.dateOf(it.t) == day }

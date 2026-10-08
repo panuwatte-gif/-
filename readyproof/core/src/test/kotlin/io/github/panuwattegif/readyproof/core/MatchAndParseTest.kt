@@ -1,5 +1,6 @@
 package io.github.panuwattegif.readyproof.core
 
+import java.time.LocalDate
 import java.time.LocalTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -9,38 +10,7 @@ import kotlin.test.assertTrue
 
 class MatchAndParseTest {
     private val cfg = Config.DEFAULT
-
-    @Test
-    fun buttonTapMatches() {
-        assertTrue(ClickMatcher.matches(ClickInfo(ownText = "พร้อมจัดส่ง", className = "android.widget.Button"), cfg))
-        // clickable container whose only child is the label
-        assertTrue(ClickMatcher.matches(ClickInfo(eventTexts = listOf(" พร้อมจัดส่ง "), className = "android.widget.FrameLayout"), cfg))
-    }
-
-    @Test
-    fun tabAndCardTapsDoNotMatch() {
-        val tab = ClickInfo(eventTexts = listOf("พร้อมจัดส่ง"), className = "androidx.appcompat.app.ActionBar.Tab")
-        assertFalse(ClickMatcher.matches(tab, cfg))
-        val materialTab = ClickInfo(ownText = "พร้อมจัดส่ง", className = "com.google.android.material.tabs.TabLayout\$TabView")
-        assertFalse(ClickMatcher.matches(materialTab, cfg))
-        val composeTab = ClickInfo(ownText = "พร้อมจัดส่ง", className = "android.view.View", roleDesc = "Tab")
-        assertFalse(ClickMatcher.matches(composeTab, cfg))
-        val tabWithCount = ClickInfo(ownText = "พร้อมจัดส่ง 3", className = "android.widget.TextView")
-        assertFalse(ClickMatcher.matches(tabWithCount, cfg))
-        val card = ClickInfo(
-            eventTexts = listOf("GF-147", "พร้อมจัดส่งใน: 5:53 นาที", "2 รายการ", "พร้อมจัดส่ง"),
-            className = "android.widget.LinearLayout",
-        )
-        assertFalse(ClickMatcher.matches(card, cfg))
-    }
-
-    @Test
-    fun englishReadyButtonMatchesButItsTabDoesNot() {
-        assertTrue(ClickMatcher.matches(ClickInfo(ownText = "Ready", className = "android.widget.Button"), cfg))
-        assertFalse(ClickMatcher.matches(ClickInfo(eventTexts = listOf("Ready", "2"), className = "androidx.appcompat.app.ActionBar.Tab"), cfg))
-        assertFalse(ClickMatcher.matches(ClickInfo(ownText = "Ready", className = "androidx.appcompat.app.ActionBar.Tab"), cfg))
-        assertFalse(ClickMatcher.matches(ClickInfo(ownText = "Ready in: 9:32 min", className = "android.widget.TextView"), cfg))
-    }
+    private val COUNTDOWN = listOf("Ready in", "พร้อมจัดส่งใน")
 
     @Test
     fun englishHistoryWording() {
@@ -50,35 +20,37 @@ class MatchAndParseTest {
         assertEquals("11:47", Parsers.doneAt("Completed at 11:47 AM", cfg.doneAny))
         assertEquals("13:05", Parsers.doneAt("Completed at 1:05 PM", cfg.doneAny))
         assertNull(Parsers.doneAt("Cancelled at 1:34 AM", cfg.doneAny))
-        assertEquals("9:32", Parsers.countdown("Ready in: 9:32 min", cfg.countdownKeywords))
-    }
-
-    @Test
-    fun triggerSyntax() {
-        val c = listOf("mark as ready")
-        assertTrue(ClickMatcher.matchTrigger("Mark as ready", c, ""))
-        assertTrue(ClickMatcher.matchTrigger("mark*", c, ""))
-        assertTrue(ClickMatcher.matchTrigger("*ready", c, ""))
-        assertTrue(ClickMatcher.matchTrigger("*as*", c, ""))
-        assertFalse(ClickMatcher.matchTrigger("ready", c, ""))
-        assertFalse(ClickMatcher.matchTrigger("*", c, ""))
-        assertTrue(ClickMatcher.matchTrigger("id:btn_ready", emptyList(), "com.grab.merchant:id/btn_ready_order"))
-        assertFalse(ClickMatcher.matchTrigger("id:", emptyList(), "anything"))
-    }
-
-    @Test
-    fun classTokens() {
-        assertTrue(ClickMatcher.classHasToken("androidx.appcompat.app.ActionBar.Tab", "tab"))
-        assertTrue(ClickMatcher.classHasToken("android.widget.TabWidget", "tab"))
-        assertFalse(ClickMatcher.classHasToken("com.example.TableButton", "tab"))
-        assertFalse(ClickMatcher.classHasToken("com.google.android.material.tabs", "tab"))
-        assertFalse(ClickMatcher.classHasToken(null, "tab"))
+        assertEquals("9:32", Parsers.countdown("Ready in: 9:32 min", COUNTDOWN))
     }
 
     @Test
     fun clickLabel() {
         assertEquals("พร้อมจัดส่ง", ClickInfo(ownText = "พร้อมจัดส่ง").label())
         assertEquals("GF-1 | ข้าว", ClickInfo(eventTexts = listOf("GF-1", "ข้าว")).label())
+        assertEquals(listOf("Ready"), ClickInfo(eventTexts = listOf(" Ready ")).candidates())
+        assertTrue(ClickInfo(eventTexts = listOf("GF-1", "Ready")).candidates().isEmpty())
+    }
+
+    @Test
+    fun historyDates() {
+        assertEquals(LocalDate.of(2026, 10, 8), HistoryReader.parseDate("Today, 08 Oct 2026"))
+        assertEquals(LocalDate.of(2026, 10, 3), HistoryReader.parseDate("Sat, 03 Oct 2026"))
+        assertEquals(LocalDate.of(2026, 10, 3), HistoryReader.parseDate("ส. 3 ต.ค. 2569"))
+        assertEquals(LocalDate.of(2026, 10, 8), HistoryReader.parseDate("วันนี้, 8 ตุลาคม 2569"))
+        assertEquals(LocalDate.of(2026, 9, 28), HistoryReader.parseDate("Sep 28, 2026"))
+        assertEquals(LocalDate.of(2026, 9, 28), HistoryReader.parseDate("28 September 2026"))
+        assertNull(HistoryReader.parseDate("Closed until Fri, 9:00 AM"))
+        assertNull(HistoryReader.parseDate("฿16,035.00"))
+        assertNull(HistoryReader.parseDate("31 Feb 2026"))
+    }
+
+    @Test
+    fun orderNumbersWithLetterAndStrip() {
+        val g = cfg.gfExtractor()
+        assertEquals(listOf("GF-398F"), g.extract("GF-398F"))
+        assertEquals(listOf("GF-398F"), g.extract("gf-398f"))
+        assertEquals(", Finding a driver...", g.strip("GF-396, Finding a driver..."))
+        assertEquals("", g.strip("GF-396"))
     }
 
     @Test
@@ -108,9 +80,9 @@ class MatchAndParseTest {
 
     @Test
     fun countdowns() {
-        assertEquals("5:53", Parsers.countdown("พร้อมจัดส่งใน: 5:53 นาที", cfg.countdownKeywords))
-        assertEquals("0:00", Parsers.countdown("พร้อมจัดส่งใน 0:00 นาที", cfg.countdownKeywords))
-        assertNull(Parsers.countdown("พร้อมจัดส่ง", cfg.countdownKeywords))
+        assertEquals("5:53", Parsers.countdown("พร้อมจัดส่งใน: 5:53 นาที", COUNTDOWN))
+        assertEquals("0:00", Parsers.countdown("พร้อมจัดส่งใน 0:00 นาที", COUNTDOWN))
+        assertNull(Parsers.countdown("พร้อมจัดส่ง", COUNTDOWN))
     }
 
     @Test

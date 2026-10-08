@@ -2,20 +2,22 @@ package io.github.panuwattegif.readyproof.core
 
 /** Why a record was written. */
 enum class RecordKind(val label: String) {
-    /** The "พร้อมจัดส่ง" button was tapped. */
+    /** Older versions logged taps on the "Ready" button; kept so old logs still open. */
     PRESS("กดพร้อมจัดส่ง"),
-    /** An order was seen in a ready state (waiting for / with driver). */
+    /** Orders shown in the Ready tab (done, waiting for the rider). */
     READY("READY"),
-    /** The history list showed a delayed order. */
+    /** The History list showing a delayed order. */
     DELAY("ล่าช้า"),
     /** Captured by hand (accessibility button or test). */
     MANUAL("แคปเอง"),
-    /** History rows seen without a screenshot (used for the daily totals). */
+    /** History rows read without a screenshot (every finished order of the day). */
     SEEN("เห็นในประวัติ"),
     HISTORY("HISTORY"),
+    /** Grab's own totals at the top of History ("Completed 77, Cancelled 0") for [Record.historyDate]. */
+    STATS("ยอดในประวัติ"),
 }
 
-/** What was observed about one order. */
+/** What was observed about one order. PRESS only appears in logs of older versions. */
 enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE }
 
 data class Item(
@@ -52,6 +54,9 @@ data class Record(
     val shopId: String? = null,
     /** Date read explicitly from History; clock-only rows remain unverified. */
     val historyDate: String? = null,
+    /** STATS: Grab's totals for [historyDate]. */
+    val completed: Int? = null,
+    val cancelled: Int? = null,
 ) {
     val gfs: List<String> get() = items.map { it.gf }.distinct()
 
@@ -85,6 +90,8 @@ object RecordCodec {
             "note" to r.note,
             "shopId" to r.shopId,
             "historyDate" to r.historyDate,
+            "completed" to r.completed,
+            "cancelled" to r.cancelled,
         )
     )
 
@@ -117,6 +124,8 @@ object RecordCodec {
                 note = m.str("note"),
                 shopId = m.str("shopId"),
                 historyDate = m.str("historyDate"),
+                completed = m.int("completed"),
+                cancelled = m.int("cancelled"),
             )
         } catch (e: Exception) {
             null

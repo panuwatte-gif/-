@@ -3,8 +3,12 @@ package io.github.panuwattegif.readyproof.core
 import java.time.LocalDate
 
 object HistoryDates {
-    /** Deliberately narrow: unsupported localized headers remain UNKNOWN, never guessed. */
+    /**
+     * Deliberately narrow: an explicit day + month + year ("Today, 08 Oct 2026", "ส. 3 ต.ค. 2569"),
+     * a bare Today / Yesterday, or an ISO date. Anything else remains UNKNOWN, never guessed.
+     */
     fun parse(text: String, today: LocalDate): LocalDate? {
+        HistoryReader.parseDate(text)?.let { return it }
         return when (TextNorm.key(text)) {
             "today", "วันนี้" -> today
             "yesterday", "เมื่อวาน", "เมื่อวานนี้" -> today.minusDays(1)
