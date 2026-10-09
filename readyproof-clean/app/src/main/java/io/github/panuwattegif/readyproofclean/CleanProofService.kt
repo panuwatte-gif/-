@@ -1,6 +1,8 @@
 package io.github.panuwattegif.readyproofclean
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.HandlerThread
@@ -35,10 +37,17 @@ class CleanProofService : AccessibilityService() {
     private val scanPending = AtomicBoolean(false)
     @Volatile private var captureBusy = false
     @Volatile private var lastScrollAt = 0L
+    @Volatile private var motionBusy = false
+    private var motionCycle = 0L
+    private var readyMotionCycle = 0L
+    private var historyMotionCycle = 0L
 
     private var readyDay = LocalDate.now()
     private val readySeen = LinkedHashSet<String>()
     private val readyProof = LinkedHashSet<String>()
+    private val readyStays = ReadyStays()
+    private val readySweepSeen = LinkedHashSet<String>()
+    private var readySweepFromTop = false
     private var readyForward = true
     private var readyLastSignature = ""
     private var readySameSignature = 0
@@ -94,6 +103,9 @@ class CleanProofService : AccessibilityService() {
         worker.post {
             readySeen.clear()
             readyProof.clear()
+            readyStays.clear()
+            readySweepSeen.clear()
+            readySweepFromTop = false
             loadReadyState()
             statusText = "เปลี่ยนร้านแล้ว · เฝ้า Ready"
             scheduleScan()
@@ -103,6 +115,12 @@ class CleanProofService : AccessibilityService() {
     fun startHistorySweep(day: LocalDate) {
         if (!::worker.isInitialized) return
         worker.post {
+            if (captureBusy || motionBusy) {
+                statusText = "รอภาพหรือการเลื่อนครั้งปัจจุบันก่อนเริ่มกวาด"
+                worker.postDelayed({ startHistorySweep(day) }, 600L)
+                return@post
+            }
+            historyMotionCycle = motionCycle
             historyTarget = day
             historyPass = 1
             historyPhase = HistoryPhase.TO_TOP
@@ -151,7 +169,7 @@ class CleanProofService : AccessibilityService() {
     }
 
     private fun scan() {
-        if (captureBusy) return
+        if (captureBusy || motionBusy) return
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != PACKAGE) return
         val roots = listOf(NodeSnapshot.capture(root, MAX_NODES))
@@ -160,7 +178,8 @@ class CleanProofService : AccessibilityService() {
             return
         }
         val analysis = ScreenAnalyzer.analyze(roots, cfg)
-        if (analysis.readyTab == true) scanReady(analysis)
+        if (analysis.readyTab == true || (analysis.readyTab == null &&
+            analysis.items.any { it.type == ObsType.READY })) scanReady(analysis)
     }
 
     private fun scanReady(analysis: ScreenAnalysis) {
@@ -169,12 +188,17 @@ class CleanProofService : AccessibilityService() {
             readyDay = today
             readySeen.clear()
             readyProof.clear()
+            readyStays.clear()
+            readySweepSeen.clear()
+            readySweepFromTop = false
             readyLastSignature = ""
             readySameSignature = 0
             loadReadyState()
         }
         val shop = CleanStore.selectedShop(this)
         val visibleReady = analysis.items.filter { it.type == ObsType.READY }.map { it.gf }.distinct()
+        readyStays.seen(visibleReady)
+        if (readyForward && readySweepFromTop) readySweepSeen.addAll(visibleReady)
         val newlySeen = visibleReady.filter { readySeen.add(it) }
         if (newlySeen.isNotEmpty()) {
             CleanStore.append(this, CleanEvent(
@@ -183,20 +207,27 @@ class CleanProofService : AccessibilityService() {
             ))
         }
 
-        val signature = analysis.cards.filter { it.inList }.joinToString("|") {
-            "${it.gf}@${it.node.top}:${it.node.bottom}:${it.texts.joinToString("~")}"
+        val signature = ListMotion.key(analysis)
+        if (readyMotionCycle != motionCycle) {
+            if (signature.isNotEmpty() && signature == readyLastSignature) readySameSignature++ else readySameSignature = 0
+            readyMotionCycle = motionCycle
         }
-        if (signature.isNotEmpty() && signature == readyLastSignature) readySameSignature++ else readySameSignature = 0
         readyLastSignature = signature
         if (readySameSignature >= 2) {
+            if (readyForward && readySweepFromTop) readyStays.complete(readySweepSeen, System.currentTimeMillis())
+            if (!readyForward) {
+                readySweepFromTop = true
+                readySweepSeen.clear()
+                readySweepSeen.addAll(visibleReady)
+            }
             readyForward = !readyForward
             readySameSignature = 0
             readyLastSignature = ""
         }
 
-        val pending = visibleReady.filter { it !in readyProof }
+        val pending = visibleReady.filter { readyStays.needsProof(it) }
         statusText = "Ready เห็น ${readySeen.size} / มีภาพ ${readyProof.size} / Pending ${(readySeen - readyProof).size}"
-        if (pending.isNotEmpty()) {
+        if (pending.isNotEmpty() && readyFingerprints(analysis, pending).isNotEmpty()) {
             captureReady(analysis, pending)
             return
         }
@@ -228,7 +259,8 @@ class CleanProofService : AccessibilityService() {
                         val root = rootInActiveWindow ?: return@runOnMainForResult emptyList<String>()
                         if (root.packageName?.toString() != PACKAGE) return@runOnMainForResult emptyList<String>()
                         val after = ScreenAnalyzer.analyze(listOf(NodeSnapshot.capture(root, MAX_NODES)), cfg)
-                        if (after.readyTab != true) return@runOnMainForResult emptyList<String>()
+                        if (after.readyTab != true && !(after.readyTab == null &&
+                            after.items.any { it.type == ObsType.READY })) return@runOnMainForResult emptyList<String>()
                         val afterFp = readyFingerprints(after, requested)
                         beforeFp.keys.filter { afterFp[it] == beforeFp[it] }
                     } ?: emptyList()
@@ -242,6 +274,7 @@ class CleanProofService : AccessibilityService() {
                         gfs = stable, uri = uri.toString(),
                     ))
                     readyProof.addAll(stable)
+                    readyStays.proved(stable)
                 } finally {
                     bitmap?.recycle()
                     captureBusy = false
@@ -259,7 +292,7 @@ class CleanProofService : AccessibilityService() {
 
     private fun readyFingerprints(analysis: ScreenAnalysis, gfs: List<String>): Map<String, String> {
         val wanted = gfs.toSet()
-        return analysis.cards.filter { it.inList && it.gf in wanted }.groupBy { it.gf }.mapNotNull { (gf, cards) ->
+        return analysis.cards.filter { it.inList && it.gf in wanted && ListMotion.proofVisible(it, analysis) }.groupBy { it.gf }.mapNotNull { (gf, cards) ->
             val c = cards.singleOrNull() ?: return@mapNotNull null
             gf to listOf(c.node.left, c.node.top, c.node.right, c.node.bottom, c.texts.joinToString("|")).joinToString(":")
         }.toMap()
@@ -280,7 +313,12 @@ class CleanProofService : AccessibilityService() {
         analysis = analysis.copy(items = dated.first)
         historyHeader = dated.second
 
-        if (target == LocalDate.now()) {
+        if (historyHeader != null && historyHeader != target) {
+            finishHistory(false, "วันที่ไม่ตรง: เลือก $target แต่ Grab แสดง $historyHeader — เปลี่ยนวันที่ใน Grab แล้วกดกวาดใหม่")
+            return
+        }
+
+        if (historyHeader == target) {
             HistoryTotalsParser.parseRoots(roots, cfg)?.let { totals ->
                 if (headerTotal != totals.total || headerCompleted != totals.completed || headerCancelled != totals.cancelled) {
                     headerTotal = totals.total
@@ -295,14 +333,24 @@ class CleanProofService : AccessibilityService() {
             }
         }
 
-        val signature = analysis.cards.filter { it.inList }.joinToString("|") {
-            "${it.gf}@${it.node.top}:${it.node.bottom}:${it.texts.joinToString("~")}"
+        if (historyHeader == target && headerTotal == 0) {
+            finishHistory(true, "หัว History ยืนยัน 0 ออเดอร์ของวันที่ $target")
+            return
         }
-        if (signature.isNotEmpty() && signature == historyLastSignature) historySameSignature++ else historySameSignature = 0
+
+        val signature = ListMotion.key(analysis)
+        if (historyMotionCycle != motionCycle) {
+            if (signature.isNotEmpty() && signature == historyLastSignature) historySameSignature++ else historySameSignature = 0
+            historyMotionCycle = motionCycle
+        }
         historyLastSignature = signature
 
         if (historyPhase == HistoryPhase.TO_TOP) {
             if (historySameSignature >= 2) {
+                if (historyHeader != target) {
+                    finishHistory(false, "ยังอ่านวันที่หัว History ไม่ได้ — ไม่มีการเดาวันหรือบันทึกลงวันนี้")
+                    return
+                }
                 historyPhase = HistoryPhase.DOWN
                 historySameSignature = 0
                 historyLastSignature = ""
@@ -326,7 +374,8 @@ class CleanProofService : AccessibilityService() {
                 kind = "HISTORY_SEEN", t = System.currentTimeMillis(), date = target.toString(),
                 shop = CleanStore.selectedShop(this), instances = newOnes,
             ))
-            val needProof = instances.filter { it.key !in historyProof }
+            val visibleProofs = historyFingerprints(analysis, instances)
+            val needProof = instances.filter { it.key !in historyProof && it.key in visibleProofs }
             if (needProof.isNotEmpty()) {
                 captureHistory(analysis, needProof)
                 return
@@ -361,7 +410,11 @@ class CleanProofService : AccessibilityService() {
 
         main.post {
             val moved = scrollOrderList(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-            if (!moved) historySameSignature++ else lastScrollAt = SystemClock.uptimeMillis()
+            if (!moved) {
+                finishHistory(false, "เลื่อนไม่สำเร็จ: ไม่มีพื้นที่รายการที่ยืนยันได้ ไม่ถือว่าจบวัน")
+                return@post
+            }
+            lastScrollAt = SystemClock.uptimeMillis()
             worker.postDelayed({ scheduleScan() }, SETTLE_MS)
         }
         statusText = "History $target: อ่าน ${historySeen.size}${headerTotal?.let { "/$it" } ?: ""} / มีภาพ ${historyProof.size}"
@@ -447,7 +500,7 @@ class CleanProofService : AccessibilityService() {
     private fun historyFingerprints(analysis: ScreenAnalysis, instances: List<HistoryInstance>): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         instances.forEach { i ->
-            val cards = analysis.cards.filter { it.inList && it.gf == i.gf }
+            val cards = analysis.cards.filter { it.inList && it.gf == i.gf && ListMotion.proofVisible(it, analysis) }
             val card = cards.singleOrNull() ?: return@forEach
             out[i.key] = listOf(card.node.left, card.node.top, card.node.right, card.node.bottom, card.texts.joinToString("|")).joinToString(":")
         }
@@ -479,10 +532,7 @@ class CleanProofService : AccessibilityService() {
         statusText = if (complete) "History COMPLETE — $note" else "History INCOMPLETE — $note"
         historyPhase = HistoryPhase.IDLE
         historyTarget = null
-        main.post {
-            clickTab(cfg.readyTabLabels)
-            worker.postDelayed({ scheduleScan() }, 1000L)
-        }
+        // Leave History open. Only the explicit "กลับไปเฝ้า Ready" button may leave it.
     }
 
     private fun loadReadyState() {
@@ -490,6 +540,7 @@ class CleanProofService : AccessibilityService() {
         val events = CleanStore.load(this, shop, readyDay)
         readySeen.addAll(events.filter { it.kind == "READY_SEEN" }.flatMap { it.gfs })
         readyProof.addAll(events.filter { it.kind == "READY_PROOF" && it.uri != null }.flatMap { it.gfs })
+        readyStays.proved(readyProof)
     }
 
     private fun loadHistoryProofState(day: LocalDate) {
@@ -506,12 +557,7 @@ class CleanProofService : AccessibilityService() {
         }
     }
 
-    private fun historyTabSelected(roots: List<UiNode>): Boolean = roots.any { root ->
-        root.walk().any { n ->
-            (n.selected || n.parent?.selected == true || n.parent?.parent?.selected == true) &&
-                n.ownStrings().any { s -> listOf("History", "ประวัติ").any { TabDetector.isLabel(s, it) } }
-        }
-    }
+    private fun historyTabSelected(roots: List<UiNode>): Boolean = HistoryScreen.isOpen(roots, cfg)
 
     private fun clickTab(labels: List<String>): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -533,32 +579,72 @@ class CleanProofService : AccessibilityService() {
         return false
     }
 
+    /** One operation at a time. Accepted actions do not prove that content actually moved. */
     private fun scrollOrderList(action: Int): Boolean {
+        if (motionBusy || captureBusy) return false
         val root = rootInActiveWindow ?: return false
-        val candidates = ArrayList<AccessibilityNodeInfo>()
-        val q = ArrayDeque<AccessibilityNodeInfo>()
-        q.add(root)
-        while (q.isNotEmpty()) {
-            val n = q.removeFirst()
-            if (n.isScrollable) candidates += n
-            for (i in 0 until n.childCount) runCatching { n.getChild(i) }.getOrNull()?.let(q::addLast)
+        if (root.packageName?.toString() != PACKAGE) return false
+        val before = ScreenAnalyzer.analyze(listOf(NodeSnapshot.capture(root, MAX_NODES)), cfg, true)
+        val vp = ListMotion.viewport(before) ?: return false
+        val key = ListMotion.key(before)
+        if (key.isEmpty()) return false
+        motionBusy = true
+        val startPhase = historyPhase
+        fun currentKey(): String {
+            val active = rootInActiveWindow ?: return ""
+            if (active.packageName?.toString() != PACKAGE) return ""
+            return ListMotion.key(ScreenAnalyzer.analyze(listOf(NodeSnapshot.capture(active, MAX_NODES)), cfg, true))
         }
-        val gfx = cfg.gfExtractor()
-        val ordered = candidates.sortedByDescending { node ->
-            var count = 0
-            val qq = ArrayDeque<AccessibilityNodeInfo>()
-            qq.add(node)
-            var guard = 0
-            while (qq.isNotEmpty() && guard++ < 500) {
-                val x = qq.removeFirst()
-                count += gfx.extract(x.text?.toString()).size
-                count += gfx.extract(x.contentDescription?.toString()).size
-                for (i in 0 until x.childCount) runCatching { x.getChild(i) }.getOrNull()?.let(qq::addLast)
+        fun finished() {
+            worker.post {
+                motionCycle++
+                lastScrollAt = SystemClock.uptimeMillis()
+                motionBusy = false
+                scheduleScan()
             }
-            count
         }
-        for (n in ordered) if (runCatching { n.performAction(action) }.getOrDefault(false)) return true
-        return false
+        fun drag() {
+            if (historyPhase != startPhase) { finished(); return }
+            val active = rootInActiveWindow
+            if (active?.packageName?.toString() != PACKAGE) { finished(); return }
+            val x = vp.left + (vp.right - vp.left) * 0.30f
+            val low = vp.bottom - vp.height * 0.12f
+            val high = vp.top + vp.height * 0.12f
+            val forward = action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            val from = if (forward) low else high
+            val to = if (forward) from - vp.height * 0.45f else from + vp.height * 0.45f
+            val path = Path().apply { moveTo(x, from); lineTo(x, to) }
+            val accepted = runCatching {
+                dispatchGesture(GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 500L)).build(),
+                    object : GestureResultCallback() {
+                        override fun onCompleted(gestureDescription: GestureDescription) {
+                            main.postDelayed({ finished() }, SETTLE_MS)
+                        }
+                        override fun onCancelled(gestureDescription: GestureDescription) {
+                            statusText = "การปัดถูกยกเลิก — ไม่ถือว่ากวาดครบ"
+                            finished()
+                        }
+                    }, main)
+            }.getOrDefault(false)
+            if (!accepted) { statusText = "Android ไม่รับการปัด — เก็บหลักฐานที่มีแล้วไว้"; finished() }
+        }
+        val candidates = ArrayList<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < MAX_NODES) {
+            val n = queue.removeFirst()
+            val bounds = android.graphics.Rect().also { n.getBoundsInScreen(it) }
+            // Never send scrolling actions to the tab bar or outer window.
+            if (n.isScrollable && bounds.top == vp.top && bounds.bottom == vp.bottom) candidates += n
+            for (i in 0 until n.childCount) runCatching { n.getChild(i) }.getOrNull()?.let(queue::addLast)
+        }
+        val accepted = candidates.any { runCatching { it.performAction(action) }.getOrDefault(false) }
+        if (accepted) main.postDelayed({
+            if (ListMotion.changed(key, currentKey())) finished() else drag()
+        }, SETTLE_MS) else drag()
+        return true
     }
 
     private fun <T> runOnMainForResult(block: () -> T): T? {

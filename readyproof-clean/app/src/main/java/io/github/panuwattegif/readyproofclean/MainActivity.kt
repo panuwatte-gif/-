@@ -142,7 +142,43 @@ class MainActivity : Activity() {
             ShareUtil.textFile(this, uri, "สรุป ReadyProof Clean")
         }
 
+        section("เคส Delayed: จับคู่ได้ / ยังไม่มี Ready")
+        s.cases.forEach { c ->
+            text(c.instance.gf + " · เสร็จ " + (c.instance.doneAt ?: "UNKNOWN") +
+                " · ล่าช้า " + (c.instance.delayMin?.toString() ?: "UNKNOWN") + " นาที", 15f, true)
+            text(if (c.readyUri != null) "มีภาพ Ready + Delay" else "ยังไม่มีภาพ Ready · เก็บภาพ Delay ได้", 13f, false)
+            val pair = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            c.readyUri?.let { pair.addView(proofImage(it, "Ready"), LinearLayout.LayoutParams(0, dp(230), 1f)) }
+            c.historyUri?.let { pair.addView(proofImage(it, "History / Delay"), LinearLayout.LayoutParams(0, dp(230), 1f)) }
+            body.addView(pair)
+        }
+
         text("รูปเก็บที่ Pictures/ReadyProofClean และยังแชร์เองได้ แม้การกวาดไม่ครบ", 12f, false)
+    }
+
+    private fun proofImage(value: String, label: String): android.widget.ImageView {
+        val uri = android.net.Uri.parse(value)
+        val image = android.widget.ImageView(this).apply {
+            contentDescription = label
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Color.WHITE)
+            setOnClickListener {
+                runCatching { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                    .setDataAndType(uri, "image/jpeg").addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+                    .onFailure { textToast("เปิดภาพไม่ได้ แต่ยังแชร์หลักฐานที่มีได้") }
+            }
+        }
+        runCatching {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 1 }
+            while (bounds.outWidth / opts.inSampleSize > 480 || bounds.outHeight / opts.inSampleSize > 800)
+                opts.inSampleSize *= 2
+            contentResolver.openInputStream(uri)?.use {
+                image.setImageBitmap(android.graphics.BitmapFactory.decodeStream(it, null, opts))
+            }
+        }
+        return image
     }
 
     private fun section(title: String) {
