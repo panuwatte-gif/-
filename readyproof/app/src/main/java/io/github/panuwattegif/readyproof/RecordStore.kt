@@ -52,16 +52,6 @@ object RecordStore {
         return out
     }
 
-    /** History may be captured days later; its business date does not change the log filename. */
-    fun loadReport(ctx: Context, day: LocalDate): List<Record> = synchronized(lock) {
-        val from = day.minusDays(1)
-        val to = maxOf(day.plusDays(1), LocalDate.now())
-        dir(ctx).listFiles().orEmpty().mapNotNull { f ->
-            val date = runCatching { LocalDate.parse(f.name.removeSuffix(".jsonl")) }.getOrNull()
-            if (date == null || date.isBefore(from) || date.isAfter(to)) null else date
-        }.sorted().flatMap { load(ctx, it) }
-    }
-
     fun deleteBefore(ctx: Context, date: LocalDate): Int = synchronized(lock) {
         var n = 0
         dir(ctx).listFiles()?.forEach { f ->

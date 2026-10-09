@@ -5,8 +5,18 @@ import java.util.IdentityHashMap
 /**
  * One order card on screen: its order number and every string inside it.
  * [inList] is false for things outside the order list, e.g. a notification banner naming an order.
+ * [gfNode] is the element showing the order number (it must be fully on screen in a shot);
+ * [list] is the list the card sits in (its visible area) and [scroller] the element that scrolls it.
  */
-class Card(val node: UiNode, val gf: String, val texts: List<String>, val inList: Boolean = false)
+class Card(
+    val node: UiNode,
+    val gf: String,
+    val texts: List<String>,
+    val inList: Boolean = false,
+    val gfNode: UiNode = node,
+    val list: UiNode? = null,
+    val scroller: UiNode? = null,
+)
 
 /**
  * Groups on-screen texts into order cards without knowing the target app's layout:
@@ -19,7 +29,7 @@ class CardFinder(private val gfx: GfExtractor, root: UiNode) {
     private val nodes: List<UiNode> = root.walk().toList()
 
     init {
-        for (n in nodes) own[n] = n.ownStrings().flatMap { gfx.extract(it) }.distinct()
+        for (n in nodes) own[n] = if (n.shown) n.ownStrings().flatMap { gfx.extract(it) }.distinct() else emptyList()
         // children appear after their parent in pre-order, so walking backwards is post-order
         for (n in nodes.asReversed()) {
             val set = LinkedHashSet<String>(own[n]!!)
@@ -55,9 +65,42 @@ class CardFinder(private val gfx: GfExtractor, root: UiNode) {
             if (own[n]!!.size != 1) continue
             val cardNode = cardFor(n) ?: continue
             if (seen.put(cardNode, true) != null) continue
-            out += Card(cardNode, gfsIn(cardNode).first(), textsOf(cardNode, n), inList(cardNode))
+            val list = listAround(cardNode)
+            out += Card(
+                node = cardNode,
+                gf = gfsIn(cardNode).first(),
+                texts = textsOf(cardNode, n),
+                inList = list != null,
+                gfNode = n,
+                list = list,
+                scroller = scrollerOf(cardNode) ?: list,
+            )
         }
         return out
+    }
+
+    /** Nearest list container around [node], or null. */
+    fun listAround(node: UiNode): UiNode? {
+        var p = node.parent
+        while (p != null) {
+            if (isListContainer(p)) return p
+            p = p.parent
+        }
+        return null
+    }
+
+    /**
+     * Nearest ancestor that can actually scroll up/down (a list inside a scroll view may not scroll
+     * itself). Stops at a sideways pager: scrolling that would switch Grab's tab, not the list.
+     */
+    fun scrollerOf(node: UiNode): UiNode? {
+        var p = node.parent
+        while (p != null) {
+            if (p.horizontal) return null
+            if (p.scrollable || p.canScrollForward || p.canScrollBackward) return p
+            p = p.parent
+        }
+        return null
     }
 
     /** True when [node] sits inside a list container (the order list, not a banner or header). */

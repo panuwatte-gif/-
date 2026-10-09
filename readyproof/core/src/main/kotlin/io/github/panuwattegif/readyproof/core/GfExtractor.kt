@@ -11,8 +11,11 @@ class GfExtractor(pattern: String, private val prefix: String) {
         val out = LinkedHashSet<String>()
         for (m in regex.findAll(t)) {
             val number = m.groupValues.getOrNull(1).orEmpty()
-            out += if (number.isNotEmpty()) prefix + number else m.value.replace(" ", "").uppercase()
+            out += if (number.isNotEmpty()) prefix + number.uppercase() else m.value.replace(" ", "").uppercase()
         }
         return out.toList()
     }
+
+    /** [text] with every order number taken out ("GF-396, Finding a driver" -> ", Finding a driver"). */
+    fun strip(text: String?): String = regex.replace(TextNorm.clean(text), "").trim()
 }

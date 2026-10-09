@@ -6,5 +6,6 @@ class ProofApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         DriveSync.recover(this)
+        ServiceWatchWorker.schedule(this)
     }
 }

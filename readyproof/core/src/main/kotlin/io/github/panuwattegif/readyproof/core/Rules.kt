@@ -59,16 +59,6 @@ object Parsers {
     fun doneAt(text: String, doneKeywords: List<String>): String? =
         after(text, doneKeywords)?.let { clock(it) }?.let { hhmm(it) }
 
-    /** A terminal label and its clock may be separate adjacent accessibility text nodes. */
-    fun doneAtLines(texts: List<String>, keywords: List<String>): String? {
-        texts.firstNotNullOfOrNull { doneAt(it, keywords) }?.let { return it }
-        val index = TextNorm.indexOfAny(texts, keywords)
-        if (index < 0) return null
-        val next = texts.getOrNull(index + 1)?.trim() ?: return null
-        if (!Regex("\\d{1,2}[:.]\\d{2}\\s*(?:[aApP]\\.?[mM]\\.?|น\\.?)?").matches(next)) return null
-        return clock(next)?.let(::hhmm)
-    }
-
     /** Minutes from "ล่าช้าไป 4 นาที" / "ล่าช้าไป 1 ชม. 5 นาที"; null when no number is shown. */
     fun delayMinutes(text: String, delayKeywords: List<String>): Int? {
         val rest = after(text, delayKeywords) ?: return null
@@ -101,7 +91,8 @@ class StatusRules(private val cfg: Config) {
 
         val doneIdx = TextNorm.indexOfAny(texts, cfg.doneAny)
         if (doneIdx >= 0) {
-            val doneAt = Parsers.doneAtLines(texts, cfg.doneAny)
+            val doneAt = Parsers.doneAt(texts[doneIdx], cfg.doneAny)
+                ?: texts.firstNotNullOfOrNull { Parsers.doneAt(it, cfg.doneAny) }
             val delayIdx = TextNorm.indexOfAny(texts, cfg.delayAny)
             val delayMin = if (delayIdx >= 0) Parsers.delayMinutes(texts[delayIdx], cfg.delayAny) else null
             // Grab's own delay flag only counts on finished orders (history rows).
@@ -112,7 +103,8 @@ class StatusRules(private val cfg: Config) {
         } else {
             val cancelIdx = TextNorm.indexOfAny(texts, cfg.cancelAny)
             if (cancelIdx >= 0) {
-                val cancelledAt = Parsers.doneAtLines(texts, cfg.cancelAny)
+                val cancelledAt = Parsers.doneAt(texts[cancelIdx], cfg.cancelAny)
+                    ?: texts.firstNotNullOfOrNull { Parsers.doneAt(it, cfg.cancelAny) }
                 out += Item(card.gf, ObsType.CANCELLED, status = texts[cancelIdx], doneAt = cancelledAt, card = texts)
                 val delayIdx = TextNorm.indexOfAny(texts, cfg.delayAny)
                 if (delayIdx >= 0) out += Item(card.gf, ObsType.DELAY, status = texts[delayIdx],
@@ -128,6 +120,4 @@ class StatusRules(private val cfg: Config) {
         return out
     }
 
-    fun countdownOf(texts: List<String>): String? =
-        texts.firstNotNullOfOrNull { Parsers.countdown(it, cfg.countdownKeywords) }
 }

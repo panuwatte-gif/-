@@ -8,6 +8,7 @@ import io.github.panuwattegif.readyproof.core.Naming
 import io.github.panuwattegif.readyproof.core.TreeDump
 import io.github.panuwattegif.readyproof.core.UiNode
 import java.io.File
+import java.time.LocalDate
 import java.time.LocalDateTime
 
 /**
@@ -35,19 +36,30 @@ object Diagnostics {
         }
     }
 
+    /** What the unattended phone did (sweeps, shots, end of day), for remote troubleshooting. */
+    @Synchronized
+    fun note(ctx: Context, text: String) {
+        try {
+            val f = File(dir(ctx), "activity.log")
+            f.appendText("${LocalDateTime.now()} $text\n")
+            if (f.length() > MAX_ERROR_BYTES) f.writeText(f.readLines().takeLast(400).joinToString("\n", postfix = "\n"))
+        } catch (ignored: Exception) {
+        }
+    }
+
     /**
      * Saves a dump when the screen *layout* changed (digits ignored, so ticking timers do not
-     * count) or when [force] is set (taps and hand captures).
+     * count) or when [force] is set (reference screens, stuck lists, hand captures). True = saved.
      */
     @Synchronized
-    fun dump(ctx: Context, label: String, roots: List<UiNode>, force: Boolean) {
+    fun dump(ctx: Context, label: String, roots: List<UiNode>, force: Boolean): Boolean {
         try {
             val now = System.currentTimeMillis()
             // Failure snapshots are automatic, but still bounded when a broken page repeats.
-            if (now - lastDumpAt < MIN_DUMP_GAP_MS) return
+            if (now - lastDumpAt < MIN_DUMP_GAP_MS) return false
             val text = roots.joinToString("\n") { TreeDump.dump(it) }
             val signature = DIGITS.replace(text, "#").hashCode()
-            if (!force && signature == lastSignature) return
+            if (!force && signature == lastSignature) return false
             lastSignature = signature
             lastDumpAt = now
             File(dir(ctx), "dump-$now.txt").writeText("# $label ${LocalDateTime.now()}\n$text")
@@ -55,14 +67,40 @@ object Diagnostics {
                 ?.sortedByDescending { it.name }
                 ?.drop(MAX_DUMPS)
                 ?.forEach { it.delete() }
+            return true
         } catch (e: Exception) {
             error(ctx, "dump", e)
+            return false
         }
     }
 
-    /** Writes everything useful for remote troubleshooting to Download/ReadyProof and returns it. */
-    fun export(ctx: Context): Uri {
+    /**
+     * The day's troubleshooting file, sent with the night's Drive batch so problems can be found
+     * without anyone at the shop exporting anything: settings, what the phone did that day, errors
+     * and the day's screen dumps (screen structure only; no photos).
+     */
+    fun daily(ctx: Context, day: LocalDate): String = try {
         val sb = StringBuilder()
+        header(ctx, sb)
+        val prefix = day.toString()
+        val activity = File(dir(ctx), "activity.log")
+        sb.append("\n## Activity ").append(prefix).append('\n')
+        if (activity.exists()) activity.readLines().filter { it.startsWith(prefix) }.takeLast(1500).forEach { sb.append(it).append('\n') }
+        val errors = File(dir(ctx), "errors.log")
+        sb.append("\n## Errors ").append(prefix).append('\n')
+        if (errors.exists()) errors.readLines().filter { it.startsWith(prefix) }.takeLast(200).forEach { sb.append(it).append('\n') }
+        val zone = java.time.ZoneId.systemDefault()
+        dir(ctx).listFiles { f -> f.name.startsWith("dump-") }?.sortedBy { it.name }?.forEach { f ->
+            val at = f.name.removePrefix("dump-").removeSuffix(".txt").toLongOrNull() ?: return@forEach
+            if (java.time.Instant.ofEpochMilli(at).atZone(zone).toLocalDate() != day) return@forEach
+            sb.append("\n## ").append(f.name).append('\n').append(f.readText())
+        }
+        sb.toString()
+    } catch (e: Exception) {
+        "diagnostics failed: ${e.javaClass.simpleName}: ${e.message}"
+    }
+
+    private fun header(ctx: Context, sb: StringBuilder) {
         val pkg = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
         sb.append("ReadyProof ").append(pkg.versionName).append(" (").append(pkg.longVersionCode).append(")\n")
         sb.append("Android ").append(Build.VERSION.RELEASE).append(" SDK ").append(Build.VERSION.SDK_INT)
@@ -72,6 +110,13 @@ object Diagnostics {
             .append(" running=").append(ProofService.instance != null)
             .append(" lastGrabEvent=").append(ProofService.lastTargetEventAt).append('\n')
         sb.append("\n## Config\n").append(ConfigCodec.encode(ConfigStore.get(ctx))).append('\n')
+        ProofService.instance?.engine?.let { e -> sb.append("\n## Status\n").append(e.statusLines().joinToString("\n")).append('\n') }
+    }
+
+    /** Writes everything useful for remote troubleshooting to Download/ReadyProof and returns it. */
+    fun export(ctx: Context): Uri {
+        val sb = StringBuilder()
+        header(ctx, sb)
         val prefs = ConfigStore.prefs(ctx)
         sb.append("\n## Monitor and closing\n")
         for (key in listOf("monitor_status", "closing_history_status", "auto_history_last_result", "drive_status"))
@@ -88,11 +133,8 @@ object Diagnostics {
                 .append(" | state=").append(e.state).append(" | error=").append(e.error)
                 .append(" | batchMembers=").append(e.batchMembers?.size).append('\n')
         }
-        sb.append("\n## Recent taps\n")
-        ClickLog.list(ctx).forEach { e ->
-            sb.append(e.t).append(" | ").append(e.label).append(" | ").append(e.className).append(" | ")
-                .append(e.viewId).append(" | matched=").append(e.matched).append('\n')
-        }
+        val activity = File(dir(ctx), "activity.log")
+        sb.append("\n## Activity\n").append(if (activity.exists()) activity.readLines().takeLast(300).joinToString("\n") else "-").append('\n')
         val errors = File(dir(ctx), "errors.log")
         sb.append("\n## Errors\n").append(if (errors.exists()) errors.readLines().takeLast(100).joinToString("\n") else "-").append('\n')
         dir(ctx).listFiles { f -> f.name.startsWith("dump-") }?.sortedByDescending { it.name }?.forEach {
