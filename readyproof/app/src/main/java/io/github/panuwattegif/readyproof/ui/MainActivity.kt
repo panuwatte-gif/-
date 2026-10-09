@@ -207,6 +207,20 @@ class MainActivity : Activity() {
                 ServiceStatus.openApp(this, target)
             }
         }
+        Ui.button(tools, "⏸ ปิด ReadyProof ชั่วคราว (ใช้แอปธนาคาร / สแกนจ่าย)", filled = false) {
+            val service = ProofService.instance
+            if (service == null) {
+                Ui.alert(this, "ReadyProof ปิดอยู่แล้ว", "ใช้แอปธนาคารได้เลย")
+            } else {
+                Ui.confirm(
+                    this, "ปิด ReadyProof ชั่วคราว?",
+                    "ระหว่างปิดจะไม่มีการแคปหลักฐาน ใช้เสร็จแล้วเปิดกลับด้วยการกดปุ่มเพิ่มเสียงกับลดเสียงค้างไว้ 3 วินาที " +
+                        "(ถ้าตั้งทางลัดไว้) หรือกด \"เปิดหน้าการช่วยเหลือพิเศษ\" ในหน้านี้\n\n" +
+                        "ออเดอร์ที่ยังค้างในแท็บ Ready ตอนเปิดกลับจะถูกแคปทันที",
+                    "ปิดเลย",
+                ) { service.switchOff() }
+            }
+        }
         Ui.button(tools, "⚙️ ตั้งค่า", filled = false) { startActivity(Intent(this, SettingsActivity::class.java)) }
         Ui.button(tools, "📖 คู่มือการใช้งาน", filled = false) { startActivity(Intent(this, GuideActivity::class.java)) }
 

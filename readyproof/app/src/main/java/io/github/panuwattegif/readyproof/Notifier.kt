@@ -24,6 +24,8 @@ object Notifier {
     const val ID_REPORT = 2
     const val ID_PROBLEM = 3
     const val ID_WATCH = 4
+    /** "Switched off for the night" (banking apps work again). */
+    const val ID_OFF = 5
 
     fun canPost(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 33 ||
@@ -43,9 +45,18 @@ object Notifier {
         return nm
     }
 
-    /** Silent progress messages; [ID_PROBLEM] / [ID_WATCH] go to the audible "problem" channel. */
-    fun status(ctx: Context, title: String, text: String, id: Int = ID_STATUS) =
-        post(ctx, id, if (id == ID_PROBLEM || id == ID_WATCH) CH_PROBLEM else CH_STATUS, title, text, MainActivity::class.java)
+    /**
+     * Silent progress messages; [ID_PROBLEM] / [ID_WATCH] go to the audible "problem" channel and
+     * [ID_OFF] to the report channel. [alertAgain]: sound again even if the same message is shown.
+     */
+    fun status(ctx: Context, title: String, text: String, id: Int = ID_STATUS, alertAgain: Boolean = false) {
+        val channel = when (id) {
+            ID_PROBLEM, ID_WATCH -> CH_PROBLEM
+            ID_OFF -> CH_REPORT
+            else -> CH_STATUS
+        }
+        post(ctx, id, channel, title, text, MainActivity::class.java, alertAgain)
+    }
 
     fun report(ctx: Context, title: String, text: String) =
         post(ctx, ID_REPORT, CH_REPORT, title, text, ReportActivity::class.java)
@@ -57,7 +68,7 @@ object Notifier {
         }
     }
 
-    private fun post(ctx: Context, id: Int, channel: String, title: String, text: String, target: Class<*>) {
+    private fun post(ctx: Context, id: Int, channel: String, title: String, text: String, target: Class<*>, alertAgain: Boolean = false) {
         if (!canPost(ctx)) return
         try {
             val nm = manager(ctx) ?: return
@@ -70,7 +81,7 @@ object Notifier {
                 .setStyle(Notification.BigTextStyle().bigText(text))
                 .setContentIntent(pi)
                 .setAutoCancel(true)
-                .setOnlyAlertOnce(true)
+                .setOnlyAlertOnce(!alertAgain)
                 .build()
             nm.notify(id, n)
         } catch (e: Exception) {

@@ -72,7 +72,15 @@ object DriveSync {
     }
 
     /** Release after a local History report commits. Missing photos never block the valid subset. */
-    fun offerDailyBatch(ctx: Context, day: LocalDate, shopId: String?, records: List<Record>, text: String, manifest: String) {
+    fun offerDailyBatch(
+        ctx: Context,
+        day: LocalDate,
+        shopId: String?,
+        records: List<Record>,
+        text: String,
+        manifest: String,
+        diagnostics: String? = null,
+    ) {
         val app = ctx.applicationContext
         runCatching { io.execute {
             runCatching {
@@ -95,6 +103,10 @@ object DriveSync {
                 }
                 keys += stage(app, shopId, "summary-$day.txt", "text/plain", text.toByteArray())
                 keys += stage(app, shopId, "manifest-$day.json", "application/json", manifest.toByteArray())
+                // What the phone did that day, for remote troubleshooting (no photos inside).
+                diagnostics?.takeIf { it.isNotBlank() }?.let {
+                    keys += stage(app, shopId, "diagnostics-$day.txt", "text/plain", it.toByteArray())
+                }
                 val files = entries(app).associateBy { it.key }
                 // Deterministic payload: unchanged passes reuse the same marker and uploaded files.
                 val marker = Json.write(linkedMapOf("schema" to 1, "status" to "UPLOAD_DONE",

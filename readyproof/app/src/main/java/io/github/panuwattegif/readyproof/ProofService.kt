@@ -126,6 +126,15 @@ class ProofService : AccessibilityService() {
         main.post { engine?.resumeReadyMonitor() }
     }
 
+    /**
+     * "ปิด ReadyProof ชั่วคราว": banking apps refuse to run next to an accessibility service. An app
+     * can switch its own service off (never on: that is done in Settings or with the volume keys).
+     */
+    fun switchOff() {
+        Diagnostics.note(this, "switched off by hand")
+        disableSelf()
+    }
+
     /** The phone was just bound to a shop. */
     fun onShopBound() {
         main.post { engine?.onShopBound() }

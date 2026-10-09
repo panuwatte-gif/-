@@ -47,10 +47,13 @@ import kotlin.math.abs
  * device; this phone only watches):
  *  1. Ready tab: every order listed there gets one verified screenshot per stay; the list is
  *     swept top to bottom by itself when it is longer than the screen.
- *  2. Guard: brings Grab back to the Ready tab when it ends up elsewhere.
+ *  2. Guard: during opening hours, brings Grab back to the Ready tab when it ends up elsewhere.
  *  3. End of day: after closing time + buffer, waits until Ready and Preparing are empty, reads
  *     the whole History list (Grab's totals, every row, a photo of every delayed row), saves the
- *     report/manifest (which releases the Drive batch) and notifies.
+ *     report/manifest (which releases the Drive batch), notifies and switches itself off for the
+ *     night (banking apps refuse to run next to an accessibility service).
+ * Lists are moved with the scroll command or a finger drag, and "the end" is where a move no
+ * longer changes anything: Grab does not reliably say whether its lists can scroll.
  * Everything that touches the screen runs one job at a time (the "lane").
  */
 class Engine(private val service: ProofService) {
@@ -75,6 +78,15 @@ class Engine(private val service: ProofService) {
         private const val BACKUP_AFTER_MS = 30_000L
         /** An order without any photo this long raises a warning notification. */
         private const val WARN_AFTER_MS = 2 * 60_000L
+        /** A burst of new Ready orders is over when no new one came for this long. */
+        private const val BATCH_QUIET_MS = 4_000L
+        /** Time for the nightly Drive batch to be staged before the watcher switches itself off. */
+        private const val SELF_OFF_DELAY_MS = 60_000L
+        /** One move of a list: this share of its height (the slow pass uses smaller steps). */
+        private const val PAGE = 0.6f
+        /** Minutes after [Config.endMaxWaitMinutes] when the day is closed even without History. */
+        private const val HARD_STOP_EXTRA_MIN = 60
+        private const val SLOW_PAGE = 0.4f
 
         // Shared with the home screen and the troubleshooting export.
         const val PREF_EOD_DONE = "eod_done_day"
@@ -83,6 +95,9 @@ class Engine(private val service: ProofService) {
         const val PREF_CLOSING_STATUS = "closing_history_status"
         const val PREF_LAST_RESULT = "auto_history_last_result"
         const val PREF_AUTO_NAVIGATION = "auto_navigation_enabled"
+        /** Day the watcher switched itself off after the report (read by the service watch). */
+        const val PREF_SELF_OFF_DAY = "self_off_day"
+        private const val PREF_NAV_RESET = "auto_navigation_reset_v5"
 
         /** Words meaning the page is still loading or failed: never read as "no orders". */
         private val NOT_READY_WORDS = listOf(
@@ -125,6 +140,17 @@ class Engine(private val service: ProofService) {
     private var historyDay: String? = null
     private var lastStats: String? = null
     private var awake: View? = null
+    /** What a non-Ready tab showed last time: when it changes by itself, a person is scrolling it. */
+    private var foreignKey: String? = null
+    private var holdJob: Job? = null
+    /** Tabs already saved as a reference screen dump today ("2026-10-09|HISTORY"). */
+    private val dumpedTabs = HashSet<String>()
+    // how lists actually moved (for the daily diagnostics)
+    private var scrollMoves = 0
+    private var dragMoves = 0
+    private var stuckMoves = 0
+    /** The last [move] could not even try (gesture refused, screen unreadable): not the end of a list. */
+    private var moveFailed = false
 
     @Volatile
     var lastSweepAt = 0L
@@ -183,6 +209,11 @@ class Engine(private val service: ProofService) {
         historySeen.clear()
         historySeen.seed(recent)
         if (prefs.getString(PREF_EOD_DONE, null) == today.toString()) eod = Eod.DONE
+        // Older apps used the same switch with another meaning; this version needs it on once.
+        if (!prefs.getBoolean(PREF_NAV_RESET, false)) {
+            prefs.edit().putBoolean(PREF_AUTO_NAVIGATION, true).putBoolean(PREF_NAV_RESET, true).apply()
+        }
+        Notifier.cancel(service, Notifier.ID_OFF)
     }
 
     fun stop() {
@@ -241,6 +272,8 @@ class Engine(private val service: ProofService) {
             val s = reader.read(c) ?: return
             lastGrabSeenAt = SystemClock.uptimeMillis()
             if (c.diagnostics) Diagnostics.dump(service, "SCAN ${s.a.tab}", s.roots, force = false)
+            referenceDump(s)
+            noticePerson(s)
             when {
                 isReady(s) -> onReady(s)
                 s.a.tab == OrderTab.HISTORY -> onHistory(s)
@@ -263,6 +296,31 @@ class Engine(private val service: ProofService) {
     private fun isReady(s: Screen): Boolean =
         s.a.tab == OrderTab.READY || (s.a.tab == null && s.a.readyGfs().isNotEmpty())
 
+    private fun stillHistory(s: Screen): Boolean =
+        s.a.tab == OrderTab.HISTORY || (s.a.tab == null && s.a.historyViews().isNotEmpty())
+
+    /** The first screen of each tab every day goes into the diagnostics sent with the night batch. */
+    private fun referenceDump(s: Screen) {
+        val key = LocalDate.now().toString() + "|" + s.a.tab
+        if (key in dumpedTabs) return
+        if (Diagnostics.dump(service, "DAILY ${s.a.tab}", s.roots, force = true)) dumpedTabs += key
+    }
+
+    /**
+     * Grab does not always report a person scrolling, so on any tab but Ready a list that moved
+     * by itself (not by us) counts as somebody using the phone: the guard leaves them alone.
+     */
+    private fun noticePerson(s: Screen) {
+        if (isReady(s)) {
+            foreignKey = null
+            return
+        }
+        val key = s.a.motionKey()
+        val now = SystemClock.uptimeMillis()
+        if (foreignKey != null && key != foreignKey && now - lastBusyEndAt > 2_000L) lastUserTouchAt = now
+        foreignKey = key
+    }
+
     private fun setWhere(text: String) {
         where = text
         val now = System.currentTimeMillis()
@@ -280,11 +338,20 @@ class Engine(private val service: ProofService) {
         val listed = s.a.readyGfs()
         noteSeen(s, now)
         // The whole list is on screen: whatever is not listed has been picked up.
-        if (!s.a.canScroll) {
+        if (!mayOverflow(s)) {
             tracker.complete(listed, now)
             lastSweepAt = now
         }
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
+        // More new orders may be arriving right behind these: one photo for the whole burst.
+        val hold = tracker.batchHold(
+            s.a.readyViews().filter { it.full }.map { it.gf }, now, BATCH_QUIET_MS, c.readyBatchSeconds * 1000L,
+        )
+        if (hold > 0) {
+            observeIn(hold)
+            setWhere("เฝ้าแท็บ Ready · รอรวบออเดอร์ใหม่ที่เข้ามาติดกันไว้ในภาพเดียว")
+            return
+        }
         shootReady(s)?.let { s = it }
         backupReady(s)?.let { s = it }
         warnUnphotographed()
@@ -295,7 +362,7 @@ class Engine(private val service: ProofService) {
         val up = SystemClock.uptimeMillis()
         val sweepForPending = pending.isNotEmpty() && up - lastPendingSweepAt > PENDING_SWEEP_GAP_MS
         val personScrolling = up - lastUserTouchAt < PERSON_GRACE_MS
-        if (c.autoScroll && autoNavigation() && s.a.canScroll && !personScrolling && up > scrollBlockedUntil &&
+        if (c.autoScroll && autoNavigation() && mayOverflow(s) && !personScrolling && up > scrollBlockedUntil &&
             (changed || sweepForPending || sweepDue())
         ) {
             if (sweepForPending) lastPendingSweepAt = up
@@ -330,6 +397,32 @@ class Engine(private val service: ProofService) {
         tracker.pending().filter { (tracker.stay(it)?.failures ?: 0) < MAX_FAILURES }.toSet()
 
     private fun sweepDue(): Boolean = System.currentTimeMillis() - lastSweepAt > cfg.fullSweepMinutes * 60_000L
+
+    /**
+     * The Ready list may go on beyond the screen: Grab says so, an order is cut off at an edge, or
+     * the last order reaches the bottom of the list. Without a list element on screen, three or
+     * more orders are enough to check (a sweep that finds nothing to move costs two drags).
+     */
+    private fun mayOverflow(s: Screen): Boolean {
+        if (s.a.canScroll) return true
+        val views = s.a.readyViews()
+        if (views.isEmpty()) return false
+        if (views.any { !it.full }) return true
+        val list = s.a.scroller?.box()?.takeIf { !it.isEmpty } ?: return views.size >= 3
+        val boxes = views.map { it.card.node.box() }.filter { !it.isEmpty }
+        if (boxes.isEmpty()) return true
+        val tallest = boxes.maxOf { it.height }
+        return boxes.maxOf { it.bottom } >= list.bottom - tallest / 2
+    }
+
+    /** Looks again after [ms] (a burst of new orders is still coming in). */
+    private fun observeIn(ms: Long) {
+        if (holdJob?.isActive == true) return
+        holdJob = scope.launch {
+            delay(ms + 100)
+            scheduleObserve()
+        }
+    }
 
     private fun fingerprintOf(a: ScreenAnalysis): String =
         a.readyGfs().joinToString(",") + "|" + a.readyCount + "|" + a.canScrollForward + a.canScrollBackward
@@ -435,15 +528,15 @@ class Engine(private val service: ProofService) {
         if (!isReady(s)) return@automate
         val started = System.currentTimeMillis()
         var pages = 0
-        while (s.a.canScrollBackward && pages++ < MAX_PAGES) {
-            if (!actor.scroll(s.a.scroller, forward = false)) break
-            s = settle() ?: return@automate
+        while (pages++ < MAX_PAGES) {
+            s = move(s, forward = false) ?: break
             if (!isReady(s)) {
                 scrolledAway()
                 return@automate
             }
         }
         val seen = LinkedHashSet<String>()
+        var reachedBottom = false
         pages = 0
         while (true) {
             seen += s.a.readyGfs()
@@ -453,24 +546,78 @@ class Engine(private val service: ProofService) {
             backupReady(s)?.let { s = it }
             if (!isReady(s)) return@automate
             seen += s.a.readyGfs()
-            if (!s.a.canScrollForward || pages++ >= MAX_PAGES) break
-            val before = s.a.views.map { it.gf to it.keyBoxes }
-            if (!actor.scroll(s.a.scroller, forward = true) && !dragPage(s)) break
-            s = settle() ?: return@automate
+            if (pages++ >= MAX_PAGES) break
+            val next = move(s, forward = true)
+            if (next == null) {
+                reachedBottom = !moveFailed
+                if (pages == 1 && s.a.readyViews().any { !it.full }) {
+                    Diagnostics.dump(service, "READY list does not move", s.roots, force = true)
+                }
+                break
+            }
+            s = next
             if (!isReady(s)) {
                 scrolledAway()
                 return@automate
             }
-            if (s.a.views.map { it.gf to it.keyBoxes } == before) break
         }
         val now = System.currentTimeMillis()
-        tracker.complete(seen, now)
+        // Only a sweep that reached the bottom knows the whole list: then missing orders have left.
+        // An empty list must stay empty on a second look (a list reloading after a pull is empty too).
+        if (reachedBottom && (seen.isNotEmpty() || queueEmpty(OrderTab.READY) == true)) tracker.complete(seen, now)
         lastSweepAt = now
         fingerprint = fingerprintOf(s.a)
         Diagnostics.note(
             service,
-            "sweep Ready: ${seen.size} orders, ${pages + 1} pages, ${now - started} ms, waiting=${tracker.present().size}, unshot=${tracker.pending()}",
+            "sweep Ready: ${seen.size} orders, $pages pages, bottom=$reachedBottom, ${now - started} ms, " +
+                "waiting=${tracker.present().size}, unshot=${tracker.pending()}, moves scroll/drag/none=$scrollMoves/$dragMoves/$stuckMoves",
         )
+    }
+
+    /**
+     * Moves the list by about [page] of its height (forward = towards the bottom) with the scroll
+     * command, else with a finger drag. Returns the new screen if anything moved, null if nothing
+     * did (the end of the list, or a list that cannot move).
+     */
+    private suspend fun move(s: Screen, forward: Boolean, page: Float = PAGE): Screen? {
+        moveFailed = false
+        val before = s.a.motionKey()
+        if (before.isEmpty()) return null
+        if (s.a.scroller != null && actor.scroll(s.a.scroller, forward)) {
+            val after = settle()
+            if (after == null) {
+                moveFailed = true
+                return null
+            }
+            if (after.a.motionKey() != before) {
+                scrollMoves++
+                return after
+            }
+        }
+        val vp = viewportOf(s) ?: return null
+        val dy = vp.height * page
+        val x = vp.left + vp.width * 0.3f
+        val dragged = if (forward) {
+            actor.drag(x, vp.bottom - vp.height * 0.15f, -dy)
+        } else {
+            actor.drag(x, vp.top + vp.height * 0.15f, dy)
+        }
+        if (!dragged) {
+            moveFailed = true
+            stuckMoves++
+            return null
+        }
+        val after = settle()
+        if (after == null) {
+            moveFailed = true
+            return null
+        }
+        if (after.a.motionKey() == before) {
+            stuckMoves++
+            return null
+        }
+        dragMoves++
+        return after
     }
 
     /** Our own scroll left the Ready tab (the list was not what we scrolled): stop scrolling for a while. */
@@ -529,15 +676,18 @@ class Engine(private val service: ProofService) {
         return settle()
     }
 
-    /** Page down by dragging (for lists that ignore the scroll command). */
-    private suspend fun dragPage(s: Screen): Boolean {
-        val vp = viewportOf(s) ?: return false
-        return actor.drag(vp.left + vp.width * 0.3f, vp.bottom - vp.height * 0.15f, -vp.height * 0.6f)
-    }
-
+    /**
+     * Where the order list is on screen: the list element if Grab reports one, otherwise from the
+     * first order card down to near the bottom of the screen (above the bottom bar).
+     */
     private fun viewportOf(s: Screen): Box? {
-        val b = s.a.scroller?.box() ?: return null
-        return if (b.isEmpty) null else b
+        s.a.scroller?.box()?.takeIf { !it.isEmpty }?.let { return it }
+        val cards = s.a.views.map { it.card.node.box() }.filter { !it.isEmpty }
+        if (cards.isEmpty()) return null
+        val dm = service.resources.displayMetrics
+        val top = cards.minOf { it.top }.coerceAtLeast(0)
+        val bottom = maxOf(cards.maxOf { it.bottom }, (dm.heightPixels * 0.85f).toInt()).coerceAtMost(dm.heightPixels)
+        return if (bottom - top < dm.heightPixels / 5) null else Box(0, top, dm.widthPixels, bottom)
     }
 
     /** Waits until the list stops moving and returns that screen. */
@@ -659,9 +809,8 @@ class Engine(private val service: ProofService) {
         if (!openTab(c.historyTabLabels, OrderTab.HISTORY)) return@automate null
         var s = settle() ?: return@automate null
         var pages = 0
-        while (s.a.canScrollBackward && pages++ < MAX_HISTORY_PAGES) {
-            if (!actor.scroll(s.a.scroller, forward = false)) break
-            s = settle() ?: return@automate null
+        while (pages++ < MAX_HISTORY_PAGES) {
+            s = move(s, forward = false) ?: break
         }
         var header = s.a.header
         if (header?.completed == null) {
@@ -670,6 +819,7 @@ class Engine(private val service: ProofService) {
             s = settle() ?: return@automate null
             header = s.a.header ?: header
         }
+        Diagnostics.dump(service, "HISTORY top", s.roots, force = true)
         val dayDate = header?.date ?: LocalDate.now()
         val day = dayDate.toString()
         historyDay = day
@@ -677,17 +827,21 @@ class Engine(private val service: ProofService) {
         val rows = LinkedHashMap<String, Item>()
         // Every delayed row of the day met during the sweep (key -> order number), shot or not.
         val delayedRows = LinkedHashMap<String, String>()
+        // Every order number seen on the way down (also rows whose time could not be read).
+        val passed = HashSet<String>()
         var reachedEnd = false
+        val movesBefore = Triple(scrollMoves, dragMoves, stuckMoves)
 
-        // One pass down the list; [step] moves one page. Stops at the end, at an older day's rows,
-        // or when nothing new appears for three pages.
-        suspend fun pass(step: suspend (Screen) -> Boolean) {
+        // One pass down the list, [page] of its height per move. Stops where the list no longer
+        // moves (the end), at an older day's rows, or when nothing new appears for three moves.
+        suspend fun pass(page: Float) {
             pages = 0
             var still = 0
             reachedEnd = false
             while (true) {
-                val before = rows.size
+                val before = rows.size + passed.size
                 val onPage = recordRows(s, day)
+                passed += s.a.historyViews().map { it.gf }
                 onPage.filter { it.historyDate == day && it.type != ObsType.DELAY }.forEach { rows[Deduper.keyOf(it)!!] = it }
                 onPage.filter { it.historyDate == day && it.type == ObsType.DELAY }
                     .forEach { d -> Deduper.keyOf(d.copy(historyDate = day))?.let { delayedRows[it] = d.gf } }
@@ -702,45 +856,49 @@ class Engine(private val service: ProofService) {
                     s = shown
                     shootDelays(s, day)?.let { s = it }
                 }
-                still = if (rows.size == before) still + 1 else 0
-                if (pages++ >= MAX_HISTORY_PAGES) break
-                if (!s.a.canScrollForward) {
-                    // more rows may load at the end of the list
+                still = if (rows.size + passed.size == before) still + 1 else 0
+                if (pages++ >= MAX_HISTORY_PAGES || still >= 3) break
+                var next = move(s, forward = true, page = page)
+                if (next == null) {
+                    // more rows may still be loading at the end of the list
                     delay(1_500)
                     s = settle() ?: return
-                    if (!s.a.canScrollForward) {
-                        reachedEnd = true
+                    next = move(s, forward = true, page = page)
+                    if (next == null) {
+                        reachedEnd = !moveFailed
+                        if (pages == 1) Diagnostics.dump(service, "HISTORY list does not move", s.roots, force = true)
                         break
                     }
                 }
-                if (still >= 3) break
-                if (!step(s)) break
-                s = settle() ?: return
-                if (s.a.tab != OrderTab.HISTORY) return
+                s = next
+                if (!stillHistory(s)) return
             }
         }
 
-        pass { cur -> actor.scroll(cur.a.scroller, forward = true) || dragPage(cur) }
+        pass(PAGE)
         val want = header?.completed?.let { it + (header.cancelled ?: 0) }
         if (want != null && rows.size < want) {
-            // Second, slower pass with overlapping drags for rows the page jumps skipped.
+            // Second, slower pass with smaller steps for rows a fast move may have skipped.
             Diagnostics.note(service, "history: ${rows.size}/$want rows after first pass, second pass")
+            Diagnostics.dump(service, "HISTORY short ${rows.size}/$want", s.roots, force = true)
             pages = 0
-            while (s.a.canScrollBackward && pages++ < MAX_HISTORY_PAGES) {
-                if (!actor.scroll(s.a.scroller, forward = false)) break
-                s = settle() ?: break
+            while (pages++ < MAX_HISTORY_PAGES) {
+                s = move(s, forward = false) ?: break
             }
-            pass { cur -> dragPage(cur) || actor.scroll(cur.a.scroller, forward = true) }
+            pass(SLOW_PAGE)
         }
         // back to the top for whoever looks next
         pages = 0
-        while (s.a.canScrollBackward && pages++ < MAX_HISTORY_PAGES) {
-            if (!actor.scroll(s.a.scroller, forward = false)) break
-            s = settle() ?: break
+        while (pages++ < MAX_HISTORY_PAGES) {
+            s = move(s, forward = false) ?: break
         }
         val checkedAt = System.currentTimeMillis()
         val unshot = delayedRows.filterKeys { historySeen.isFresh(it, checkedAt, 36L * 3600_000) }.values.toList()
-        Diagnostics.note(service, "history $day: rows=${rows.size}/${want ?: "?"} end=$reachedEnd")
+        Diagnostics.note(
+            service,
+            "history $day: rows=${rows.size}/${want ?: "?"} passed=${passed.size} end=$reachedEnd delayed=${delayedRows.size} unshot=$unshot " +
+                "moves scroll/drag/none=${scrollMoves - movesBefore.first}/${dragMoves - movesBefore.second}/${stuckMoves - movesBefore.third}",
+        )
         HistoryResult(day, header, rows.size, reachedEnd, unshot)
     }
 
@@ -816,7 +974,9 @@ class Engine(private val service: ProofService) {
 
     private suspend fun guard(w: WindowsState) {
         val c = cfg
-        if (!c.guardReadyTab || !autoNavigation() || eod == Eod.RUNNING) return
+        if (!c.guardReadyTab || !autoNavigation() || eod == Eod.RUNNING || eod == Eod.DONE) return
+        // Outside opening hours the phone is the owner's (the closing wait still guards).
+        if (eod == Eod.IDLE && !c.inShopHours(LocalTime.now())) return
         val now = SystemClock.uptimeMillis()
         val idleMs = c.guardIdleMinutes * 60_000L
         if (!w.grabVisible) {
@@ -927,6 +1087,11 @@ class Engine(private val service: ProofService) {
         eod = Eod.RUNNING
         try {
             val retryAt = System.currentTimeMillis() + c.recheckMinutes * 60_000L
+            val waited = System.currentTimeMillis() - eodStartedAt
+            if (!eodForced && waited >= (c.endMaxWaitMinutes + HARD_STOP_EXTRA_MIN) * 60_000L) {
+                closeDayUnread("อ่านหน้าประวัติไม่สำเร็จภายใน ${c.endMaxWaitMinutes + HARD_STOP_EXTRA_MIN} นาทีหลังเวลาสรุป")
+                return
+            }
             if (!reader.windows(c).grabVisible) {
                 if (screenUsable()) {
                     actor.launch(c.targetPackages.first())
@@ -937,7 +1102,7 @@ class Engine(private val service: ProofService) {
                     return
                 }
             }
-            val giveUp = System.currentTimeMillis() - eodStartedAt >= c.endMaxWaitMinutes * 60_000L
+            val giveUp = waited >= c.endMaxWaitMinutes * 60_000L
             if (!eodForced && !giveUp) {
                 // Ready: sweep it (photographing anything new), then make sure it is really empty.
                 if (!openTab(c.readyTabLabels, OrderTab.READY)) {
@@ -1000,7 +1165,9 @@ class Engine(private val service: ProofService) {
         val shopId = shop()
         val failure = if (result.reachedEnd) null else "อ่านไม่ถึงท้ายรายการ"
         // Saves the summary + manifest and, after closing time, releases the Drive batch.
-        val report = withContext(Dispatchers.IO) { DailyExport.save(service, date, shopId, result.reachedEnd, failure) }
+        val report = withContext(Dispatchers.IO) {
+            DailyExport.save(service, date, shopId, result.reachedEnd, failure, Diagnostics.daily(service, date))
+        }
         val incomplete = report.historyMatchesGrab == false || !result.reachedEnd || result.unshot.isNotEmpty()
         val resultText = resultLine(report, result)
         prefs.edit().putString(PREF_LAST_RESULT, resultText).apply()
@@ -1010,7 +1177,8 @@ class Engine(private val service: ProofService) {
         }
         // A run started by hand before closing time does not replace tonight's automatic run.
         val afterClose = cfg.endOfDayAt()?.let { !LocalTime.now().isBefore(it) } ?: true
-        if (!eodForced || afterClose) {
+        val dayDone = !eodForced || afterClose
+        if (dayDone) {
             prefs.edit().putString(PREF_EOD_DONE, LocalDate.now().toString()).apply()
             eod = Eod.DONE
         } else {
@@ -1029,6 +1197,48 @@ class Engine(private val service: ProofService) {
         Notifier.cancel(service, Notifier.ID_STATUS)
         Notifier.report(service, "สรุปสิ้นวัน ${ReportText.date(date)} พร้อมแล้ว", text)
         Diagnostics.note(service, "end of day: done $resultText")
+        if (dayDone && afterClose) switchOffForTheNight()
+    }
+
+    /** History could not be read all evening: keep what exists, close the day, free the phone. */
+    private suspend fun closeDayUnread(why: String) {
+        val today = LocalDate.now()
+        Diagnostics.note(service, "end of day: closing without History ($why)")
+        withContext(Dispatchers.IO) { DailyExport.save(service, today, shop(), false, why, Diagnostics.daily(service, today)) }
+        prefs.edit().putString(PREF_EOD_DONE, today.toString()).apply()
+        eod = Eod.DONE
+        eodForced = false
+        setEodStatus("สิ้นวัน: $why — บันทึกเท่าที่มี")
+        Notifier.report(service, "สรุปสิ้นวัน ${ReportText.date(today)} ไม่ครบ", "$why\nภาพ Ready ของวันนี้เก็บไว้แล้ว แต่ยังจับคู่กับรายการล่าช้าไม่ได้")
+        switchOffForTheNight()
+    }
+
+    /**
+     * Banking apps refuse to run while an accessibility service is on, so after tonight's report
+     * the watcher switches itself off (Android lets an app switch itself off, never on). The
+     * service watch raises the alarm from opening time if nobody switched it on again.
+     */
+    private fun switchOffForTheNight() {
+        val c = cfg
+        if (!c.autoOffAfterClose) return
+        prefs.edit().putString(PREF_SELF_OFF_DAY, LocalDate.now().toString()).apply()
+        Notifier.status(
+            service,
+            "ReadyProof ปิดตัวเองแล้ว — แอปธนาคารใช้ได้",
+            "สรุปของวันนี้เสร็จแล้ว ก่อนร้านเปิด ${c.openTime} ให้เปิดกลับ: กดปุ่มเพิ่มเสียงกับลดเสียงค้างไว้ 3 วินาที " +
+                "(ถ้าตั้งทางลัดไว้) หรือเปิดแอป ReadyProof → เปิดสิทธิ์การช่วยเหลือพิเศษ",
+            Notifier.ID_OFF,
+        )
+        Diagnostics.note(service, "switching off for the night in ${SELF_OFF_DELAY_MS / 1000} s")
+        scope.launch {
+            // the night batch is being staged for Drive meanwhile
+            delay(SELF_OFF_DELAY_MS)
+            try {
+                service.disableSelf()
+            } catch (e: Exception) {
+                Diagnostics.error(service, "disableSelf", e)
+            }
+        }
     }
 
     private fun resultLine(r: DailyReport, h: HistoryResult): String = buildString {

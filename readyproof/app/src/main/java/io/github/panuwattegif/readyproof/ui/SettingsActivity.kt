@@ -19,6 +19,9 @@ class SettingsActivity : Activity() {
     private lateinit var sEod: Switch
     private lateinit var sToast: Switch
     private lateinit var sDiag: Switch
+    private lateinit var sOff: Switch
+    private lateinit var fOpen: EditText
+    private lateinit var fBatch: EditText
     private lateinit var fClose: EditText
     private lateinit var fBuffer: EditText
     private lateinit var fRecheck: EditText
@@ -63,7 +66,11 @@ class SettingsActivity : Activity() {
         sScroll = Ui.switch(watch, "เลื่อนรายการเองเมื่อออเดอร์ยาวเกินจอ", cfg.autoScroll) {}
         fSweep = Ui.field(watch, "กวาดรายการ Ready ซ้ำทุกกี่นาที (กันพลาด)", cfg.fullSweepMinutes.toString(),
             help = "ปกติแอปกวาดทันทีเมื่อรายการเปลี่ยน ค่านี้คือรอบสำรอง", number = true)
-        sGuard = Ui.switch(watch, "พากลับแท็บ Ready เองเมื่อหลุดไปหน้าอื่น", cfg.guardReadyTab) {}
+        fBatch = Ui.field(watch, "ออเดอร์ใหม่เข้ามาติดกัน รอรวบเป็นภาพเดียวนานสุดกี่วินาที", cfg.readyBatchSeconds.toString(),
+            help = "0 = ถ่ายทันทีทุกครั้ง · ปกติ 12 วินาที (นานกว่านี้ เวลาในภาพจะห่างจากเวลากดพร้อมจริง)", number = true)
+        fOpen = Ui.field(watch, "เวลาร้านเปิด (เช่น 09:00)", cfg.openTime,
+            help = "นอกเวลาเปิดร้าน แอปจะไม่ดึงหน้าจอกลับมาที่ Grab และไม่ร้องเตือนถ้าปิดอยู่")
+        sGuard = Ui.switch(watch, "พากลับแท็บ Ready เองเมื่อหลุดไปหน้าอื่น (เฉพาะเวลาร้านเปิด)", cfg.guardReadyTab) {}
         fIdle = Ui.field(watch, "ถ้ามีคนใช้เครื่องอยู่ รอให้ว่างกี่นาทีก่อนพากลับ", cfg.guardIdleMinutes.toString(), number = true)
         sAwake = Ui.switch(watch, "ไม่ให้จอดับระหว่างเปิด Grab (เสียบชาร์จไว้)", cfg.keepScreenOn) {}
         sToast = Ui.switch(watch, "แสดงข้อความเด้งหลังแคป (อาจบังจอ ไม่แนะนำ)", cfg.showToast) {}
@@ -76,6 +83,7 @@ class SettingsActivity : Activity() {
         fBuffer = Ui.field(eod, "เผื่อเวลาหลังปิดร้านกี่นาที", cfg.endBufferMinutes.toString(), number = true)
         fRecheck = Ui.field(eod, "ถ้ายังมีออเดอร์ค้างในแท็บ Ready ตรวจใหม่ทุกกี่นาที", cfg.recheckMinutes.toString(), number = true)
         fMaxWait = Ui.field(eod, "รอออเดอร์ค้างนานสุดกี่นาที แล้วสรุปเลย", cfg.endMaxWaitMinutes.toString(), number = true)
+        sOff = Ui.switch(eod, "สรุปเสร็จแล้วปิดตัวเอง (ให้แอปธนาคาร/สแกนจ่ายใช้ได้ตอนกลางคืน)", cfg.autoOffAfterClose) {}
         fLate = Ui.field(eod, "สถานะในภาพแรกที่แปลว่า \"ร้านช้าจริง\"", cfg.lateStatus.joinToString("\n"),
             help = "ถ้าภาพแรกของออเดอร์ในแท็บ Ready มีคำเหล่านี้ = คนขับมาถึงก่อนร้านกดเสร็จ (บรรทัดละ 1 คำ)", multiLine = true)
         fWindow = Ui.field(eod, "จับคู่หลักฐานย้อนหลังกี่ชั่วโมงก่อนเวลาเสร็จ", cfg.evidenceWindowHours.toString(), number = true)
@@ -149,6 +157,9 @@ class SettingsActivity : Activity() {
             autoEndOfDay = sEod.isChecked,
             captureDelay = sDelay.isChecked,
             closeTime = fClose.text.toString().trim(),
+            openTime = fOpen.text.toString().trim(),
+            autoOffAfterClose = sOff.isChecked,
+            readyBatchSeconds = num(fBatch),
             endBufferMinutes = num(fBuffer),
             recheckMinutes = num(fRecheck),
             endMaxWaitMinutes = num(fMaxWait),

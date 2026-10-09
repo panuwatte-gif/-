@@ -13,7 +13,14 @@ object DailyExport {
         ConfigStore.prefs(ctx).getBoolean("history_end_${shopId ?: "UNKNOWN"}_$date", false)
 
     /** Every pass exports what exists, including incomplete passes; never gate on proof equality. */
-    fun save(ctx: Context, day: LocalDate, shopId: String?, reachedEnd: Boolean, failureReason: String? = null): DailyReport {
+    fun save(
+        ctx: Context,
+        day: LocalDate,
+        shopId: String?,
+        reachedEnd: Boolean,
+        failureReason: String? = null,
+        diagnostics: String? = null,
+    ): DailyReport {
         ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", reachedEnd).apply()
         val zone = ZoneId.of("Asia/Bangkok")
         val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
@@ -53,7 +60,7 @@ object DailyExport {
             saveLocal(ctx, "${shopId}_batch-request-$day.json", Json.write(linkedMapOf(
                 "shopId" to shopId, "date" to day.toString(), "text" to text, "manifest" to manifest)))
         }
-        DriveSync.offerDailyBatch(ctx, day, shopId, records, text, manifest)
+        DriveSync.offerDailyBatch(ctx, day, shopId, records, text, manifest, diagnostics)
         return report
     }
 

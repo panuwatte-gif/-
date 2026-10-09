@@ -90,6 +90,24 @@ class ReadyTracker(
         stays.values.filter { it.shotAt == null && it.backupAt == null && it.missingSince == null && it.warnedAt == null && now - it.since >= afterMs }
             .onEach { it.warnedAt = now }.map { it.gf }
 
+    /**
+     * New orders often reach the Ready tab a few seconds apart (the kitchen marks several in a
+     * row). Instead of one photo each, the photo waits while new ones keep arriving: until no new
+     * order for [quietMs], at most [maxMs] after the oldest one in [targets] (the orders that could
+     * be photographed now). Returns how long to wait; 0 = photograph now.
+     */
+    @Synchronized
+    fun batchHold(targets: Collection<String>, now: Long, quietMs: Long, maxMs: Long): Long {
+        if (maxMs <= 0) return 0
+        val waiting = targets.mapNotNull { stays[it] }.filter { it.shotAt == null }
+        if (waiting.isEmpty()) return 0
+        val oldest = waiting.minOf { it.since }
+        val newest = stays.values.filter { it.shotAt == null && it.missingSince == null }.maxOfOrNull { it.since } ?: oldest
+        val quietLeft = quietMs - (now - newest)
+        val maxLeft = maxMs - (now - oldest)
+        return if (quietLeft > 0 && maxLeft > 0) minOf(quietLeft, maxLeft) else 0
+    }
+
     @Synchronized
     fun failed(gfs: Collection<String>) {
         for (gf in gfs) stays[gf]?.let { it.failures++ }

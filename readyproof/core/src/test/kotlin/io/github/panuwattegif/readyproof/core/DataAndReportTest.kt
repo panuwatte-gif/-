@@ -307,4 +307,32 @@ class DataAndReportTest {
         assertTrue(s.contains("GF-613") && s.contains("ข้าวมันไก่") && s.contains("กดพร้อมจัดส่ง"))
         assertNotNull(r.file)
     }
+
+    @Test
+    fun openingHoursRunFromOpenTimeToTheEndOfDay() {
+        val c = Config(openTime = "09:00", closeTime = "19:00", endBufferMinutes = 5)
+        assertTrue(c.inShopHours(java.time.LocalTime.of(9, 0)))
+        assertTrue(c.inShopHours(java.time.LocalTime.of(19, 4)))
+        assertFalse(c.inShopHours(java.time.LocalTime.of(19, 5)))
+        assertFalse(c.inShopHours(java.time.LocalTime.of(8, 59)))
+        assertFalse(c.inShopHours(java.time.LocalTime.of(23, 30)))
+        // a broken time never blocks anything
+        assertTrue(Config(openTime = "x").inShopHours(java.time.LocalTime.of(3, 0)))
+    }
+
+    @Test
+    fun version4SettingsGainOpeningHoursAndNightSwitchOff() {
+        val old = ConfigCodec.encode(Config(closeTime = "20:00")).replace("\"v\":5", "\"v\":4")
+            .replace(Regex(",\"openTime\":\"[^\"]*\",\"autoOffAfterClose\":(true|false),\"readyBatchSeconds\":\\d+"), "")
+        assertFalse(old.contains("openTime"))
+        val c = ConfigCodec.decode(old)
+        assertEquals("20:00", c.closeTime)
+        assertEquals("09:00", c.openTime)
+        assertTrue(c.autoOffAfterClose)
+        assertEquals(12, c.readyBatchSeconds)
+        val again = ConfigCodec.decode(ConfigCodec.encode(c.copy(openTime = "10:30", autoOffAfterClose = false, readyBatchSeconds = 0)))
+        assertEquals("10:30", again.openTime)
+        assertFalse(again.autoOffAfterClose)
+        assertEquals(0, again.readyBatchSeconds)
+    }
 }

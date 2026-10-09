@@ -87,6 +87,18 @@ data class Config(
     val recheckMinutes: Int = 5,
     /** Read History anyway after waiting this long for the Ready tab to empty (an order stuck there). */
     val endMaxWaitMinutes: Int = 120,
+    /**
+     * The shop opens: from here until the end of day the phone is brought back to the Ready tab and
+     * a switched-off watcher raises an alarm. Outside these hours the phone is the owner's.
+     */
+    val openTime: String = "09:00",
+    /**
+     * After tonight's automatic report the watcher switches itself off, so banking apps (which
+     * refuse to run next to an accessibility service) work at night. It is switched on again by hand.
+     */
+    val autoOffAfterClose: Boolean = true,
+    /** New Ready orders arriving together share one photo: wait at most this many seconds for the next one. */
+    val readyBatchSeconds: Int = 12,
 
     val showToast: Boolean = false,
     val jpegQuality: Int = 80,
@@ -100,6 +112,15 @@ data class Config(
     /** [closeTime] + [endBufferMinutes], or null when the time is not valid. */
     fun endOfDayAt(): LocalTime? = parseTime(closeTime)?.plusMinutes(endBufferMinutes.toLong())
 
+    fun openAt(): LocalTime? = parseTime(openTime)
+
+    /** Between [openTime] and the end of day (both must be valid; otherwise always true). */
+    fun inShopHours(t: LocalTime): Boolean {
+        val open = openAt() ?: return true
+        val end = endOfDayAt() ?: return true
+        return if (open.isBefore(end)) !t.isBefore(open) && t.isBefore(end) else !t.isBefore(open) || t.isBefore(end)
+    }
+
     /** Human readable problems; empty = valid. */
     fun validate(): List<String> {
         val errors = ArrayList<String>()
@@ -110,6 +131,8 @@ data class Config(
         if (preparingTabLabels.isEmpty() && autoEndOfDay) errors += "ต้องมีชื่อแท็บกำลังเตรียมอย่างน้อย 1 คำ (หรือปิดสรุปสิ้นวันอัตโนมัติ)"
         if (historyTabLabels.isEmpty() && autoEndOfDay) errors += "ต้องมีชื่อแท็บ History อย่างน้อย 1 คำ (หรือปิดสรุปสิ้นวันอัตโนมัติ)"
         if (parseTime(closeTime) == null) errors += "เวลาปิดร้านต้องเป็นแบบ 19:00"
+        if (parseTime(openTime) == null) errors += "เวลาเปิดร้านต้องเป็นแบบ 09:00"
+        if (readyBatchSeconds !in 0..30) errors += "เวลารวบภาพ Ready ต้องอยู่ระหว่าง 0–30 วินาที"
         if (endBufferMinutes !in 0..120) errors += "เวลาเผื่อหลังปิดร้านต้องอยู่ระหว่าง 0–120 นาที"
         if (recheckMinutes !in 1..60) errors += "เวลารอตรวจซ้ำต้องอยู่ระหว่าง 1–60 นาที"
         if (endMaxWaitMinutes !in 5..600) errors += "เวลารอออเดอร์ค้างนานสุดต้องอยู่ระหว่าง 5–600 นาที"
@@ -147,7 +170,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 4
+    const val VERSION = 5
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -183,6 +206,9 @@ object ConfigCodec {
             "endBufferMinutes" to c.endBufferMinutes,
             "recheckMinutes" to c.recheckMinutes,
             "endMaxWaitMinutes" to c.endMaxWaitMinutes,
+            "openTime" to c.openTime,
+            "autoOffAfterClose" to c.autoOffAfterClose,
+            "readyBatchSeconds" to c.readyBatchSeconds,
             "showToast" to c.showToast,
             "jpegQuality" to c.jpegQuality,
             "retentionDays" to c.retentionDays,
@@ -226,6 +252,9 @@ object ConfigCodec {
             endBufferMinutes = m.int("endBufferMinutes") ?: d.endBufferMinutes,
             recheckMinutes = m.int("recheckMinutes") ?: d.recheckMinutes,
             endMaxWaitMinutes = m.int("endMaxWaitMinutes") ?: d.endMaxWaitMinutes,
+            openTime = m.str("openTime") ?: d.openTime,
+            autoOffAfterClose = m.bool("autoOffAfterClose") ?: d.autoOffAfterClose,
+            readyBatchSeconds = m.int("readyBatchSeconds") ?: d.readyBatchSeconds,
             showToast = m.bool("showToast") ?: d.showToast,
             jpegQuality = m.int("jpegQuality") ?: d.jpegQuality,
             retentionDays = m.int("retentionDays") ?: d.retentionDays,
@@ -238,7 +267,8 @@ object ConfigCodec {
      * Saved settings from older versions keep what the user typed and gain the newer words:
      * v1 knew only the Thai screens, v3 had no letter-suffixed order numbers (GF-398F), and v4 is
      * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
-     * next shot). Settings of the old "Ready button" feature are simply ignored.
+     * next shot); v5 adds opening hours, switching off at night and shared photos for bursts.
+     * Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {
         if (from >= VERSION) return c
@@ -251,7 +281,7 @@ object ConfigCodec {
             doneAny = merge(c.doneAny, d.doneAny),
             cancelAny = merge(c.cancelAny, d.cancelAny),
             delayAny = merge(c.delayAny, d.delayAny),
-            showToast = false,
+            showToast = if (from < 4) false else c.showToast,
         )
     }
 
@@ -293,6 +323,8 @@ fun Config.sanitized(): Config {
         endBufferMinutes = endBufferMinutes.coerceIn(0, 120),
         recheckMinutes = recheckMinutes.coerceIn(1, 60),
         endMaxWaitMinutes = endMaxWaitMinutes.coerceIn(5, 600),
+        openTime = if (Config.parseTime(openTime) != null) openTime.trim() else d.openTime,
+        readyBatchSeconds = readyBatchSeconds.coerceIn(0, 30),
         fullSweepMinutes = fullSweepMinutes.coerceIn(1, 60),
         guardIdleMinutes = guardIdleMinutes.coerceIn(1, 60),
         jpegQuality = jpegQuality.coerceIn(30, 100),

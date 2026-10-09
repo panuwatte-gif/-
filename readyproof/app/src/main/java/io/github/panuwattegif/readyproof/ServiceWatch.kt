@@ -6,12 +6,14 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 
 /**
  * The phone is left alone all day, so a stopped watcher must announce itself: every 15 minutes
- * this checks that the accessibility service is switched on and running, and otherwise posts a
- * notification (at most every 2 hours) telling whoever sees the phone what to do.
+ * this checks that the accessibility service is switched on and running. During opening hours a
+ * stopped watcher sounds an alarm on every check until it runs again; outside opening hours it is
+ * expected to be off (it switches itself off after the night's report so banking apps work).
  */
 class ServiceWatchWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
@@ -24,19 +26,17 @@ class ServiceWatchWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, p
                 Notifier.cancel(ctx, Notifier.ID_WATCH)
                 return Result.success()
             }
-            val prefs = ConfigStore.prefs(ctx)
-            val now = System.currentTimeMillis()
-            if (now - prefs.getLong(KEY_LAST, 0L) < NOTIFY_GAP_MS) return Result.success()
-            prefs.edit().putLong(KEY_LAST, now).apply()
+            if (!cfg.inShopHours(LocalTime.now())) return Result.success()
             Notifier.status(
                 ctx,
-                "ReadyProof หยุดทำงาน — ไม่มีการแคปหลักฐาน",
+                "ร้านเปิดแล้ว แต่ ReadyProof ยังไม่ทำงาน — ไม่มีการแคปหลักฐาน",
                 if (enabled) {
-                    "มือถือปิดระบบแคปไว้ เปิดแอป ReadyProof → หน้าแรก → ทำตามที่ขึ้นสีเหลือง/แดง (ปิด-เปิดสิทธิ์การช่วยเหลือพิเศษ 1 ครั้ง)"
+                    "เปิดแอป ReadyProof → หน้าแรก → ทำตามที่ขึ้นสีเหลือง/แดง (ปิด-เปิดสิทธิ์การช่วยเหลือพิเศษ 1 ครั้ง)"
                 } else {
-                    "สิทธิ์ \"การช่วยเหลือพิเศษ\" ของ ReadyProof ถูกปิด เปิดแอป ReadyProof → กด \"เปิดหน้าการช่วยเหลือพิเศษ\" → เปิดสวิตช์"
+                    "กดปุ่มเพิ่มเสียงกับลดเสียงค้างไว้ 3 วินาที (ถ้าตั้งทางลัดไว้) หรือเปิดแอป ReadyProof → กด \"เปิดหน้าการช่วยเหลือพิเศษ\" → เปิดสวิตช์"
                 },
                 Notifier.ID_WATCH,
+                alertAgain = true,
             )
         } catch (e: Exception) {
             Diagnostics.error(ctx, "serviceWatch", e)
@@ -45,9 +45,6 @@ class ServiceWatchWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, p
     }
 
     companion object {
-        private const val KEY_LAST = "service_watch_last_notice"
-        private const val NOTIFY_GAP_MS = 2 * 60 * 60_000L
-
         fun schedule(ctx: Context) {
             try {
                 WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(

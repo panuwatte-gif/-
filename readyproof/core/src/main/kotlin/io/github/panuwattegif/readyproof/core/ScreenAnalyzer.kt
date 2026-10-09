@@ -72,6 +72,12 @@ data class ScreenAnalysis(
 
     /** History rows: finished or cancelled orders. */
     fun historyViews(): List<CardView> = views.filter { it.has(ObsType.DONE) || it.has(ObsType.CANCELLED) }
+
+    /**
+     * Which order sits where: changes whenever the list moves. Used to tell whether a scroll or a
+     * drag really did something, because Grab does not always say whether its list can scroll.
+     */
+    fun motionKey(): String = views.joinToString("|") { it.gf + "@" + it.card.gfNode.box().top }
 }
 
 object ScreenAnalyzer {
