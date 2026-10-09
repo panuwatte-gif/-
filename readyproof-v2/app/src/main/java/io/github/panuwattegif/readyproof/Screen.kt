@@ -4,6 +4,7 @@ import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 import proof.Card
 import proof.Header
+import proof.HeaderParser
 import proof.Page
 import proof.PageKind
 import proof.Status
@@ -14,7 +15,7 @@ internal data class Screen(val page: Page, val views: List<CardView>, val scroll
 internal object ScreenReader {
     private val gf = Regex("""GF[-\s]?\d+""", RegexOption.IGNORE_CASE)
     private val delayed = Regex("""\bDelayed\b|ล่าช้า""", RegexOption.IGNORE_CASE)
-    private val completed = Regex("""Completed|สำเร็จ""", RegexOption.IGNORE_CASE)
+    private val completed = Regex("""Completed|เสร็จสมบูรณ์|สำเร็จ""", RegexOption.IGNORE_CASE)
     private val cancelled = Regex("""Cancelled|Canceled|ยกเลิก""", RegexOption.IGNORE_CASE)
     private data class TextNode(val text: String, val bounds: Rect, val node: AccessibilityNodeInfo)
 
@@ -60,26 +61,13 @@ internal object ScreenReader {
                 else -> null
             }
             if (kind == PageKind.HISTORY && status == null) return@mapNotNull null
-            val clock = Regex("""(?:Completed|Cancelled|Canceled|สำเร็จ|ยกเลิก).*?(\d{1,2}:\d{2}\s*(?:AM|PM)?)""",
+            val clock = Regex("""(?:Completed|Cancelled|Canceled|เสร็จสมบูรณ์|สำเร็จ|ยกเลิก).*?(\d{1,2}:\d{2}\s*(?:AM|PM)?)""",
                 RegexOption.IGNORE_CASE).find(label)?.groupValues?.get(1)
             val amount = Regex("""\b\d+[.,]\d{2}\b""").find(label)?.value
             CardView(Card(match.value.uppercase().replace(" ", "-"), box.top, box.bottom,
                 status, clock, amount, kind == PageKind.HISTORY && delayed.containsMatchIn(label)), Rect(box))
         }.distinctBy { it.card.gf to it.bounds.top }
-        val header = if (kind == PageKind.HISTORY) parseHeader(text.map { it.text }) else null
+        val header = if (kind == PageKind.HISTORY) HeaderParser.fromText(text.map { it.text }) else null
         return Screen(Page(kind, views.map { it.card }, header), views, scroller)
-    }
-
-    // A missing header remains UNKNOWN; no inference from the number of cards.
-    private fun parseHeader(lines: List<String>): Header {
-        val joined = lines.take(80).joinToString(" ")
-        fun count(vararg labels: String): Int? = labels.firstNotNullOfOrNull { label ->
-            Regex("""(?:$label)\s*[:：(]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-                .find(joined)?.groupValues?.get(1)?.toIntOrNull()
-                ?: Regex("""(\d+)\s*(?:$label)""", RegexOption.IGNORE_CASE)
-                    .find(joined)?.groupValues?.get(1)?.toIntOrNull()
-        }
-        return Header(count("Total", "All", "ทั้งหมด"), count("Completed", "สำเร็จ"),
-            count("Cancelled", "Canceled", "ยกเลิก"))
     }
 }

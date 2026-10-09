@@ -19,6 +19,22 @@ data class Header(val total: Int?, val completed: Int?, val cancelled: Int?) {
     val consistent get() = total != null && completed != null && cancelled != null &&
         total == completed + cancelled
 }
+object HeaderParser {
+    fun fromText(lines: List<String>): Header {
+        val joined = lines.take(100).joinToString(" ")
+        fun count(vararg labels: String): Int? = labels.firstNotNullOfOrNull { label ->
+            Regex("""(?:$label)\s*[:：(]?\s*(\d+)""",RegexOption.IGNORE_CASE)
+                .find(joined)?.groupValues?.get(1)?.toIntOrNull()
+                ?: Regex("""(\d+)\s*(?:$label)""",RegexOption.IGNORE_CASE)
+                    .find(joined)?.groupValues?.get(1)?.toIntOrNull()
+        }
+        val completed = count("Completed", "เสร็จสมบูรณ์", "สำเร็จ")
+        val cancelled = count("Cancelled", "Canceled", "ยกเลิก")
+        val explicit = count("Total", "All", "ทั้งหมด")
+        return Header(explicit ?: if(completed!=null && cancelled!=null) completed+cancelled else null,
+            completed,cancelled)
+    }
+}
 data class Page(val kind: PageKind, val cards: List<Card>, val header: Header? = null)
 data class Ready(val id: String, val date: String, val gf: String, val firstSeen: Long,
                  val context: String, val image: String?)

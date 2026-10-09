@@ -7,6 +7,14 @@ import kotlin.test.assertTrue
 
 class CoreTest {
     private val date = "2026-10-08"
+    @Test fun thaiHeaderFromReferenceHasSeventySevenWithoutExplicitTotal() {
+        val h = HeaderParser.fromText(listOf("ยอดขายสุทธิ", "เสร็จสมบูรณ์", "77", "ยกเลิก", "0", "คำสั่งซื้อ"))
+        assertEquals(Header(77,77,0),h)
+        assertTrue(h.consistent)
+    }
+    @Test fun absentHeaderIsNotZeroOrders() {
+        assertEquals(null,HeaderParser.fromText(listOf("History","GF-898")).total)
+    }
     @Test fun oneDelayedAmongMultipleCardsAndReadyNeverCreatesCase() {
         val ready = listOf(Ready("a", date, "GF-898", 1000, "table", "r.jpg"),
             Ready("b", date, "GF-888", 1000, "table", "r.jpg"))
