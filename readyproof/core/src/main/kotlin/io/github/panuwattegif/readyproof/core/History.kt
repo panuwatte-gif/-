@@ -66,6 +66,8 @@ object HistoryReader {
      */
     fun count(nodes: List<UiNode>, labels: List<String>): Int? {
         val keys = labels.map { TextNorm.key(it) }.filter { it.isNotEmpty() }
+        // Both totals in one line: "เสร็จสมบูรณ์ 77 ยกเลิก 0" (one element on the shop's phone).
+        for (n in nodes) for (s in n.ownStrings()) countIn(s, labels)?.let { return it }
         for ((i, n) in nodes.withIndex()) {
             val s = n.ownStrings().firstOrNull() ?: continue
             val k = TextNorm.key(s)
@@ -86,6 +88,23 @@ object HistoryReader {
             // No positions: the next text, if it is a number.
             val next = nodes.getOrNull(i + 1) ?: continue
             if (isInt(next)) return toInt(next.ownStrings().first())
+        }
+        return null
+    }
+
+    /**
+     * The number right after one of [labels] anywhere in [text]: "เสร็จสมบูรณ์ 77 ยกเลิก 0" -> 77 for
+     * "เสร็จสมบูรณ์", 0 for "ยกเลิก". A clock time never counts ("เสร็จสมบูรณ์เมื่อ 7:32" has a word
+     * between, and "Completed 7:32" is a time).
+     */
+    fun countIn(text: String, labels: List<String>): Int? {
+        val t = TextNorm.clean(text)
+        for (label in labels) {
+            val l = TextNorm.clean(label)
+            if (l.isEmpty()) continue
+            val m = Regex(Regex.escape(l) + """\s*[:：]?\s*(\d{1,3}(?:,\d{3})+|\d{1,6})(?![\d:.,])""", RegexOption.IGNORE_CASE).find(t)
+                ?: continue
+            return toInt(m.groupValues[1])
         }
         return null
     }

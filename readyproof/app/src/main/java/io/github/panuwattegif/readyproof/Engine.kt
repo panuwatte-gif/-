@@ -151,6 +151,12 @@ class Engine(private val service: ProofService) {
     private var stuckMoves = 0
     /** The last [move] could not even try (gesture refused, screen unreadable): not the end of a list. */
     private var moveFailed = false
+    /**
+     * The tab we opened by tapping it, for Grab builds that mark no tab as selected (the shop's
+     * phone). Trusted until a person uses the phone or the screen shows another tab.
+     */
+    private var assumedTab: OrderTab? = null
+    private var assumedAt = 0L
 
     @Volatile
     var lastSweepAt = 0L
@@ -294,7 +300,15 @@ class Engine(private val service: ProofService) {
     }
 
     private fun isReady(s: Screen): Boolean =
-        s.a.tab == OrderTab.READY || (s.a.tab == null && s.a.readyGfs().isNotEmpty())
+        s.a.tab == OrderTab.READY ||
+            (s.a.tab == null && tabOf(s).let { it == null || it == OrderTab.READY } && s.a.readyGfs().isNotEmpty())
+
+    /** The open tab: what Grab reports or shows, else the tab we tapped ourselves (see [assumedTab]). */
+    private fun tabOf(s: Screen): OrderTab? {
+        s.a.tab?.let { return it }
+        val t = assumedTab ?: return null
+        return if (s.a.tabsVisible && lastUserTouchAt <= assumedAt) t else null
+    }
 
     private fun stillHistory(s: Screen): Boolean =
         s.a.tab == OrderTab.HISTORY || (s.a.tab == null && s.a.historyViews().isNotEmpty())
@@ -910,13 +924,25 @@ class Engine(private val service: ProofService) {
         val gfx = c.gfExtractor()
         repeat(4) {
             val s = reader.read(c) ?: return@automate false
-            if (s.a.tab == want) return@automate true
+            if (tabOf(s) == want) return@automate true
             if (s.dialog) return@automate false
             val tab = TabDetector.tapTarget(s.roots, labels, c.tabLabels, gfx)
             if (tab != null) {
-                actor.click(tab)
+                val tapped = actor.click(tab)
                 val after = settle() ?: return@automate false
-                if (after.a.tab == want) return@automate true
+                if (after.a.tab == want) {
+                    assumedTab = want
+                    assumedAt = SystemClock.uptimeMillis()
+                    return@automate true
+                }
+                // Grab marks no tab as selected here: trust the tap, unless the screen plainly shows
+                // another tab (History is recognised by its content; it is never just assumed).
+                if (tapped && after.a.tab == null && want != OrderTab.HISTORY && after.a.tabsVisible) {
+                    assumedTab = want
+                    assumedAt = SystemClock.uptimeMillis()
+                    Diagnostics.note(service, "tab $want opened by tap (Grab marks no selected tab)")
+                    return@automate true
+                }
                 return@repeat
             }
             val nav = TabDetector.tapTarget(s.roots, c.ordersNavLabels, c.navLabels, gfx)
@@ -935,7 +961,7 @@ class Engine(private val service: ProofService) {
             }
             return@automate false
         }
-        reader.read(c)?.a?.tab == want
+        reader.read(c)?.let { tabOf(it) } == want
     }
 
     /**
@@ -946,7 +972,7 @@ class Engine(private val service: ProofService) {
         repeat(2) { i ->
             if (i > 0) delay(1_500)
             val s = reader.read(cfg) ?: return null
-            if (s.a.tab != want) return null
+            if (tabOf(s) != want) return null
             if (s.a.views.any { it.card.inList }) return false
             val texts = s.roots.flatMap { r -> r.walk().filter { it.shown }.flatMap { it.ownStrings().asSequence() }.toList() }
             if (texts.any { t -> NOT_READY_WORDS.any { TextNorm.key(t).contains(it) } }) return null
@@ -996,7 +1022,7 @@ class Engine(private val service: ProofService) {
         if (!lane.tryLock()) return
         try {
             val s = reader.read(c) ?: return
-            if (isReady(s)) return
+            if (isReady(s) || tabOf(s) == OrderTab.READY) return
             if (s.dialog) {
                 problem("Grab มีหน้าต่างเด้งค้างอยู่ — กรุณาปิดเอง แล้วเปิดแท็บ Ready")
                 return
@@ -1110,8 +1136,11 @@ class Engine(private val service: ProofService) {
                     return
                 }
                 sweepReady()
+                val emptyNow = queueEmpty(OrderTab.READY) == true
+                // Seen empty twice: every order the tracker still remembers has been picked up.
+                if (emptyNow) tracker.complete(emptyList(), System.currentTimeMillis())
                 val left = tracker.present()
-                val readyEmpty = left.isEmpty() && queueEmpty(OrderTab.READY) == true
+                val readyEmpty = left.isEmpty() && emptyNow
                 if (!readyEmpty) {
                     later(retryAt, if (left.isNotEmpty()) {
                         "ยังมี ${left.size} ออเดอร์รอไรเดอร์ในแท็บ Ready (${left.take(5).joinToString(", ")})"

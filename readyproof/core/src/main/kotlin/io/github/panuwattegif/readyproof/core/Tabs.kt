@@ -13,6 +13,9 @@ object TabDetector {
     private val AFTER_LABEL = Regex("""[\s,.:()\-]*\d{0,4}\)?\s*""")
     private val NUMBER = Regex("""^\(?(\d{1,4})\)?$""")
     private val TRAILING_NUMBER = Regex("""(\d{1,4})\)?\s*$""")
+    // Bottom bar items read out their position: "คำสั่งซื้อ, แท็บที่ 2 จาก 6", "Orders, tab 2 of 6".
+    private val TAB_POSITION = Regex("""[\s,]*(แท็บที่|tab)\s*\d+\s*(จาก|of)\s*\d+\s*$""", RegexOption.IGNORE_CASE)
+    private val CLOCK = Regex("""\d{1,2}[:.]\d{2}""")
 
     /** true = Ready tab open, false = another tab, null = no selected tab reported. */
     fun readyTabOpen(roots: List<UiNode>, cfg: Config): Boolean? = when (openTab(roots, cfg)) {
@@ -21,8 +24,38 @@ object TabDetector {
         else -> false
     }
 
-    /** The selected order tab, or null when no selected tab label is reported. */
-    fun openTab(roots: List<UiNode>, cfg: Config): OrderTab? {
+    /**
+     * The selected order tab. Some Grab builds (the shop's OPPO phone) mark no tab as selected:
+     * then History is still recognised by what only History shows, Grab's totals line
+     * ("เสร็จสมบูรณ์ 77 ยกเลิก 0") or finished rows ("GF-133 เสร็จสมบูรณ์เมื่อ 7:32 PM"). Null = unknown.
+     */
+    fun openTab(roots: List<UiNode>, cfg: Config): OrderTab? = selectedTab(roots, cfg) ?: if (looksLikeHistory(roots, cfg)) OrderTab.HISTORY else null
+
+    /**
+     * History content on screen: Grab's totals line, or an order row that finished at a clock time
+     * while no order on screen is still waiting for a driver (Ready/Preparing never list finished
+     * orders, History never lists waiting ones).
+     */
+    fun looksLikeHistory(roots: List<UiNode>, cfg: Config): Boolean {
+        val gfx = cfg.gfExtractor()
+        val waitingWords = cfg.readyAny.map { TextNorm.key(it) }.filter { it.isNotEmpty() }
+        var finishedRow = false
+        for (root in roots) {
+            for (n in root.walk()) {
+                if (!n.shown) continue
+                for (str in n.ownStrings()) {
+                    if (HistoryReader.countIn(str, cfg.completedLabels) != null) return true
+                    if (gfx.extract(str).isEmpty()) continue
+                    val key = TextNorm.key(str)
+                    if (waitingWords.any { key.contains(it) }) return false
+                    if (CLOCK.containsMatchIn(str) && cfg.doneAny.any { key.contains(TextNorm.key(it)) }) finishedRow = true
+                }
+            }
+        }
+        return finishedRow
+    }
+
+    private fun selectedTab(roots: List<UiNode>, cfg: Config): OrderTab? {
         var found: OrderTab? = null
         for (root in roots) {
             for (n in root.walk()) {
@@ -43,7 +76,7 @@ object TabDetector {
 
     /** "Ready", "Ready 2", "Ready (2)" name the tab; "Ready in: 9:32 min" does not. */
     fun isLabel(text: String, label: String): Boolean {
-        val t = TextNorm.key(text)
+        val t = TextNorm.key(text).replace(TAB_POSITION, "")
         val l = TextNorm.key(label)
         if (l.isEmpty() || !t.startsWith(l)) return false
         return AFTER_LABEL.matches(t.substring(l.length))

@@ -82,17 +82,19 @@ object Diagnostics {
     fun daily(ctx: Context, day: LocalDate): String = try {
         val sb = StringBuilder()
         header(ctx, sb)
-        val prefix = day.toString()
+        // The day itself and the night after it (a History pass may run after midnight).
+        val prefixes = listOf(day.toString(), day.plusDays(1).toString())
         val activity = File(dir(ctx), "activity.log")
-        sb.append("\n## Activity ").append(prefix).append('\n')
-        if (activity.exists()) activity.readLines().filter { it.startsWith(prefix) }.takeLast(1500).forEach { sb.append(it).append('\n') }
+        sb.append("\n## Activity ").append(day).append('\n')
+        if (activity.exists()) activity.readLines().filter { l -> prefixes.any { l.startsWith(it) } }.takeLast(1500).forEach { sb.append(it).append('\n') }
         val errors = File(dir(ctx), "errors.log")
-        sb.append("\n## Errors ").append(prefix).append('\n')
-        if (errors.exists()) errors.readLines().filter { it.startsWith(prefix) }.takeLast(200).forEach { sb.append(it).append('\n') }
+        sb.append("\n## Errors ").append(day).append('\n')
+        if (errors.exists()) errors.readLines().filter { l -> prefixes.any { l.startsWith(it) } }.takeLast(200).forEach { sb.append(it).append('\n') }
         val zone = java.time.ZoneId.systemDefault()
         dir(ctx).listFiles { f -> f.name.startsWith("dump-") }?.sortedBy { it.name }?.forEach { f ->
             val at = f.name.removePrefix("dump-").removeSuffix(".txt").toLongOrNull() ?: return@forEach
-            if (java.time.Instant.ofEpochMilli(at).atZone(zone).toLocalDate() != day) return@forEach
+            val dumpDay = java.time.Instant.ofEpochMilli(at).atZone(zone).toLocalDate()
+            if (dumpDay != day && dumpDay != day.plusDays(1)) return@forEach
             sb.append("\n## ").append(f.name).append('\n').append(f.readText())
         }
         sb.toString()
