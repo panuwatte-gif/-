@@ -17,7 +17,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.util.concurrent.Executor
 
-class GrabObserver : AccessibilityService() {
+class ProofService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executor { handler.post(it) }
     private val gate = SweepGate()
