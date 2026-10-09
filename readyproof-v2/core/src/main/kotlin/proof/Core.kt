@@ -72,8 +72,9 @@ object Logic {
         Audit(header, history.map { it.id }.distinct().size,
             history.filter { it.image != null }.map { it.id }.distinct().size, stuck)
 
-    fun report(shop: String, date: String, audit: Audit, cases: List<Case>): String {
-        val delayed = cases.size
+    fun report(shop: String, date: String, audit: Audit, cases: List<Case>,
+               observedDelayed: Int = cases.size): String {
+        val delayed = observedDelayed
         val paired = cases.filter { it.kind == CaseKind.MATCHED }
         val alone = cases.filter { it.kind == CaseKind.NO_READY }
         val unknown = cases.filter { it.kind == CaseKind.UNKNOWN }
@@ -86,6 +87,7 @@ object Logic {
             appendLine("History: ${if (audit.complete) "ครบ" else "ยังไม่ยืนยัน/ชั่วคราว"}")
             appendLine("Total orders = ${total ?: "UNKNOWN"} (Completed ${audit.header?.completed ?: "UNKNOWN"} + Cancelled ${audit.header?.cancelled ?: "UNKNOWN"})")
             appendLine("Grab delayed = $delayed (${pct(delayed)})")
+            appendLine("ภาพ DELAY ที่ยังขาด = ${(observedDelayed - cases.size).coerceAtLeast(0)}")
             appendLine("Delayed + Ready = ${paired.size}: ${paired.joinToString { it.history.card.gf }}")
             appendLine("Delayed ไม่มี Ready = ${alone.size}: ${alone.joinToString { it.history.card.gf }}")
             appendLine("UNKNOWN = ${unknown.size}: ${unknown.joinToString { it.history.card.gf }}")

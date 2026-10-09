@@ -65,7 +65,7 @@ class MainActivity : Activity() {
         val audit=Logic.audit(db.header(day),all,db.stuck(day))
         val cases=Logic.match(all,db.ready(day))
         line("กวาดรายออเดอร์ ${audit.rows}/${audit.header?.total ?: "UNKNOWN"} • ภาพ ${audit.images} • ${if(audit.complete)"ครบตามยอด" else "ยังไม่ยืนยันว่าครบ"}",18f)
-        line(Logic.report(shop,day,audit,cases))
+        line(Logic.report(shop,day,audit,cases,all.count { it.card.delayed }))
         line("เคส Delayed เท่านั้น",20f)
         cases.forEach { c ->
             line("${c.history.card.gf} • ${when(c.kind) {
@@ -73,11 +73,16 @@ class MainActivity : Activity() {
                 CaseKind.NO_READY -> "DELAY เดี่ยว ไม่มี Ready"
                 CaseKind.UNKNOWN -> "UNKNOWN ยืนยัน instance ไม่ได้"
             }}\nDELAY: ${c.history.image?.let { File(it).name } ?: "ขาด"}" +
-                if(c.ready!=null) "\nREADY: ${File(c.ready.image!!).name}" else "")
+            c.ready?.image?.let { "\nREADY: ${File(it).name}" }.orEmpty())
         }
-        button("แชร์หลักฐานและสรุป • เลือก Save to Google Drive") { share(cases,audit) }
+        button("แชร์หลักฐานและสรุป • เลือก Save to Google Drive") {
+            try { share(cases,audit,all.count { it.card.delayed }) }
+            catch (e: Exception) {
+                line("แชร์ไม่สำเร็จ: ${e.message ?: "ไม่ทราบสาเหตุ"} • ภาพต้นฉบับยังอยู่ในเครื่อง")
+            }
+        }
     }
-    private fun share(cases: List<Case>, audit: Audit) {
+    private fun share(cases: List<Case>, audit: Audit, observedDelayed: Int) {
         val export=File(filesDir,"readyproof-v2/export").apply { mkdirs() }
         val files=mutableListOf<File>()
         val repeat=cases.groupingBy { it.history.card.gf }.eachCount()
@@ -98,7 +103,7 @@ class MainActivity : Activity() {
         }
         add(db.headerImage(day),"HISTORY_TOTAL_${day}.jpg")
         val summary=File(export,"SUMMARY_${day}.txt")
-        summary.writeText(Logic.report(shop,day,audit,cases));files+=summary
+        summary.writeText(Logic.report(shop,day,audit,cases,observedDelayed));files+=summary
         val uris=ArrayList(files.map { FileProvider.getUriForFile(this,
             "io.github.panuwattegif.readyproof.v2files",it) })
         val intent=Intent(Intent.ACTION_SEND_MULTIPLE).apply {

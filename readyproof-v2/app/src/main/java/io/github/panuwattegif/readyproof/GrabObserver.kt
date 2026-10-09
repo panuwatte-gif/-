@@ -88,6 +88,10 @@ class GrabObserver : AccessibilityService() {
             existing.none { it.card.signature == view.card.signature && it.image != null }
         }
         if (needsHeader || unseen.isNotEmpty()) {
+            unseen.forEach { view ->
+                if (existing.none { it.card.signature == view.card.signature })
+                    db.putHistory(History("$day:${view.card.signature}",day,view.card,System.currentTimeMillis(),null))
+            }
             capture(screen, "HISTORY") { image ->
                 if (image == null) {
                     db.putHeader(day,header ?: Header(null,null,null),db.headerImage(day))
@@ -97,6 +101,7 @@ class GrabObserver : AccessibilityService() {
                 if (needsHeader) db.putHeader(day,header!!,image)
                 else if (header?.consistent == true && db.header(day)?.consistent != true)
                     db.putHeader(day,header,db.headerImage(day))
+                db.setStuck(day,false)
                 unseen.forEach { view ->
                     val old = existing.find { it.card.signature == view.card.signature }
                     val id = old?.id ?: "$day:${view.card.signature}"
@@ -141,6 +146,7 @@ class GrabObserver : AccessibilityService() {
     private fun inspectAfterScroll(before: String) {
         handler.post({
             if (gate.mode != PageKind.HISTORY || busy) return@post
+            val day = gate.date ?: return@post
             val root=rootInActiveWindow ?: return@post
             val m=resources.displayMetrics
             val next=ScreenReader.read(root,m.widthPixels,m.heightPixels)

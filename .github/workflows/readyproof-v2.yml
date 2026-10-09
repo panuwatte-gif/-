@@ -56,6 +56,23 @@ jobs:
           test "$OLD" -gt "$NEW"
           test "$( "$SIGNER" verify --print-certs dist/ReadyProof-V2.apk | grep 'Signer #1 certificate SHA-256 digest:' | head -1 )" = "$( "$SIGNER" verify --print-certs dist/ReadyProof-86-rollback.apk | grep 'Signer #1 certificate SHA-256 digest:' | head -1 )"
           sha256sum dist/*.apk > dist/SHA256SUMS
+      - name: Install baseline, update and rollback without clearing data
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          script: |
+            gh release download readyproof-recovery-v7-128 --repo "$GITHUB_REPOSITORY" --pattern ReadyProof.apk --dir dist/baseline
+            adb install -r dist/baseline/ReadyProof.apk
+            adb root
+            adb shell am start -n io.github.panuwattegif.readyproof/.ui.MainActivity
+            adb shell 'mkdir -p /data/user/0/io.github.panuwattegif.readyproof/files && echo retained > /data/user/0/io.github.panuwattegif.readyproof/files/install-marker'
+            adb install -r dist/ReadyProof-V2.apk
+            adb shell test -f /data/user/0/io.github.panuwattegif.readyproof/files/install-marker
+            adb install -r dist/ReadyProof-86-rollback.apk
+            adb shell test -f /data/user/0/io.github.panuwattegif.readyproof/files/install-marker
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@v4
         with:
           name: ReadyProof-V2-plus-installable-86-rollback
