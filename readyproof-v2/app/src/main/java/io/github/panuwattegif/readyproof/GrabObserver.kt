@@ -28,12 +28,16 @@ class ProofService : AccessibilityService() {
     private var active = emptySet<String>()
     private var lastDate = ""
     private var lastReadySeen = 0L
+    private var lastSweepToken = -1L
 
     override fun onServiceConnected() { db = ProofDb(this); syncMode() }
     private fun syncMode() {
         val selected = getSharedPreferences("control", MODE_PRIVATE).getString("sweep", null)
-        if (selected != null && gate.date != selected) {
+        val token = getSharedPreferences("control", MODE_PRIVATE).getLong("sweep_token",0L)
+        if (selected != null && (gate.date != selected || token != lastSweepToken)) {
             gate.start(selected); busy = false; failedScrolls = 0; lastPage = ""
+            lastSweepToken = token
+            db.setStuck(selected,false)
         } else if (selected == null && gate.mode == PageKind.HISTORY) {
             gate.stop(); busy = false; failedScrolls = 0
         }
@@ -80,6 +84,7 @@ class ProofService : AccessibilityService() {
     private fun observeHistory(screen: Screen) {
         val day = gate.date ?: return
         if (screen.page.kind != PageKind.HISTORY) return
+        if (db.stuck(day)) return
         val existing = db.history(day)
         val signature = screen.views.joinToString(";") { it.card.signature + ":" + it.bounds.top }
         val header = screen.page.header

@@ -52,7 +52,9 @@ class MainActivity : Activity() {
         line(if(sweeping!=null) "กำลังกวาด History วันที่ $sweeping" else "เฝ้า Ready เมื่อเปิดแท็บพร้อมจัดส่ง")
         line("Ready ที่เห็น ${prefs.getInt("visible",0)} • Pending ${prefs.getInt("pending",0)} • มีภาพจริง ${db.ready(day).count { it.image != null }}")
         if(sweeping==null) button("เริ่มกวาด History วันที่ $day") {
-            prefs.edit().putString("sweep",day).putString("status","รอหน้า History ที่เลือกวันที่ใน Grab").apply()
+            prefs.edit().putString("sweep",day)
+                .putLong("sweep_token",System.currentTimeMillis())
+                .putString("status","รอหน้า History ที่เลือกวันที่ใน Grab").apply()
             render()
             packageManager.getLaunchIntentForPackage("com.grab.merchant")?.let(::startActivity)
         } else button("หยุดกวาด History") {
@@ -60,6 +62,7 @@ class MainActivity : Activity() {
         }
         line("ใน Grab ให้เปิด History เลือกวันเดียวกันและเลื่อนขึ้นบนสุดจนเห็นยอดสำเร็จ/ยกเลิกก่อนกดเริ่ม • ระบบจะเลื่อนทีละขั้นหลังภาพบันทึกสำเร็จ")
         line("สถานะ: ${prefs.getString("status","รอเริ่ม")}")
+        if (sweeping != null && db.stuck(sweeping)) line("กวาดติดขัด: ตรวจหน้า Grab แล้วกดหยุด/เริ่มกวาดอีกครั้ง")
         button("เปิดสิทธิ์การช่วยเหลือพิเศษ") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         val all=db.history(day)
         val audit=Logic.audit(db.header(day),all,db.stuck(day),db.headerImage(day)!=null)
