@@ -23,3 +23,5 @@ READY photos are saved only for pending order identities and valid visible cards
 7. Share the valid evidence even if an Android screenshot or movement fails.
 
 CI checks the supplied OPPO tree and compiles/sign-verifies the APK. CI cannot prove physical gesture delivery on the shop's phone. The service uses accessibility metadata around capture, not pixel OCR; clipped or missing metadata can still require a retry. Reports must stay provisional until coverage is verified.
+
+Ready deduplication is per confirmed stay: a reused GF is eligible again only after two complete top-to-bottom sweeps confirm its absence for at least 15 seconds. Partial viewports never clear proof. Existing day counters still count distinct GF codes; they do not prove distinct order instance coverage, especially if codes are reused. Restart seeds existing day proof conservatively.

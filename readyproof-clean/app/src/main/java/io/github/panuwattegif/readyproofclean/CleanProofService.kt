@@ -45,6 +45,9 @@ class CleanProofService : AccessibilityService() {
     private var readyDay = LocalDate.now()
     private val readySeen = LinkedHashSet<String>()
     private val readyProof = LinkedHashSet<String>()
+    private val readyStays = ReadyStays()
+    private val readySweepSeen = LinkedHashSet<String>()
+    private var readySweepFromTop = false
     private var readyForward = true
     private var readyLastSignature = ""
     private var readySameSignature = 0
@@ -100,6 +103,9 @@ class CleanProofService : AccessibilityService() {
         worker.post {
             readySeen.clear()
             readyProof.clear()
+            readyStays.clear()
+            readySweepSeen.clear()
+            readySweepFromTop = false
             loadReadyState()
             statusText = "เปลี่ยนร้านแล้ว · เฝ้า Ready"
             scheduleScan()
@@ -182,12 +188,17 @@ class CleanProofService : AccessibilityService() {
             readyDay = today
             readySeen.clear()
             readyProof.clear()
+            readyStays.clear()
+            readySweepSeen.clear()
+            readySweepFromTop = false
             readyLastSignature = ""
             readySameSignature = 0
             loadReadyState()
         }
         val shop = CleanStore.selectedShop(this)
         val visibleReady = analysis.items.filter { it.type == ObsType.READY }.map { it.gf }.distinct()
+        readyStays.seen(visibleReady)
+        if (readyForward && readySweepFromTop) readySweepSeen.addAll(visibleReady)
         val newlySeen = visibleReady.filter { readySeen.add(it) }
         if (newlySeen.isNotEmpty()) {
             CleanStore.append(this, CleanEvent(
@@ -203,12 +214,18 @@ class CleanProofService : AccessibilityService() {
         }
         readyLastSignature = signature
         if (readySameSignature >= 2) {
+            if (readyForward && readySweepFromTop) readyStays.complete(readySweepSeen, System.currentTimeMillis())
+            if (!readyForward) {
+                readySweepFromTop = true
+                readySweepSeen.clear()
+                readySweepSeen.addAll(visibleReady)
+            }
             readyForward = !readyForward
             readySameSignature = 0
             readyLastSignature = ""
         }
 
-        val pending = visibleReady.filter { it !in readyProof }
+        val pending = visibleReady.filter { readyStays.needsProof(it) }
         statusText = "Ready เห็น ${readySeen.size} / มีภาพ ${readyProof.size} / Pending ${(readySeen - readyProof).size}"
         if (pending.isNotEmpty() && readyFingerprints(analysis, pending).isNotEmpty()) {
             captureReady(analysis, pending)
@@ -257,6 +274,7 @@ class CleanProofService : AccessibilityService() {
                         gfs = stable, uri = uri.toString(),
                     ))
                     readyProof.addAll(stable)
+                    readyStays.proved(stable)
                 } finally {
                     bitmap?.recycle()
                     captureBusy = false
@@ -522,6 +540,7 @@ class CleanProofService : AccessibilityService() {
         val events = CleanStore.load(this, shop, readyDay)
         readySeen.addAll(events.filter { it.kind == "READY_SEEN" }.flatMap { it.gfs })
         readyProof.addAll(events.filter { it.kind == "READY_PROOF" && it.uri != null }.flatMap { it.gfs })
+        readyStays.proved(readyProof)
     }
 
     private fun loadHistoryProofState(day: LocalDate) {
