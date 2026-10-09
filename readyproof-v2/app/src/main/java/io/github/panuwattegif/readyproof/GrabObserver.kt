@@ -83,6 +83,11 @@ class GrabObserver : AccessibilityService() {
         val existing = db.history(day)
         val signature = screen.views.joinToString(";") { it.card.signature + ":" + it.bounds.top }
         val header = screen.page.header
+        if (db.headerImage(day) == null && header?.consistent != true) {
+            getSharedPreferences("control",MODE_PRIVATE).edit()
+                .putString("status","รอยอดหัวหน้า History: เลื่อน Grab ขึ้นบนสุด").apply()
+            return
+        }
         val needsHeader = header?.consistent == true && db.headerImage(day) == null
         val unseen = screen.views.filter { view ->
             existing.none { it.card.signature == view.card.signature && it.image != null }

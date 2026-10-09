@@ -4,7 +4,7 @@ Fresh implementation under `readyproof-v2/`. It uses the same application ID and
 
 ## Operation
 
-Enable Accessibility for ReadyProof. Leave GrabMerchant on **Ready** on the dedicated OPPO. The monitor saves one full-screen screenshot when a visible GF lacks evidence. An unsuccessful capture stays Pending. Start History from ReadyProof after selecting the order date here and opening that date in GrabMerchant. The sweep scrolls one step only after the current screenshot has been persisted. Tap Stop to resume Ready monitoring. Use Share to choose Save to Google Drive; each valid case can be shared even if others are missing.
+Enable Accessibility for ReadyProof. Leave GrabMerchant on **Ready** on the dedicated OPPO. The monitor saves one full-screen screenshot when a visible GF lacks evidence. An unsuccessful capture stays Pending. For History, select the order date in ReadyProof, select the same date in GrabMerchant and scroll Grab's list to the top so the Completed/Cancelled header is visible before tapping Start. The sweep waits for that header screenshot and scrolls one step only after the current screenshot has been persisted. Tap Stop to resume Ready monitoring. Use Share to choose Save to Google Drive; each valid case can be shared even if others are missing.
 
 The History total is read from the visible header. The report says UNKNOWN until Total, Completed and Cancelled are found, reconcile, and each row has an image. Only Delayed inside the same card creates a case. Repeated GF instances without a unique temporal match are UNKNOWN.
 

@@ -58,7 +58,7 @@ class MainActivity : Activity() {
         } else button("หยุดกวาด History") {
             prefs.edit().remove("sweep").apply();render()
         }
-        line("ใน Grab ให้เปิด History และเลือกวันเดียวกันเองก่อนกดเริ่ม • ระบบจะเลื่อนทีละขั้นหลังภาพบันทึกสำเร็จ")
+        line("ใน Grab ให้เปิด History เลือกวันเดียวกันและเลื่อนขึ้นบนสุดจนเห็นยอดสำเร็จ/ยกเลิกก่อนกดเริ่ม • ระบบจะเลื่อนทีละขั้นหลังภาพบันทึกสำเร็จ")
         line("สถานะ: ${prefs.getString("status","รอเริ่ม")}")
         button("เปิดสิทธิ์การช่วยเหลือพิเศษ") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         val all=db.history(day)
