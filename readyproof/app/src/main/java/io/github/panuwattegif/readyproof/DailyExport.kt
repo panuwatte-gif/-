@@ -9,33 +9,6 @@ import android.util.AtomicFile
 import java.io.File
 
 object DailyExport {
-    fun countMismatch(ctx: Context, report: DailyReport): Boolean {
-        val raw = ConfigStore.prefs(ctx).getString("history_totals_${report.shopId ?: "UNKNOWN"}_${report.date}", null) ?: return false
-        val m = Json.parseObject(raw)
-        return (m["completed"] as Number).toInt() != report.completedSeen ||
-            (m["cancelled"] as Number).toInt() != report.cancelledSeen ||
-            (m["total"] as Number).toInt() != report.historyOrders
-    }
-    fun captureTotals(ctx: Context, day: LocalDate, shopId: String?, roots: List<UiNode>) {
-        val totals = HistoryTotalsParser.parseRoots(roots, ConfigStore.get(ctx)) ?: return
-        ConfigStore.prefs(ctx).edit().putString("history_totals_${shopId ?: "UNKNOWN"}_$day",
-            Json.write(linkedMapOf("completed" to totals.completed, "cancelled" to totals.cancelled, "total" to totals.total))).apply()
-    }
-
-    fun headerSummary(ctx: Context, report: DailyReport): String {
-        val raw = ConfigStore.prefs(ctx).getString("history_totals_${report.shopId ?: "UNKNOWN"}_${report.date}", null)
-            ?: return "ยอดหัวหน้า History: ยังอ่านไม่ได้ — ไม่ใช้จำนวนภาพแทนจำนวนออเดอร์"
-        val m = Json.parseObject(raw)
-        val completed = (m["completed"] as Number).toInt()
-        val cancelled = (m["cancelled"] as Number).toInt()
-        val total = (m["total"] as Number).toInt()
-        val match = completed == report.completedSeen && cancelled == report.cancelledSeen && report.historyOrders == total
-        return "ยอดหัวหน้า History: ทั้งหมด $total / สำเร็จ $completed / ยกเลิก $cancelled\n" +
-            "อ่านรายออเดอร์: สำเร็จ ${report.completedSeen} / ยกเลิก ${report.cancelledSeen} — " +
-            (if (match) "จำนวนตรงกัน" else "จำนวนยังไม่ตรง: อย่าถือว่ากวาดครบ")
-    }
-
-    fun summary(ctx: Context, report: DailyReport, zone: ZoneId) = ReportText.summary(report, zone) + "\n" + headerSummary(ctx, report) + "\n"
     fun reachedEnd(ctx: Context, date: LocalDate, shopId: String?) =
         ConfigStore.prefs(ctx).getBoolean("history_end_${shopId ?: "UNKNOWN"}_$date", false)
 
@@ -43,37 +16,39 @@ object DailyExport {
     fun save(ctx: Context, day: LocalDate, shopId: String?, reachedEnd: Boolean, failureReason: String? = null): DailyReport {
         ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", reachedEnd).apply()
         val zone = ZoneId.of("Asia/Bangkok")
-        val records = RecordStore.loadReport(ctx, day)
-        val observed = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
-        val verifiedEnd = reachedEnd && !countMismatch(ctx, observed)
-        ConfigStore.prefs(ctx).edit().putBoolean("history_end_${shopId ?: "UNKNOWN"}_$day", verifiedEnd).apply()
-        val report = if (verifiedEnd == reachedEnd) observed else ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, false)
-        val text = summary(ctx, report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
+        val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
+        val report = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
+        val text = ReportText.summary(report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
         val manifest = Json.write(linkedMapOf(
-            "schema" to 2, "shopId" to shopId, "date" to day.toString(),
+            "schema" to 3, "shopId" to shopId, "date" to day.toString(),
             "historyFailure" to failureReason,
             "complete" to report.complete, "historyDateVerified" to report.historyDateVerified,
-            "sweepReachedEnd" to verifiedEnd, "observedTotalOrders" to report.historyOrders,
+            "sweepReachedEnd" to reachedEnd, "observedTotalOrders" to report.historyOrders,
             "totalOrders" to if (report.complete) report.historyOrders else null,
             "grabDelayed" to report.delayed, "readyEvidenceCount" to report.withEvidence.size,
             "actualDelayed" to report.actualDelayed, "grabPercentProvisional" to report.pct(report.delayed),
             "actualPercentProvisional" to report.pct(report.actualDelayed),
+            // Grab's own totals from the History header and the evidence verdicts (schema 3).
+            "grabCompleted" to report.grabCompleted, "grabCancelled" to report.grabCancelled,
+            "historyMatchesGrab" to report.historyMatchesGrab,
+            "inTime" to report.inTime.size, "late" to report.late.size, "noEvidence" to report.noEvidence.size,
+            "grabPercent" to report.grabPct, "shopPercent" to report.realPct,
             "pendingReadyGF" to report.pendingReadyGfs,
             "missingReadyInstances" to report.missingReadyInstances,
             "missingHistoryInstances" to report.missingHistoryInstances,
             "unknownHistoryInstances" to report.unknownHistoryInstances,
             "cases" to report.cases.map { c -> linkedMapOf(
                 "gf" to c.gf, "finishedAt" to c.doneAt?.toString(), "matchStatus" to c.matchStatus,
+                "verdict" to c.verdict.name,
                 "delayMinutes" to c.delayMin, "readyRecordIds" to c.evidence.map { it.record.id },
                 "delayRecordIds" to c.delayShots.map { it.id }) },
-            "records" to records.filter { r -> r.shopId == shopId && (RecordStore.dateOf(r.t) == day ||
-                r.historyDate == day.toString() || r.items.any { it.historyDate == day.toString() }) }
+            "records" to records.filter { it.shopId == shopId && RecordStore.dateOf(it.t) == day }
                 .map { Json.parseObject(RecordCodec.encode(it)) }
         ))
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_manifest-$day.json", manifest)
-        if (ManualWorkflow.autoUpload && Shop.fromId(shopId) != null && NightlyUploads.canRelease(day, LocalDateTime.now(zone))) {
+        if (Shop.fromId(shopId) != null && NightlyUploads.canRelease(day, LocalDateTime.now(zone))) {
             // Durable immutable intent also recovers a process death before the outbox task starts.
             saveLocal(ctx, "${shopId}_batch-request-$day.json", Json.write(linkedMapOf(
                 "shopId" to shopId, "date" to day.toString(), "text" to text, "manifest" to manifest)))

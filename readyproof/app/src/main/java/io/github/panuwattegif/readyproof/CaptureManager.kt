@@ -2,289 +2,140 @@ package io.github.panuwattegif.readyproof
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.view.Display
-import android.view.accessibility.AccessibilityWindowInfo
-import io.github.panuwattegif.readyproof.core.Deduper
 import io.github.panuwattegif.readyproof.core.Item
 import io.github.panuwattegif.readyproof.core.Naming
-import io.github.panuwattegif.readyproof.core.ObsType
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.RecordKind
-import io.github.panuwattegif.readyproof.core.ScreenAnalyzer
-import io.github.panuwattegif.readyproof.core.StatusRules
-import io.github.panuwattegif.readyproof.core.TextNorm
-import io.github.panuwattegif.readyproof.core.ProofValidation
-import io.github.panuwattegif.readyproof.core.ValidatedTarget
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.resume
 
-/** What gets stored next to a screenshot; for taps it is filled in while the shot is being taken. */
+/** What gets stored next to a screenshot. */
 data class CaptureMeta(
     val items: List<Item> = emptyList(),
     val visible: List<String> = emptyList(),
-    val click: String? = null,
     val note: String? = null,
-    /** Dedupe keys to release again if the shot fails, so the next scan retries. */
-    val dedupeKeys: List<String> = emptyList(),
-    val toast: String? = null,
+    /** Day the History tab showed, for History shots. */
+    val historyDate: String? = null,
+    /** Shop the phone is bound to; never changed afterwards (Drive routing depends on it). */
+    val shopId: String? = null,
 )
 
-class CaptureJob(val kind: RecordKind, val t: Long, val shopId: String? = null, val historyDate: String? = null) {
-    private val latch = CountDownLatch(1)
-
-    @Volatile
-    private var meta: CaptureMeta? = null
-
-    fun setMeta(m: CaptureMeta) {
-        meta = m
-        latch.countDown()
-    }
-
-    fun awaitMeta(timeoutMs: Long): CaptureMeta {
-        if (timeoutMs > 0) latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        return meta ?: CaptureMeta()
-    }
-}
-
 /**
- * Takes silent screenshots through the accessibility service (no flash, no sound, no user
- * prompt) and saves them with a log record.
- *
- * DELAY evidence is fail-closed: immediately before AND immediately after Android captures the
- * screen, the target order must still expose both GF-xxx and Delayed/ล่าช้า in the same visible
- * History card. If the list moved while a screenshot was queued, that stale screenshot is thrown
- * away instead of being saved under the old GF filename.
+ * Silent screenshots through the accessibility service (no flash, no sound, no prompt).
+ * Taking a shot and saving it are separate steps so the caller can check, between the two,
+ * that the screen did not move while the shot was taken (a shot that might miss the order
+ * number is thrown away instead of saved).
  */
-class CaptureManager(
-    private val service: AccessibilityService,
-    private val onDone: (job: CaptureJob, record: Record?, error: String?) -> Unit,
-) {
-    /** Only one capture job may be in the Android screenshot API at a time. */
-    private val requests = Executors.newSingleThreadExecutor()
-    private val io = Executors.newSingleThreadExecutor()
-    private val main = Handler(Looper.getMainLooper())
+class CaptureManager(private val service: AccessibilityService) {
+    private val mutex = Mutex()
+    private val worker = Executors.newSingleThreadExecutor()
     private val seq = AtomicInteger()
+    private var lastShotAt = 0L
 
     @Volatile
-    private var lastRequestAt = 0L
+    var lastError: String? = null
+        private set
 
-    fun submit(job: CaptureJob) {
-        try {
-            requests.execute { request(job) }
-        } catch (e: Exception) {
-            onDone(job, null, "ระบบกำลังปิด")
-        }
+    private sealed class Shot {
+        class Ok(val bitmap: Bitmap) : Shot()
+        class Fail(val code: Int, val message: String) : Shot()
     }
 
-    /**
-     * Keep the request executor occupied until this screenshot has actually completed. The old
-     * implementation only serialised the calls to takeScreenshot(); callbacks could still finish
-     * later, leaving an old metadata job in the queue after History had already scrolled.
-     */
-    private fun request(job: CaptureJob) {
-        var attempt = 1
-        while (attempt <= MAX_ATTEMPTS) {
-            val meta = job.awaitMeta(0)
-            val requestedTargets = meta.items
-            val before = if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY, RecordKind.MANUAL)) {
-                visibleEvidenceTargets(job.kind, requestedTargets)
-            } else {
-                requestedTargets.map { ValidatedTarget(it, "manual") }
-            }
-
-            if ((job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) && before.isEmpty()) {
-                if (attempt >= MAX_ATTEMPTS) {
-                    onDone(job, null, "ยังถ่ายหลักฐาน ${job.kind} ไม่ได้ — จะคงออเดอร์ไว้เพื่อสแกนซ้ำ")
-                    return
+    /** A screenshot of the whole screen as it is now; null when Android refused (see [lastError]). */
+    suspend fun take(): Bitmap? = mutex.withLock {
+        for (attempt in 1..MAX_ATTEMPTS) {
+            val wait = lastShotAt + MIN_GAP_MS - SystemClock.uptimeMillis()
+            if (wait > 0) delay(wait)
+            lastShotAt = SystemClock.uptimeMillis()
+            when (val s = shootOnce()) {
+                is Shot.Ok -> return@withLock s.bitmap
+                is Shot.Fail -> {
+                    lastError = s.message
+                    if (s.code != AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) return@withLock null
+                    delay(RETRY_DELAY_MS)
                 }
-                Thread.sleep(TARGET_RETRY_DELAY_MS)
-                attempt++
-                continue
-            }
-
-            val wait = lastRequestAt + MIN_GAP_MS - SystemClock.uptimeMillis()
-            if (wait > 0) Thread.sleep(wait)
-            lastRequestAt = SystemClock.uptimeMillis()
-
-            val finished = CountDownLatch(1)
-            val retry = AtomicBoolean(false)
-            val callbackDelivered = AtomicBoolean(false)
-            val expired = AtomicBoolean(false)
-            try {
-                service.takeScreenshot(Display.DEFAULT_DISPLAY, io, object : AccessibilityService.TakeScreenshotCallback {
-                    override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
-                        try {
-                            if (expired.get()) {
-                                screenshot.hardwareBuffer.close()
-                                return
-                            }
-                            if (job.kind == RecordKind.MANUAL) {
-                                // Keep the raw hand capture even without provable targets. Only the
-                                // validated stable subset may participate in automatic evidence matching.
-                                val stable = ProofValidation.stableSubset(before, visibleEvidenceTargets(job.kind, before.map { it.item }))
-                                val raw = meta.items.filterNot { it in stable }.map { it.copy(type = ObsType.VISIBLE) }
-                                save(job, screenshot, meta.copy(items = stable + raw))
-                            } else if (job.kind in listOf(RecordKind.READY, RecordKind.DELAY, RecordKind.HISTORY)) {
-                                // One bitmap may prove many orders. Keep only targets that are still
-                                // visibly present after Android produced the bitmap. Any target that
-                                // dropped out remains pending in ProofService and is retried; it is
-                                // never silently marked as having proof.
-                                val after = ProofValidation.stableSubset(before, visibleEvidenceTargets(job.kind, before.map { it.item }))
-                                if (after.isEmpty()) {
-                                    runCatching { screenshot.hardwareBuffer.close() }
-                                    retry.set(true)
-                                    return
-                                }
-                                val afterKeys = after.mapNotNull { Deduper.keyOf(it) }
-                                save(
-                                    job,
-                                    screenshot,
-                                    meta.copy(
-                                        items = after,
-                                        dedupeKeys = afterKeys,
-                                        toast = toastForValidated(job.kind, after),
-                                    ),
-                                )
-                            } else {
-                                save(job, screenshot, meta)
-                            }
-                        } finally {
-                            callbackDelivered.set(true)
-                            finished.countDown()
-                        }
-                    }
-
-                    override fun onFailure(errorCode: Int) {
-                        try {
-                            if (errorCode == AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT && attempt < MAX_ATTEMPTS) {
-                                retry.set(true)
-                            } else {
-                                onDone(job, null, "แคปหน้าจอไม่สำเร็จ (รหัส $errorCode)")
-                            }
-                        } finally {
-                            callbackDelivered.set(true)
-                            finished.countDown()
-                        }
-                    }
-                })
-            } catch (e: Exception) {
-                onDone(job, null, "แคปหน้าจอไม่สำเร็จ: ${e.message}")
-                return
-            }
-
-            if (!finished.await(CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                expired.set(true)
-                if (!callbackDelivered.get()) onDone(job, null, "แคปหน้าจอไม่ตอบสนองภายในเวลาที่กำหนด")
-                return
-            }
-            if (!retry.get()) return
-
-            if (attempt >= MAX_ATTEMPTS) {
-                onDone(job, null, "หน้าจอเปลี่ยนระหว่างแคป — จะคงออเดอร์ไว้เพื่อสแกนซ้ำ")
-                return
-            }
-            Thread.sleep(RETRY_DELAY_MS)
-            attempt++
-        }
-    }
-
-    /**
-     * Return the subset of [targets] that are visibly provable on the current Grab screen.
-     * READY only requires the target GF to be visible in the selected Ready tab. DELAY requires
-     * the same card to show both the target GF and Grab's delayed text.
-     */
-    private fun visibleEvidenceTargets(kind: RecordKind, targets: List<Item>): List<ValidatedTarget> {
-        if (targets.isEmpty()) return emptyList()
-        val result = AtomicReference<List<ValidatedTarget>>(emptyList())
-        val done = CountDownLatch(1)
-        main.post {
-            try {
-                val cfg = ConfigStore.get(service)
-                // Never validate a background Grab window while another app is on the screenshot.
-                val root = service.rootInActiveWindow ?: return@post
-                if (root.packageName?.toString() !in cfg.targetPackages) return@post
-                result.set(ProofValidation.targets(kind, targets,
-                    listOf(NodeSnapshot.capture(root, VALIDATION_MAX_NODES)), cfg))
-            } catch (_: Exception) {
-                result.set(emptyList())
-            } finally {
-                done.countDown()
             }
         }
-        return if (done.await(VALIDATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) result.get() else emptyList()
+        null
     }
 
-    private fun toastForValidated(kind: RecordKind, items: List<Item>): String = when (kind) {
-        RecordKind.READY -> "📸 READY: " + items.joinToString(", ") { it.gf }
-        RecordKind.DELAY -> "📸 ล่าช้า: " + items.joinToString(", ") {
-            it.gf + (it.delayMin?.let { m -> " ($m นาที)" } ?: "")
-        }
-        else -> "📸 บันทึกแล้ว"
-    }
-
-    private fun save(job: CaptureJob, shot: AccessibilityService.ScreenshotResult, validatedMeta: CaptureMeta? = null) {
-        var bitmap: Bitmap? = null
+    private suspend fun shootOnce(): Shot = suspendCancellableCoroutine { cont ->
         try {
-            val buffer = shot.hardwareBuffer
-            val hardware = Bitmap.wrapHardwareBuffer(buffer, shot.colorSpace)
-            bitmap = hardware?.copy(Bitmap.Config.ARGB_8888, false)
-            hardware?.recycle()
-            buffer.close()
-            if (bitmap == null) {
-                onDone(job, null, "แปลงภาพหน้าจอไม่สำเร็จ")
-                return
-            }
-            val meta = validatedMeta ?: job.awaitMeta(META_TIMEOUT_MS)
-            val savedItems = meta.items
-            val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(job.t), ZoneId.systemDefault())
-            val name = Naming.fileName(job.kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
-            val uri = MediaSaver.saveJpeg(service, bitmap, name, job.t, ConfigStore.get(service).jpegQuality)
+            service.takeScreenshot(Display.DEFAULT_DISPLAY, worker, object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                    val result = try {
+                        val buffer = screenshot.hardwareBuffer
+                        val hardware = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
+                        val copy = hardware?.copy(Bitmap.Config.ARGB_8888, false)
+                        hardware?.recycle()
+                        buffer.close()
+                        if (copy != null) Shot.Ok(copy) else Shot.Fail(-1, "แปลงภาพหน้าจอไม่สำเร็จ")
+                    } catch (e: Exception) {
+                        Shot.Fail(-1, "แปลงภาพหน้าจอไม่สำเร็จ: ${e.message}")
+                    }
+                    if (cont.isActive) cont.resume(result) else (result as? Shot.Ok)?.bitmap?.recycle()
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    if (cont.isActive) cont.resume(Shot.Fail(errorCode, "แคปหน้าจอไม่สำเร็จ (รหัส $errorCode)"))
+                }
+            })
+        } catch (e: Exception) {
+            if (cont.isActive) cont.resume(Shot.Fail(-1, "แคปหน้าจอไม่สำเร็จ: ${e.message}"))
+        }
+    }
+
+    /** Saves [bitmap] as a JPEG plus its log record, then recycles it. */
+    suspend fun save(bitmap: Bitmap, kind: RecordKind, t: Long, meta: CaptureMeta): Record? = withContext(Dispatchers.IO) {
+        try {
+            val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(t), ZoneId.systemDefault())
+            // A running number keeps names unique (Drive copies are keyed by name).
+            val name = Naming.fileName(kind, meta.items, meta.visible, at).removeSuffix(".jpg") + "_${seq.incrementAndGet()}.jpg"
+            val uri = MediaSaver.saveJpeg(service, bitmap, name, t, ConfigStore.get(service).jpegQuality)
             val record = Record(
-                id = "${job.t}-${seq.incrementAndGet()}",
-                t = job.t,
-                kind = job.kind,
-                items = savedItems,
+                id = "$t-${seq.incrementAndGet()}",
+                t = t,
+                kind = kind,
+                items = meta.items,
                 visible = meta.visible,
                 uri = uri.toString(),
                 file = name,
-                click = meta.click,
                 note = meta.note,
-                shopId = job.shopId,
-                historyDate = job.historyDate,
+                shopId = meta.shopId,
+                historyDate = meta.historyDate,
             )
             RecordStore.append(service, record)
+            // Optional Drive copy; it never blocks or fails the local capture.
             DriveSync.offerRecord(service, record)
-            onDone(job, record, null)
+            record
         } catch (e: Exception) {
-            onDone(job, null, "บันทึกภาพไม่สำเร็จ: ${e.message}")
+            lastError = "บันทึกภาพไม่สำเร็จ: ${e.message}"
+            Diagnostics.error(service, "save", e)
+            null
         } finally {
-            bitmap?.recycle()
+            bitmap.recycle()
         }
     }
 
     fun shutdown() {
-        requests.shutdownNow()
-        io.shutdown()
+        worker.shutdown()
     }
 
     companion object {
         private const val MIN_GAP_MS = 400L
         private const val RETRY_DELAY_MS = 700L
-        private const val TARGET_RETRY_DELAY_MS = 250L
         private const val MAX_ATTEMPTS = 4
-        private const val META_TIMEOUT_MS = 3_000L
-        private const val CALLBACK_TIMEOUT_MS = 12_000L
-        private const val VALIDATION_TIMEOUT_MS = 1_500L
-        private const val VALIDATION_MAX_NODES = 1500
     }
 }
