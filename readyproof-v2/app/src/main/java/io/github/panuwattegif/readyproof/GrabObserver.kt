@@ -114,7 +114,7 @@ class GrabObserver : AccessibilityService() {
     private fun scrollOne(screen: Screen, before: String) {
         if (gate.mode != PageKind.HISTORY) return
         val day = gate.date ?: return
-        val audit = Logic.audit(db.header(day),db.history(day),db.stuck(day))
+        val audit = Logic.audit(db.header(day),db.history(day),db.stuck(day),db.headerImage(day)!=null)
         if (audit.complete) {
             getSharedPreferences("control",MODE_PRIVATE).edit().putString("status","ครบตามยอดหัวหน้า").apply()
             return

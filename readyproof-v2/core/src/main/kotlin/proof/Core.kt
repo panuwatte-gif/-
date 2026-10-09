@@ -25,8 +25,9 @@ data class Ready(val id: String, val date: String, val gf: String, val firstSeen
 data class History(val id: String, val date: String, val card: Card, val captured: Long,
                    val image: String?)
 data class Case(val history: History, val kind: CaseKind, val ready: Ready?)
-data class Audit(val header: Header?, val rows: Int, val images: Int, val stuck: Boolean) {
-    val complete: Boolean get() = !stuck && header?.consistent == true &&
+data class Audit(val header: Header?, val rows: Int, val images: Int, val stuck: Boolean,
+                 val headerImage: Boolean = true) {
+    val complete: Boolean get() = !stuck && headerImage && header?.consistent == true &&
         header.total == rows && rows == images
     val missingRows: Int? get() = header?.total?.let { (it - rows).coerceAtLeast(0) }
 }
@@ -68,9 +69,10 @@ object Logic {
             firstSeen <= end + 60_000
         } catch (_: Exception) { true }
     }
-    fun audit(header: Header?, history: List<History>, stuck: Boolean): Audit =
+    fun audit(header: Header?, history: List<History>, stuck: Boolean,
+              headerImage: Boolean = true): Audit =
         Audit(header, history.map { it.id }.distinct().size,
-            history.filter { it.image != null }.map { it.id }.distinct().size, stuck)
+            history.filter { it.image != null }.map { it.id }.distinct().size, stuck, headerImage)
 
     fun report(shop: String, date: String, audit: Audit, cases: List<Case>,
                observedDelayed: Int = cases.size): String {
@@ -93,6 +95,7 @@ object Logic {
             appendLine("UNKNOWN = ${unknown.size}: ${unknown.joinToString { it.history.card.gf }}")
             appendLine("Actual delayed = ${(delayed - paired.size).coerceAtLeast(0)} (${pct((delayed - paired.size).coerceAtLeast(0))})")
             appendLine("รายออเดอร์ ${audit.rows}, ภาพ History ${audit.images}, ขาดจากยอดหัวหน้า ${audit.missingRows ?: "UNKNOWN"}, ภาพขาด ${audit.rows - audit.images}")
+            appendLine("ภาพยอดหัวหน้า History = ${if(audit.headerImage) "มี" else "ขาด"}")
         }
     }
     fun filename(gf: String, role: String, date: String, repeat: Boolean, millis: Long): String {

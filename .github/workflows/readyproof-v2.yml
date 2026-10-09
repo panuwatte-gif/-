@@ -39,6 +39,9 @@ jobs:
           old="versionCode = 100 + buildNumber"
           assert s.count(old)==1
           s=s.replace(old,"versionCode = 100001 + " + str(int(__import__('os').environ['READYPROOF_SEQUENCE'])) + " * 2")
+          name='versionName = "1.0.$buildNumber"'
+          assert s.count(name)==1
+          s=s.replace(name,'versionName = "1.0.86-rollback.' + __import__('os').environ['READYPROOF_SEQUENCE'] + '"')
           p.write_text(s)
           PY
           cd legacy-86/readyproof

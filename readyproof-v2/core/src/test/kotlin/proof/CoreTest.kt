@@ -40,6 +40,8 @@ class CoreTest {
             if (it == 4) null else "p") }
         assertFalse(Logic.audit(Header(77, 70, 7), all, false).complete)
         assertTrue(Logic.audit(Header(77, 70, 7), all.map { it.copy(image = "p") }, false).complete)
+        assertFalse(Logic.audit(Header(77, 70, 7), all.map { it.copy(image = "p") },
+            false, headerImage = false).complete)
     }
     @Test fun missingReadyRetriesAndSuccessfulDoesNotRepeat() {
         val cards = listOf(Card("GF-1", 1, 20), Card("GF-2", 21, 40))

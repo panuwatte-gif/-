@@ -62,7 +62,7 @@ class MainActivity : Activity() {
         line("สถานะ: ${prefs.getString("status","รอเริ่ม")}")
         button("เปิดสิทธิ์การช่วยเหลือพิเศษ") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         val all=db.history(day)
-        val audit=Logic.audit(db.header(day),all,db.stuck(day))
+        val audit=Logic.audit(db.header(day),all,db.stuck(day),db.headerImage(day)!=null)
         val cases=Logic.match(all,db.ready(day))
         line("กวาดรายออเดอร์ ${audit.rows}/${audit.header?.total ?: "UNKNOWN"} • ภาพ ${audit.images} • ${if(audit.complete)"ครบตามยอด" else "ยังไม่ยืนยันว่าครบ"}",18f)
         line(Logic.report(shop,day,audit,cases,all.count { it.card.delayed }))
