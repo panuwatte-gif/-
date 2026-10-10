@@ -179,6 +179,24 @@ object ReportBuilder {
         val delayShots = ArrayList<Record>()
     }
 
+    /** How long before a Ready photo an order must have been seen in the Ready tab to count as shown in it. */
+    private const val SHOWN_LOOKBACK_MS = 90 * 60_000L
+
+    /**
+     * A Ready photo proves every order listed on it, not only the ones it was taken for: on 10 Oct
+     * the orders at the top of the list appear 18 times in photos (GF-102 at 13:18) but are named in none. An
+     * order on the photo ([Record.visible]) that the app had seen in the Ready tab shortly before
+     * counts as shown, with the status it had when it was seen there.
+     */
+    private fun withShownOrders(photo: Record, seen: List<Record>): Record {
+        val named = photo.items.filter { it.type == ObsType.READY }.map { it.gf }.toSet()
+        val shown = photo.visible.distinct().filter { it !in named }.mapNotNull { gf ->
+            seen.lastOrNull { r -> r.t <= photo.t && photo.t - r.t <= SHOWN_LOOKBACK_MS && r.items.any { it.gf == gf && it.type == ObsType.READY } }
+                ?.items?.first { it.gf == gf && it.type == ObsType.READY }
+        }
+        return if (shown.isEmpty()) photo else photo.copy(items = photo.items + shown)
+    }
+
     /** [records] should cover the day before and after [date] too, so windows can cross midnight. */
     fun build(records: List<Record>, date: LocalDate, zone: ZoneId, cfg: Config,
               shopId: String? = null, sweepReachedEnd: Boolean = false): DailyReport {
@@ -206,8 +224,9 @@ object ReportBuilder {
         }
 
         val onDate = acc.values.filter { it.date == date }
-        val readyShots = sorted.filter { r -> r.uri != null && r.items.any { it.type == ObsType.READY } }
         val readySeenRecords = sorted.filter { r -> r.items.any { it.type == ObsType.READY } }
+        val readyShots = sorted.filter { r -> r.uri != null && r.items.any { it.type == ObsType.READY } }
+            .map { r -> withShownOrders(r, readySeenRecords) }
         val presses = sorted.filter { r -> r.items.any { it.type == ObsType.PRESS } }
         val windowMs = cfg.evidenceWindowHours * 3600_000L
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
