@@ -1,6 +1,7 @@
 package io.github.panuwattegif.readyproof.core
 
 import java.util.IdentityHashMap
+import kotlin.math.abs
 
 /**
  * What lies on top of the watched app (other windows' areas), passed in by the Android layer,
@@ -101,7 +102,7 @@ object ScreenAnalyzer {
             val finder = CardFinder(gfx, root)
             visible += finder.visibleGfs()
             val occluderCache = IdentityHashMap<UiNode, List<Box>>()
-            for (card in finder.cards()) {
+            val found = finder.cards().map { card ->
                 val observed = rules.evaluate(card, allowUnknownDelayed || tab == OrderTab.HISTORY)
                 val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
                 val status = statusLine(card, gfx)
@@ -116,14 +117,18 @@ object ScreenAnalyzer {
                     null -> observed.firstOrNull { it.type == ObsType.READY }
                 }
                 val items = listOfNotNull(ready) + history
-                val keys = keyNodes(card, items, cfg, gfx)
                 val vp = viewport(card, root)
                 val occluders = ctx.occluders + (card.list?.let { l -> occluderCache.getOrPut(l) { inAppOccluders(root, l, vp) } } ?: emptyList())
-                val boxes = keys.map { it.box() }
+                Found(card, items, status, keyNodes(card, items, cfg, gfx), vp, occluders)
+            }
+            for (f in found) {
+                val edges = openEdges(f, found)
+                val boxes = f.keys.map { it.box() }
                 // A key line that is not drawn at all (scrolled away) also means "not in the picture".
-                val full = keys.isNotEmpty() && keys.all { it.shown } && keys.all { k -> clear(k, vp, occluders, ctx) }
-                val gfClear = card.gfNode.shown && clear(card.gfNode, vp, ctx.occluders, ctx)
-                views += CardView(card, items, full, boxes, status, gfClear)
+                val full = f.keys.isNotEmpty() && f.keys.all { it.shown } &&
+                    f.keys.all { k -> clear(k, f.vp, f.occluders, ctx, edges.of(k, f.card)) }
+                val gfClear = f.card.gfNode.shown && clear(f.card.gfNode, f.vp, ctx.occluders, ctx, edges.of(f.card.gfNode, f.card))
+                views += CardView(f.card, f.items, full, boxes, f.status, gfClear)
             }
         }
         val scroller = pickScroller(roots, views)
@@ -155,18 +160,83 @@ object ScreenAnalyzer {
     fun statusLine(card: Card, gfx: GfExtractor): String? = card.texts.firstOrNull { gfx.extract(it).isEmpty() }
 
     /** [k] is completely inside the list area and nothing covers its letters. */
-    private fun clear(k: UiNode, vp: Box, occluders: List<Box>, ctx: ScanContext): Boolean {
+    private fun clear(k: UiNode, vp: Box, occluders: List<Box>, ctx: ScanContext, edges: Edges = Edges.CLOSED): Boolean {
         val b = k.box()
-        if (!fullyInside(b, vp)) return false
+        if (!fullyInside(b, vp, edges)) return false
         val hits = occluders.filter { it.intersects(b) }
         if (hits.isEmpty()) return true
         val ink = ctx.inkBox(k) ?: return false
         return !ink.isEmpty && hits.none { it.intersects(ink) }
     }
 
-    /** True when [b] lies completely inside [vp]; touching the top or bottom edge means cut off. */
-    fun fullyInside(b: Box, vp: Box): Boolean =
-        !b.isEmpty && !vp.isEmpty && b.left >= vp.left && b.right <= vp.right && b.top > vp.top && b.bottom < vp.bottom
+    /**
+     * True when [b] lies completely inside [vp]. Touching the top or bottom edge normally means cut
+     * off (Android shrinks a half-scrolled element to the visible part), unless [edges] says that
+     * edge is known not to cut this card.
+     */
+    fun fullyInside(b: Box, vp: Box, edges: Edges = Edges.CLOSED): Boolean =
+        !b.isEmpty && !vp.isEmpty && b.left >= vp.left && b.right <= vp.right &&
+            (b.top > vp.top || (edges.top && b.top >= vp.top - EDGE_PX)) &&
+            (b.bottom < vp.bottom || (edges.bottom && b.bottom <= vp.bottom + EDGE_PX))
+
+    /** A card as found on screen, before deciding whether a shot would show it completely. */
+    private class Found(
+        val card: Card,
+        val items: List<Item>,
+        val status: String?,
+        val keys: List<UiNode>,
+        val vp: Box,
+        val occluders: List<Box>,
+    ) {
+        val box: Box get() = card.node.box()
+        val ready: Boolean get() = items.any { it.type == ObsType.READY }
+    }
+
+    /** List edges a card may touch without being cut off (see [openEdges]). */
+    class Edges(val top: Boolean, val bottom: Boolean) {
+        /** Applies to [k] only where it starts / ends with its card (the lines inside a card never touch the edge). */
+        fun of(k: UiNode, card: Card): Edges {
+            if (!top && !bottom) return CLOSED
+            val c = card.node.box()
+            val b = k.box()
+            return Edges(top && abs(b.top - c.top) <= EDGE_PX, bottom && abs(b.bottom - c.bottom) <= EDGE_PX)
+        }
+
+        companion object {
+            val CLOSED = Edges(top = false, bottom = false)
+        }
+    }
+
+    private const val EDGE_PX = 2
+
+    /**
+     * Grab on the shop's phone reports each Ready order as one element that includes the gap above
+     * the card, so the first order starts exactly at the top of the list although nothing of it is
+     * cut off (10 Oct: the top order was never photographed). An order touching an edge of the
+     * list still counts as complete when:
+     *  - it is as tall as the orders lying fully inside the same list (a cut-off one is shorter), or
+     *  - it is the only order and the list below it is mostly empty (nothing scrolled away above).
+     * Only Ready orders: History rows keep the strict rule that works there.
+     */
+    private fun openEdges(f: Found, all: List<Found>): Edges {
+        if (!f.ready || f.card.list == null) return Edges.CLOSED
+        val b = f.box
+        val vp = f.vp
+        if (b.isEmpty || vp.isEmpty) return Edges.CLOSED
+        val atTop = abs(b.top - vp.top) <= EDGE_PX
+        val atBottom = abs(b.bottom - vp.bottom) <= EDGE_PX
+        if (!atTop && !atBottom) return Edges.CLOSED
+        val sameList = all.filter { it !== f && it.ready && it.card.list === f.card.list }
+        val reference = sameList.map { it.box }
+            .filter { !it.isEmpty && it.top > vp.top + EDGE_PX && it.bottom < vp.bottom - EDGE_PX }
+            .maxOfOrNull { it.height }
+        val complete = when {
+            reference != null -> b.height * 100 >= reference * 97
+            sameList.isEmpty() && atTop && !atBottom -> (vp.bottom - b.bottom) * 3 >= vp.height
+            else -> false
+        }
+        return if (complete) Edges(top = atTop, bottom = atBottom) else Edges.CLOSED
+    }
 
     /** The lines a shot must show for this card: its number plus the status or delay line. */
     private fun keyNodes(card: Card, items: List<Item>, cfg: Config, gfx: GfExtractor): List<UiNode> {

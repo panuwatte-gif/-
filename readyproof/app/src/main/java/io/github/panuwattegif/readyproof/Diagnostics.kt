@@ -18,6 +18,9 @@ import java.time.LocalDateTime
 object Diagnostics {
     private const val MAX_DUMPS = 25
     private const val MAX_ERROR_BYTES = 200_000L
+    /** A whole day of activity must survive until it is sent (several thousand lines on a busy day). */
+    private const val MAX_ACTIVITY_BYTES = 3_000_000L
+    private const val KEEP_ACTIVITY_LINES = 12_000
     private const val MIN_DUMP_GAP_MS = 3_000L
     private val DIGITS = Regex("\\d")
 
@@ -42,7 +45,7 @@ object Diagnostics {
         try {
             val f = File(dir(ctx), "activity.log")
             f.appendText("${LocalDateTime.now()} $text\n")
-            if (f.length() > MAX_ERROR_BYTES) f.writeText(f.readLines().takeLast(400).joinToString("\n", postfix = "\n"))
+            if (f.length() > MAX_ACTIVITY_BYTES) f.writeText(f.readLines().takeLast(KEEP_ACTIVITY_LINES).joinToString("\n", postfix = "\n"))
         } catch (ignored: Exception) {
         }
     }
@@ -86,7 +89,7 @@ object Diagnostics {
         val prefixes = listOf(day.toString(), day.plusDays(1).toString())
         val activity = File(dir(ctx), "activity.log")
         sb.append("\n## Activity ").append(day).append('\n')
-        if (activity.exists()) activity.readLines().filter { l -> prefixes.any { l.startsWith(it) } }.takeLast(1500).forEach { sb.append(it).append('\n') }
+        if (activity.exists()) activity.readLines().filter { l -> prefixes.any { l.startsWith(it) } }.takeLast(KEEP_ACTIVITY_LINES).forEach { sb.append(it).append('\n') }
         val errors = File(dir(ctx), "errors.log")
         sb.append("\n## Errors ").append(day).append('\n')
         if (errors.exists()) errors.readLines().filter { l -> prefixes.any { l.startsWith(it) } }.takeLast(200).forEach { sb.append(it).append('\n') }

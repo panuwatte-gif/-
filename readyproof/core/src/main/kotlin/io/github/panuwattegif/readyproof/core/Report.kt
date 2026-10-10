@@ -316,7 +316,10 @@ object ReportText {
         append("ถึงท้ายรายการ: ").append(r.sweepReachedEnd).append('\n')
         append("History ขาดภาพ: ").append(r.missingHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
         append("Instance UNKNOWN: ").append(r.unknownHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
-        append("Ready รอภาพ: ").append(r.pendingReadyProof).append(" ออเดอร์ (รายละเอียดใน manifest)\n")
+        // By order number, so the owner sees which orders lack a Ready photo without opening the manifest.
+        append("Ready ไม่มีภาพ (เสร็จแล้ว แต่ไม่มีภาพตอนอยู่ในแท็บ Ready): ").append(r.missingReadyInstances.size).append(" ออเดอร์")
+            .append(r.missingReadyInstances.joinToString(", ").let { if (it.isEmpty()) "" else " — $it" }).append('\n')
+        append("Ready เห็นในแท็บแต่ถ่ายไม่ได้: ").append(r.pendingReadyGfs.joinToString(", ").ifEmpty { "-" }).append('\n')
         append("DELAY ขาดภาพ: ").append(r.cases.filter { it.delayShot == null }.joinToString { it.gf + "@" + (it.doneAt?.toLocalTime() ?: "UNKNOWN") }.ifEmpty { "-" }).append('\n')
         if (r.grabCompleted != null) {
             append("• ยอดจาก Grab (หัวหน้าประวัติ): เสร็จสมบูรณ์ ").append(r.grabCompleted)
