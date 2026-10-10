@@ -54,6 +54,14 @@ data class ScreenAnalysis(
     /** Number badge on the Ready tab, if shown. */
     val readyCount: Int? = null,
 ) {
+    /**
+     * Grab's Ready tab says it has orders but its list shows none (the empty-list picture): the
+     * list has to be opened again before any order can be seen (shop phone, 10 Oct 11:55–12:25).
+     */
+    val readyListBlank: Boolean
+        get() = tabsVisible && (readyCount ?: 0) > 0 && views.isEmpty() &&
+            (tab == null || tab == OrderTab.READY)
+
     val cards: List<Card> get() = views.map { it.card }
     val items: List<Item> get() = views.flatMap { it.items }.distinctBy { Triple(it.gf, it.type, it.doneAt) }
     val readyTab: Boolean?
@@ -132,14 +140,16 @@ object ScreenAnalyzer {
             }
         }
         val scroller = pickScroller(roots, views)
+        val tabsVisible = TabDetector.barVisible(roots, cfg.tabLabels, gfx)
         return ScreenAnalysis(
             tab = tab,
             views = views,
             visible = visible.toList(),
             scroller = scroller,
             header = if (tab == OrderTab.HISTORY) HistoryReader.read(roots, cfg) else null,
-            tabsVisible = TabDetector.barVisible(roots, cfg.tabLabels, gfx),
-            readyCount = if (tab == OrderTab.READY) TabDetector.readyCount(roots, cfg) else null,
+            tabsVisible = tabsVisible,
+            // The Ready tab's own count, whichever tab is open (the shop phone marks none as open).
+            readyCount = if (tab == OrderTab.READY || (tab == null && tabsVisible)) TabDetector.readyCount(roots, cfg) else null,
         )
     }
 
@@ -188,19 +198,19 @@ object ScreenAnalyzer {
         val vp: Box,
         val occluders: List<Box>,
     ) {
-        val box: Box get() = card.node.box()
+        /**
+         * The one element holding the whole order (number and status), as on the shop phone; null
+         * when the card is made of separate lines. A lone order sits in wrappers as tall as the
+         * list, so the order's own element is measured, never its wrapper.
+         */
+        val element: UiNode? get() = card.gfNode.takeIf { keys.size == 1 && keys[0] === it }
         val ready: Boolean get() = items.any { it.type == ObsType.READY }
     }
 
     /** List edges a card may touch without being cut off (see [openEdges]). */
     class Edges(val top: Boolean, val bottom: Boolean) {
-        /** Applies to [k] only where it starts / ends with its card (the lines inside a card never touch the edge). */
-        fun of(k: UiNode, card: Card): Edges {
-            if (!top && !bottom) return CLOSED
-            val c = card.node.box()
-            val b = k.box()
-            return Edges(top && abs(b.top - c.top) <= EDGE_PX, bottom && abs(b.bottom - c.bottom) <= EDGE_PX)
-        }
+        /** Applies only to the order's own element (see [Found.element]). */
+        fun of(k: UiNode, card: Card): Edges = if (k === card.gfNode) this else CLOSED
 
         companion object {
             val CLOSED = Edges(top = false, bottom = false)
@@ -220,14 +230,14 @@ object ScreenAnalyzer {
      */
     private fun openEdges(f: Found, all: List<Found>): Edges {
         if (!f.ready || f.card.list == null) return Edges.CLOSED
-        val b = f.box
+        val b = f.element?.box() ?: return Edges.CLOSED
         val vp = f.vp
         if (b.isEmpty || vp.isEmpty) return Edges.CLOSED
         val atTop = abs(b.top - vp.top) <= EDGE_PX
         val atBottom = abs(b.bottom - vp.bottom) <= EDGE_PX
         if (!atTop && !atBottom) return Edges.CLOSED
         val sameList = all.filter { it !== f && it.ready && it.card.list === f.card.list }
-        val reference = sameList.map { it.box }
+        val reference = sameList.mapNotNull { it.element?.box() }
             .filter { !it.isEmpty && it.top > vp.top + EDGE_PX && it.bottom < vp.bottom - EDGE_PX }
             .maxOfOrNull { it.height }
         val complete = when {

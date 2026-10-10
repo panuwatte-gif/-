@@ -82,6 +82,8 @@ class Engine(private val service: ProofService) {
         private const val BATCH_QUIET_MS = 4_000L
         /** Time for the nightly Drive batch to be staged before the watcher switches itself off. */
         private const val SELF_OFF_DELAY_MS = 60_000L
+        /** How often the Ready tab is opened again while its list stays blank (see [guard]). */
+        private const val BLANK_RETAP_MS = 15_000L
         /** One move of a list: this share of its height (the slow pass uses smaller steps). */
         private const val PAGE = 0.6f
         /** Minutes after [Config.endMaxWaitMinutes] when the day is closed even without History. */
@@ -134,6 +136,7 @@ class Engine(private val service: ProofService) {
     private var lastLaunchAt = 0L
     private var lastBackAt = 0L
     private var lastPendingSweepAt = 0L
+    private var lastBlankTapAt = 0L
     private val problemAt = HashMap<String, Long>()
     private var scrollBlockedUntil = 0L
     private var fingerprint: String? = null
@@ -934,12 +937,13 @@ class Engine(private val service: ProofService) {
     // ---- moving around inside Grab ---------------------------------------------------------------
 
     /** Opens the wanted order tab by tapping the tab bar (or "Orders" in the bottom bar first). */
-    private suspend fun openTab(labels: List<String>, want: OrderTab): Boolean = automate {
+    /** [again]: tap the tab even when it already looks open (its list shows nothing it should). */
+    private suspend fun openTab(labels: List<String>, want: OrderTab, again: Boolean = false): Boolean = automate {
         val c = cfg
         val gfx = c.gfExtractor()
-        repeat(4) {
+        repeat(4) { attempt ->
             val s = reader.read(c) ?: return@automate false
-            if (tabOf(s) == want) return@automate true
+            if (tabOf(s) == want && !(again && attempt == 0)) return@automate true
             if (s.dialog) return@automate false
             val tab = TabDetector.tapTarget(s.roots, labels, c.tabLabels, gfx)
             if (tab != null) {
@@ -1033,11 +1037,21 @@ class Engine(private val service: ProofService) {
             }
             return
         }
-        if (now - lastUserTouchAt < idleMs) return
+        if (now - lastUserTouchAt < PERSON_GRACE_MS) return
         if (!lane.tryLock()) return
         try {
             val s = reader.read(c) ?: return
-            if (isReady(s) || tabOf(s) == OrderTab.READY) return
+            if (isReady(s) || tabOf(s) == OrderTab.READY) {
+                // 10 Oct 11:55–12:25 the Ready list showed no orders while its tab counted some, and
+                // nothing was read for 30 minutes: opening the tab again shows them at once.
+                if (s.a.readyListBlank && !s.dialog && now - lastBlankTapAt > BLANK_RETAP_MS) {
+                    lastBlankTapAt = now
+                    Diagnostics.note(service, "guard: Ready list shows no orders but its tab says ${s.a.readyCount}, opening it again")
+                    openTab(c.readyTabLabels, OrderTab.READY, again = true)
+                }
+                return
+            }
+            if (now - lastUserTouchAt < idleMs) return
             if (s.dialog) {
                 problem("Grab มีหน้าต่างเด้งค้างอยู่ — กรุณาปิดเอง แล้วเปิดแท็บ Ready")
                 return
@@ -1047,6 +1061,11 @@ class Engine(private val service: ProofService) {
             if (!openTab(c.readyTabLabels, OrderTab.READY)) problem("พากลับแท็บ Ready ไม่สำเร็จ — กรุณาเปิด Grab ที่แท็บ Ready เอง")
         } finally {
             lane.unlock()
+            // A look at the screen that arrived while the guard held the lane must not wait for the next one.
+            if (dirty) {
+                dirty = false
+                scheduleObserve()
+            }
         }
     }
 

@@ -234,6 +234,89 @@ class ShopPhoneTest {
         assertEquals(listOf("GF-711", "GF-829"), b.readyViews().filter { it.full }.map { it.gf })
     }
 
+    /** Orders screen as dumped on 10 Oct: tab labels carry their counts, the list reports both scroll flags. */
+    private fun orders10Oct(top: Int, vararg list: UiNode): UiNode {
+        val tabStrip = v(
+            top = top + 128, bottom = top + 224,
+            kids = arrayOf(
+                v(
+                    cls = "android.widget.HorizontalScrollView", top = top + 128, bottom = top + 224, scrollable = true, horizontal = true,
+                    kids = arrayOf(
+                        v("กำลังเตรียม 2", top + 128, top + 224, 0, 240, clickable = true),
+                        v("พร้อมจัดส่ง 1", top + 128, top + 224, 240, 480, clickable = true),
+                        v("ที่กำลังจะถึง", top + 128, top + 224, 480, 720, clickable = true),
+                    ),
+                ),
+            ),
+        )
+        val listTop = top + 226
+        val scroller = UiNode(
+            className = "android.view.View", scrollable = true, canScrollForward = true, canScrollBackward = true,
+            left = 0, top = listTop, right = 720, bottom = 1494,
+        )
+        val inner = v(top = listTop, bottom = 1494, kids = arrayOf(v(top = listTop, bottom = 1494, kids = list)))
+        scroller.add(inner)
+        val page = v(
+            top = top, bottom = 1604,
+            kids = arrayOf(
+                v(top = top, bottom = top + 128, kids = arrayOf(v("คำสั่งซื้อ", top + 32, top + 96, 40, 300), v("เปิดถึง 4:00 หลังเที่ยง", top + 25, top + 103, 400, 700, clickable = true))),
+                tabStrip,
+                v(top = listTop, bottom = 1494, kids = arrayOf(scroller)),
+                v(top = 1318, bottom = 1462, left = 560, right = 704, clickable = true),
+                *bottomBar().toTypedArray(),
+            ),
+        )
+        return v(cls = "android.widget.FrameLayout", top = 0, bottom = 1604, kids = arrayOf(v(top = 0, bottom = 1604, clickable = true, scrollable = true, kids = arrayOf(page))))
+    }
+
+    @Test
+    fun realDumpOf1251TheOnlyOrderStartsAtTheTopOfTheList() {
+        // dump-1791611485754: (GF-407 คนขับจะมารับใน 5 นาที 1 รายการ) @291-525 in the list @291-1494
+        val card = v("GF-407 คนขับจะมารับใน 5 นาที 1 รายการ", 291, 525, clickable = true,
+            kids = arrayOf(v(top = 400, bottom = 448, left = 630, right = 678, cls = "android.widget.ImageView", clickable = true)))
+        val a = ScreenAnalyzer.analyze(listOf(orders10Oct(65, card)), cfg)
+        assertNull(a.tab)
+        assertEquals(listOf("GF-407"), a.readyViews().filter { it.full && it.gfClear }.map { it.gf })
+        assertEquals(1, a.readyCount)
+        assertTrue(!a.readyListBlank)
+        // the 12:30 photo in the same nesting: three orders, the top one included
+        fun card(desc: String, top: Int) = v(desc, top, top + 234, clickable = true,
+            kids = arrayOf(v(top = top + 109, bottom = top + 157, left = 630, right = 678, cls = "android.widget.ImageView", clickable = true)))
+        val three = ScreenAnalyzer.analyze(
+            listOf(
+                orders10Oct(
+                    65,
+                    card("GF-951 คนขับของคุณมาถึงแล้ว 1 รายการ · เงินสด", 291),
+                    card("GF-517 คนขับจะมารับใน 3 นาที 1 รายการ", 525),
+                    card("GF-768 คนขับจะมารับใน 8 นาที 2 รายการ", 759),
+                ),
+            ),
+            cfg,
+        )
+        assertEquals(listOf("GF-951", "GF-517", "GF-768"), three.readyViews().filter { it.full && it.gfClear }.map { it.gf })
+    }
+
+    @Test
+    fun realDumpOf1121TheReadyTabCountsAnOrderButItsListIsBlank() {
+        // dump-1791606084957: "พร้อมจัดส่ง 1" on the tab, the list shows only the empty-list picture
+        val a = ScreenAnalyzer.analyze(
+            listOf(
+                orders10Oct(
+                    369,
+                    v("พร้อมจัดส่ง", 962, 994),
+                    v(top = 843, bottom = 1245, cls = "android.widget.ImageView"),
+                    v("อัปเดตสถานะคำสั่งซื้อทันทีเมื่อเตรียมเสร็จแล้ว", 1295, 1343),
+                    v("การอัปเดตจะช่วยให้ลูกค้าของคุณได้รับประสบการณ์การจัดส่งที่ดี และแม่นยำที่สุด", 1359, 1455),
+                ),
+            ),
+            cfg,
+        )
+        assertNull(a.tab)
+        assertTrue(a.readyGfs().isEmpty())
+        assertEquals(1, a.readyCount)
+        assertTrue(a.readyListBlank)
+    }
+
     @Test
     fun historyRowsKeepTheStrictEdgeRule() {
         // the History sweep works on this phone: a row touching the top edge still counts as cut off
