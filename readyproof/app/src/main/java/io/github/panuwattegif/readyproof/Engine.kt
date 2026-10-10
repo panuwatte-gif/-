@@ -545,7 +545,7 @@ class Engine(private val service: ProofService) {
         while (pages++ < MAX_PAGES) {
             s = move(s, forward = false) ?: break
             if (!isReady(s)) {
-                scrolledAway()
+                scrolledAway(s)
                 return@automate
             }
         }
@@ -571,7 +571,7 @@ class Engine(private val service: ProofService) {
             }
             s = next
             if (!isReady(s)) {
-                scrolledAway()
+                scrolledAway(s)
                 return@automate
             }
         }
@@ -593,11 +593,13 @@ class Engine(private val service: ProofService) {
      * command, else with a finger drag. Returns the new screen if anything moved, null if nothing
      * did (the end of the list, or a list that cannot move).
      */
-    private suspend fun move(s: Screen, forward: Boolean, page: Float = PAGE): Screen? {
+    private suspend fun move(s: Screen, forward: Boolean, page: Float = PAGE, scrollAction: Boolean = true): Screen? {
         moveFailed = false
         val before = s.a.motionKey()
         if (before.isEmpty()) return null
-        if (s.a.scroller != null && actor.scroll(s.a.scroller, forward)) {
+        // A list that reports where it is (the shop's phone does) is believed: no move past its end.
+        if (flagsKnown(s) && !(if (forward) s.a.canScrollForward else s.a.canScrollBackward)) return null
+        if (scrollAction && s.a.scroller != null && actor.scroll(s.a.scroller, forward)) {
             val after = settle()
             if (after == null) {
                 moveFailed = true
@@ -608,14 +610,13 @@ class Engine(private val service: ProofService) {
                 return after
             }
         }
+        // Never drag towards the top: at the top that pulls Grab's list down to refresh it, the
+        // orders vanish for a moment and the list jumps.
+        if (!forward) return null
         val vp = viewportOf(s) ?: return null
         val dy = vp.height * page
         val x = vp.left + vp.width * 0.3f
-        val dragged = if (forward) {
-            actor.drag(x, vp.bottom - vp.height * 0.15f, -dy)
-        } else {
-            actor.drag(x, vp.top + vp.height * 0.15f, dy)
-        }
+        val dragged = actor.drag(x, vp.bottom - vp.height * 0.15f, -dy)
         if (!dragged) {
             moveFailed = true
             stuckMoves++
@@ -635,8 +636,14 @@ class Engine(private val service: ProofService) {
     }
 
     /** Our own scroll left the Ready tab (the list was not what we scrolled): stop scrolling for a while. */
-    private fun scrolledAway() {
+    private fun scrolledAway(s: Screen) {
         if (SystemClock.uptimeMillis() - lastUserTouchAt < PERSON_GRACE_MS) return
+        // A list that is reloading shows no orders for a moment: only another tab really counts.
+        val tab = tabOf(s)
+        if (tab == null || tab == OrderTab.READY) {
+            Diagnostics.note(service, "sweep Ready stopped: list empty or unreadable for a moment")
+            return
+        }
         scrollBlockedUntil = SystemClock.uptimeMillis() + SCROLL_BLOCK_MS
         problem("เลื่อนรายการแล้วแท็บเปลี่ยน — หยุดเลื่อนเอง 30 นาที (ส่งไฟล์ช่วยแก้ปัญหาให้ผู้ดูแล)")
     }
@@ -684,11 +691,16 @@ class Engine(private val service: ProofService) {
             (card.top + card.bottom) / 2 > (vp.top + vp.bottom) / 2 -> -step
             else -> step
         }
+        // Dragging down at the top of the list would pull Grab's list to refresh.
+        if (dy > 0 && (!flagsKnown(s) || !s.a.canScrollBackward)) return null
         val x = vp.left + vp.width * 0.3f
         val from = if (dy < 0) vp.bottom - vp.height * 0.15f else vp.top + vp.height * 0.15f
         if (!actor.drag(x, from, dy)) return null
         return settle()
     }
+
+    /** The list says whether it can still scroll (at least one direction reported). */
+    private fun flagsKnown(s: Screen): Boolean = s.a.canScrollForward || s.a.canScrollBackward
 
     /**
      * Where the order list is on screen: the list element if Grab reports one, otherwise from the
@@ -848,7 +860,7 @@ class Engine(private val service: ProofService) {
 
         // One pass down the list, [page] of its height per move. Stops where the list no longer
         // moves (the end), at an older day's rows, or when nothing new appears for three moves.
-        suspend fun pass(page: Float) {
+        suspend fun pass(page: Float, scrollAction: Boolean) {
             pages = 0
             var still = 0
             reachedEnd = false
@@ -871,13 +883,15 @@ class Engine(private val service: ProofService) {
                     shootDelays(s, day)?.let { s = it }
                 }
                 still = if (rows.size + passed.size == before) still + 1 else 0
-                if (pages++ >= MAX_HISTORY_PAGES || still >= 3) break
-                var next = move(s, forward = true, page = page)
+                if (pages++ >= MAX_HISTORY_PAGES) break
+                // Without end flags, three moves with nothing new mean the end of the list.
+                if (still >= 3 && !flagsKnown(s)) break
+                var next = move(s, forward = true, page = page, scrollAction = scrollAction)
                 if (next == null) {
                     // more rows may still be loading at the end of the list
                     delay(1_500)
                     s = settle() ?: return
-                    next = move(s, forward = true, page = page)
+                    next = move(s, forward = true, page = page, scrollAction = scrollAction)
                     if (next == null) {
                         reachedEnd = !moveFailed
                         if (pages == 1) Diagnostics.dump(service, "HISTORY list does not move", s.roots, force = true)
@@ -889,17 +903,18 @@ class Engine(private val service: ProofService) {
             }
         }
 
-        pass(PAGE)
+        pass(PAGE, scrollAction = true)
         val want = header?.completed?.let { it + (header.cancelled ?: 0) }
         if (want != null && rows.size < want) {
-            // Second, slower pass with smaller steps for rows a fast move may have skipped.
+            // Second, slower pass: finger drags of less than half a screen, so no row can fall
+            // between two pages (the scroll command jumps a whole page, always to the same places).
             Diagnostics.note(service, "history: ${rows.size}/$want rows after first pass, second pass")
             Diagnostics.dump(service, "HISTORY short ${rows.size}/$want", s.roots, force = true)
             pages = 0
             while (pages++ < MAX_HISTORY_PAGES) {
                 s = move(s, forward = false) ?: break
             }
-            pass(SLOW_PAGE)
+            pass(SLOW_PAGE, scrollAction = false)
         }
         // back to the top for whoever looks next
         pages = 0

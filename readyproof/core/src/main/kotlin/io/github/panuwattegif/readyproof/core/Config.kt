@@ -44,7 +44,9 @@ data class Config(
     val readyAny: List<String> = listOf(
         "Finding a driver", "Driver", "กำลังค้นหาคนขับ", "คนขับ", "โปรดเตรียมคำสั่งซื้อนี้",
     ),
-    val readyNone: List<String> = listOf("Ready in", "พร้อมจัดส่งใน", "Completed", "เสร็จสมบูรณ์", "Cancelled", "ยกเลิก"),
+    val readyNone: List<String> = listOf(
+        "Ready in", "พร้อมจัดส่งใน", "Completed", "เสร็จสมบูรณ์", "Cancelled", "ยกเลิก", "Delivered", "จัดส่งแล้ว",
+    ),
     /**
      * Status shown when the order first appeared in the Ready tab that means the shop was late:
      * the rider was already there, or Grab asked the shop to get the order ready.
@@ -170,7 +172,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 5
+    const val VERSION = 6
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -267,7 +269,8 @@ object ConfigCodec {
      * Saved settings from older versions keep what the user typed and gain the newer words:
      * v1 knew only the Thai screens, v3 had no letter-suffixed order numbers (GF-398F), and v4 is
      * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
-     * next shot); v5 adds opening hours, switching off at night and shared photos for bursts.
+     * next shot); v5 adds opening hours, switching off at night and shared photos for bursts;
+     * v6 knows that a delivered order ("จัดส่งแล้ว", an order's detail page) is never waiting.
      * Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {

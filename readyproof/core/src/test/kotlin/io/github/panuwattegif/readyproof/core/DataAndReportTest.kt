@@ -322,7 +322,7 @@ class DataAndReportTest {
 
     @Test
     fun version4SettingsGainOpeningHoursAndNightSwitchOff() {
-        val old = ConfigCodec.encode(Config(closeTime = "20:00")).replace("\"v\":5", "\"v\":4")
+        val old = ConfigCodec.encode(Config(closeTime = "20:00")).replace("\"v\":6", "\"v\":4")
             .replace(Regex(",\"openTime\":\"[^\"]*\",\"autoOffAfterClose\":(true|false),\"readyBatchSeconds\":\\d+"), "")
         assertFalse(old.contains("openTime"))
         val c = ConfigCodec.decode(old)
@@ -334,5 +334,22 @@ class DataAndReportTest {
         assertEquals("10:30", again.openTime)
         assertFalse(again.autoOffAfterClose)
         assertEquals(0, again.readyBatchSeconds)
+    }
+
+    @Test
+    fun aDeliveredOrdersDetailPageIsNeverReadyEvidence() {
+        // A detail page photographed on 9 Oct: delivered late, and it mentions the driver.
+        val page = Trees.n(
+            cls = "android.view.View",
+            kids = listOf(
+                Trees.n("GF-700"),
+                Trees.n("จัดส่งแล้ว 8 ต.ค., พ., 19:09 คำสั่งซื้อล่าช้า คำสั่งซื้อยังเตรียมไม่เสร็จตอนที่คนขับไปถึงร้าน ทำให้การจัดส่งล่าช้า"),
+            ),
+        )
+        val a = ScreenAnalyzer.analyze(listOf(page), Config.DEFAULT)
+        assertTrue(a.readyGfs().isEmpty())
+        // saved settings gain the new word
+        val old = ConfigCodec.encode(Config(readyNone = listOf("Ready in"))).replace("\"v\":6", "\"v\":5")
+        assertTrue("จัดส่งแล้ว" in ConfigCodec.decode(old).readyNone)
     }
 }
