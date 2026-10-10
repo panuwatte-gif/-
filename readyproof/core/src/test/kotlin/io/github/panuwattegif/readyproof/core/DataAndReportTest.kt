@@ -352,4 +352,28 @@ class DataAndReportTest {
         val old = ConfigCodec.encode(Config(readyNone = listOf("Ready in"))).replace("\"v\":6", "\"v\":5")
         assertTrue("จัดส่งแล้ว" in ConfigCodec.decode(old).readyNone)
     }
+
+    @Test
+    fun anOrderOnAReadyPhotoTakenForAnotherOrderIsEvidenceToo() {
+        // 10 Oct, shop phone: GF-102 sat at the top of the list (seen 13:16), the 13:18 photo was taken for GF-158
+        val day = LocalDate.of(2026, 10, 10)
+        val records = listOf(
+            rec(ms(2026, 10, 10, 13, 16, 37), RecordKind.SEEN, Item("GF-102", ObsType.READY, status = "GF-102 คนขับจะมารับใน 6 นาที 2 รายการ"), uri = null),
+            rec(ms(2026, 10, 10, 13, 18, 46), RecordKind.READY, Item("GF-158", ObsType.READY, status = "GF-158 กำลังค้นหาคนขับ... 2 รายการ"),
+                visible = listOf("GF-102", "GF-158")),
+            // on the same photo but never seen in the Ready tab (a number in a banner ...): proves nothing
+            rec(ms(2026, 10, 10, 13, 20), RecordKind.READY, Item("GF-457", ObsType.READY, status = "GF-457 คนขับจะมารับใน 7 นาที 1 รายการ"),
+                visible = listOf("GF-999", "GF-457")),
+            rec(ms(2026, 10, 10, 16, 39), RecordKind.DELAY,
+                Item("GF-102", ObsType.DELAY, delayMin = 4, doneAt = "13:58"),
+                Item("GF-999", ObsType.DELAY, delayMin = 5, doneAt = "13:50")).copy(historyDate = "2026-10-10"),
+        )
+        val r = ReportBuilder.build(records, day, zone, cfg)
+        val c102 = r.cases.first { it.gf == "GF-102" }
+        assertEquals(Verdict.IN_TIME, c102.verdict)
+        assertEquals(ms(2026, 10, 10, 13, 18, 46), c102.readyShot?.t)
+        assertEquals("GF-102 คนขับจะมารับใน 6 นาที 2 รายการ", c102.readyShot?.status)
+        assertEquals(Verdict.NO_EVIDENCE, r.cases.first { it.gf == "GF-999" }.verdict)
+        assertTrue("GF-102@13:58" !in r.missingReadyInstances)
+    }
 }
