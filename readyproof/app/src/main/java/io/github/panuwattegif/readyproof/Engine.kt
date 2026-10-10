@@ -65,23 +65,18 @@ class Engine(private val service: ProofService) {
         private const val IDLE_OBSERVE_MS = 30_000L
         private const val MAX_PAGES = 60
         private const val MAX_HISTORY_PAGES = 150
-        private const val MAX_FAILURES = 5
-        private const val PENDING_SWEEP_GAP_MS = 60_000L
         private const val LAUNCH_GAP_MS = 5 * 60_000L
         private const val BACK_GAP_MS = 10 * 60_000L
         private const val PROBLEM_NOTE_GAP_MS = 30 * 60_000L
         private const val BOX_TOLERANCE = 3
         private const val PERSON_GRACE_MS = 20_000L
-        private const val SCROLL_BLOCK_MS = 30 * 60_000L
         private const val MAX_HISTORY_ATTEMPTS = 3
-        /** An order without a fully checked photo this long gets a backup photo (number checked only). */
-        private const val BACKUP_AFTER_MS = 30_000L
         /** An order without any photo this long raises a warning notification. */
         private const val WARN_AFTER_MS = 2 * 60_000L
-        /** A burst of new Ready orders is over when no new one came for this long. */
-        private const val BATCH_QUIET_MS = 4_000L
         /** Time for the nightly Drive batch to be staged before the watcher switches itself off. */
         private const val SELF_OFF_DELAY_MS = 60_000L
+        /** Look further down the Ready list at most this often (sooner when the tab count goes up). */
+        private const val LOOK_GAP_MS = 60_000L
         /** How often the Ready tab is opened again while its list stays blank (see [guard]). */
         private const val BLANK_RETAP_MS = 15_000L
         /** One move of a list: this share of its height (the slow pass uses smaller steps). */
@@ -135,17 +130,15 @@ class Engine(private val service: ProofService) {
     private var lastGrabSeenAt = 0L
     private var lastLaunchAt = 0L
     private var lastBackAt = 0L
-    private var lastPendingSweepAt = 0L
     private var lastBlankTapAt = 0L
+    private var lastLookAt = 0L
+    private var lastLookCount = 0
     private val problemAt = HashMap<String, Long>()
-    private var scrollBlockedUntil = 0L
-    private var fingerprint: String? = null
     private var historyDay: String? = null
     private var lastStats: String? = null
     private var awake: View? = null
     /** What a non-Ready tab showed last time: when it changes by itself, a person is scrolling it. */
     private var foreignKey: String? = null
-    private var holdJob: Job? = null
     /** Tabs already saved as a reference screen dump today ("2026-10-09|HISTORY"). */
     private val dumpedTabs = HashSet<String>()
     // how lists actually moved (for the daily diagnostics)
@@ -235,7 +228,6 @@ class Engine(private val service: ProofService) {
     fun onShopBound() {
         scope.launch {
             seed()
-            fingerprint = null
             prefs.edit().remove(PREF_EOD_DONE).apply()
             if (eod == Eod.DONE) eod = Eod.IDLE
         }
@@ -348,44 +340,35 @@ class Engine(private val service: ProofService) {
 
     // ---- Ready tab ------------------------------------------------------------------------------
 
+    /**
+     * The Ready tab, three rules (the phone does nothing but watch this tab):
+     *  1. every order on screen that has no photo yet is photographed now;
+     *  2. when the tab counts more orders than are on screen, look further down the list, photograph
+     *     the rest, then go back to the top;
+     *  3. when the tab counts orders but the list shows none, open the tab again ([guard]).
+     */
     private suspend fun onReady(first: Screen) {
         val c = cfg
         val now = System.currentTimeMillis()
-        var s = first
+        val s = first
         val listed = s.a.readyGfs()
+        val count = s.a.readyCount
         noteSeen(s, now)
         // The whole list is on screen: whatever is not listed has been picked up.
-        if (!mayOverflow(s)) {
-            tracker.complete(listed, now)
-            lastSweepAt = now
-        }
+        if (if (count != null) listed.size >= count else !mayOverflow(s)) tracker.complete(listed, now)
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
-        // More new orders may be arriving right behind these: one photo for the whole burst.
-        val hold = tracker.batchHold(
-            s.a.readyViews().filter { it.full }.map { it.gf }, now, BATCH_QUIET_MS, c.readyBatchSeconds * 1000L,
-        )
-        if (hold > 0) {
-            observeIn(hold)
-            setWhere("เฝ้าแท็บ Ready · รอรวบออเดอร์ใหม่ที่เข้ามาติดกันไว้ในภาพเดียว")
-            return
-        }
-        shootReady(s)?.let { s = it }
-        backupReady(s)?.let { s = it }
+        shootNew(s)
         warnUnphotographed()
-        val fp = fingerprintOf(s.a)
-        val changed = fp != fingerprint
-        fingerprint = fp
-        val pending = retryable()
         val up = SystemClock.uptimeMillis()
-        val sweepForPending = pending.isNotEmpty() && up - lastPendingSweepAt > PENDING_SWEEP_GAP_MS
+        val more = (count != null && count > listed.size) ||
+            s.a.readyViews().any { !it.gfClear && tracker.stay(it.gf)?.shotAt == null }
         val personScrolling = up - lastUserTouchAt < PERSON_GRACE_MS
-        if (c.autoScroll && autoNavigation() && mayOverflow(s) && !personScrolling && up > scrollBlockedUntil &&
-            (changed || sweepForPending || sweepDue())
+        if (c.autoScroll && autoNavigation() && more && !personScrolling &&
+            (up - lastLookAt > LOOK_GAP_MS || (count ?: 0) > lastLookCount)
         ) {
-            if (sweepForPending) lastPendingSweepAt = up
-            sweepReady()
-        } else if (autoNavigation() && s.a.readyViews().any { !it.full && it.gf in pending }) {
-            automate { fixPartials(s) }
+            lastLookAt = up
+            lastLookCount = count ?: 0
+            lookBelow(s)
         }
         setWhere("เฝ้าแท็บ Ready · รอไรเดอร์ ${tracker.present().size} ออเดอร์")
     }
@@ -409,74 +392,54 @@ class Engine(private val service: ProofService) {
         )
     }
 
-    /** Orders still without a good shot that are worth another try. */
-    private fun retryable(): Set<String> =
-        tracker.pending().filter { (tracker.stay(it)?.failures ?: 0) < MAX_FAILURES }.toSet()
-
-    private fun sweepDue(): Boolean = System.currentTimeMillis() - lastSweepAt > cfg.fullSweepMinutes * 60_000L
-
     /**
-     * The Ready list may go on beyond the screen: Grab says so, an order is cut off at an edge, or
-     * the last order reaches the bottom of the list. Without a list element on screen, three or
-     * more orders are enough to check (a sweep that finds nothing to move costs two drags).
+     * Without a count on the tab: the Ready list may go on beyond the screen when Grab says so, an
+     * order is cut off at an edge, or the last order reaches the bottom of the list.
      */
     private fun mayOverflow(s: Screen): Boolean {
         if (s.a.canScroll) return true
         val views = s.a.readyViews()
         if (views.isEmpty()) return false
-        if (views.any { !it.full }) return true
+        if (views.any { !it.gfClear }) return true
         val list = s.a.scroller?.box()?.takeIf { !it.isEmpty } ?: return views.size >= 3
-        val boxes = views.map { it.card.node.box() }.filter { !it.isEmpty }
+        val boxes = views.map { it.card.gfNode.box() }.filter { !it.isEmpty }
         if (boxes.isEmpty()) return true
         val tallest = boxes.maxOf { it.height }
         return boxes.maxOf { it.bottom } >= list.bottom - tallest / 2
     }
 
-    /** Looks again after [ms] (a burst of new orders is still coming in). */
-    private fun observeIn(ms: Long) {
-        if (holdJob?.isActive == true) return
-        holdJob = scope.launch {
-            delay(ms + 100)
-            scheduleObserve()
-        }
-    }
-
-    private fun fingerprintOf(a: ScreenAnalysis): String =
-        a.readyGfs().joinToString(",") + "|" + a.readyCount + "|" + a.canScrollForward + a.canScrollBackward
-
-    /** Shoots the listed orders that still need a shot and are completely on screen now. */
-    private suspend fun shootReady(s: Screen): Screen? {
-        if (!cfg.captureReady) return null
-        val pending = tracker.pending().toSet()
-        val targets = s.a.readyViews().filter { it.full && it.gf in pending }
-        if (targets.isEmpty()) return null
-        val t = System.currentTimeMillis()
-        val (ok, after) = shoot(RecordKind.READY, s, targets, null) { v -> v.items.filter { it.type == ObsType.READY } }
-        tracker.shot(ok.map { it.gf }, t)
-        tracker.failed(targets.filter { it !in ok }.map { it.gf })
-        return after
-    }
-
     /**
-     * Safety net: an order that could not get a fully checked photo within [BACKUP_AFTER_MS] gets
-     * a backup photo as soon as at least its order number is completely inside the list and not
-     * covered by another window. Better a photo with the number than no evidence at all; the
-     * app keeps trying for a fully checked one.
+     * Rule 1: one screenshot as soon as an order is on screen that has no photo yet. The photo is
+     * kept as it is (no second guessing); every order on it counts for the report. An order only
+     * partly on screen gets one more photo once it is completely on screen, never more.
      */
-    private suspend fun backupReady(s: Screen): Screen? {
-        if (!cfg.captureReady) return null
+    private suspend fun shootNew(s: Screen) {
+        if (!cfg.captureReady) return
+        val views = s.a.readyViews().filter { it.card.gfNode.shown }
+        val whole = views.filter { it.gfClear }.map { it.gf }.toSet()
+        val targets = tracker.toShoot(views.map { it.gf }, whole)
+        if (targets.isEmpty()) return
         val t = System.currentTimeMillis()
-        val due = tracker.needBackup(t, BACKUP_AFTER_MS).toSet()
-        if (due.isEmpty()) return null
-        val targets = s.a.readyViews().filter { it.gf in due && it.gfClear }
-        if (targets.isEmpty()) return null
-        val (ok, after) = shoot(
-            RecordKind.READY, s, targets, null, note = ReadyTracker.BACKUP_NOTE,
-            stillGood = { b, a -> a.gfClear && sameBoxes(listOf(a.card.gfNode.box()), listOf(b.card.gfNode.box())) },
-        ) { v -> v.items.filter { it.type == ObsType.READY } }
-        tracker.backup(ok.map { it.gf }, t)
-        if (ok.isNotEmpty()) Diagnostics.note(service, "backup Ready photo ${ok.joinToString { it.gf }}")
-        return after
+        val bitmap = capture.take()
+        if (bitmap == null) {
+            problem("แคปหน้าจอไม่สำเร็จ: ${capture.lastError ?: "-"}", kind = "capture")
+            return
+        }
+        val complete = targets.filter { it in whole }
+        val items = views.filter { it.gf in targets }.flatMap { v -> v.items.filter { it.type == ObsType.READY } }
+        val record = capture.save(
+            bitmap, RecordKind.READY, t,
+            CaptureMeta(
+                items = items, visible = s.a.visible, shopId = shop(),
+                note = if (complete.isEmpty()) ReadyTracker.BACKUP_NOTE else null,
+            ),
+        ) ?: return
+        tracker.shot(complete, t)
+        tracker.backup(targets.filter { it !in whole }, t)
+        lastShotText = record.kind.label + " " + record.gfs.joinToString(", ") + " · " + ReportText.time(record.t, zone)
+        ProofService.lastCaptureText = lastShotText
+        Diagnostics.note(service, "shot READY ${targets.joinToString(",")}" + if (complete.size < targets.size) " (partly on screen: ${targets.filter { it !in whole }.joinToString(",")})" else "")
+        if (cfg.showToast) service.toast("📸 ${record.kind.label}: ${record.gfs.joinToString(", ")}")
     }
 
     /** Warns (notification) about any order that has sat in the Ready tab without a photo. */
@@ -539,55 +502,41 @@ class Engine(private val service: ProofService) {
     private fun sameBoxes(a: List<Box>, b: List<Box>): Boolean =
         a.size == b.size && a.zip(b).all { (x, y) -> abs(x.top - y.top) <= BOX_TOLERANCE && abs(x.left - y.left) <= BOX_TOLERANCE }
 
-    /** Goes through the whole Ready list from the top and stops at the bottom (where new orders arrive). */
-    private suspend fun sweepReady(): Unit = automate {
-        var s = reader.read(cfg) ?: return@automate
-        if (!isReady(s)) return@automate
-        val started = System.currentTimeMillis()
+    /**
+     * Rule 2: the tab counts more orders than are on screen (or one is cut off): move down the list
+     * photographing what appears, stop once every order was seen, then go back to the top.
+     */
+    private suspend fun lookBelow(start: Screen): Unit = automate {
+        var s = start
+        val count = s.a.readyCount
+        val seen = LinkedHashSet(s.a.readyGfs())
         var pages = 0
-        while (pages++ < MAX_PAGES) {
-            s = move(s, forward = false) ?: break
-            if (!isReady(s)) {
-                scrolledAway(s)
-                return@automate
-            }
-        }
-        val seen = LinkedHashSet<String>()
-        var reachedBottom = false
-        pages = 0
-        while (true) {
+        var moves = 0
+        fun done(x: Screen) = (count == null || seen.size >= count) &&
+            x.a.readyViews().none { !it.gfClear && tracker.stay(it.gf)?.shotAt == null }
+        while (pages++ < MAX_PAGES && !done(s)) {
+            val next = move(s, forward = true) ?: break
+            // List unreadable for a moment: stop here; the guard reopens the tab if it stays so.
+            if (!isReady(next)) break
+            s = next
+            moves++
             seen += s.a.readyGfs()
             noteSeen(s, System.currentTimeMillis())
-            shootReady(s)?.let { s = it }
-            fixPartials(s)?.let { s = it }
-            backupReady(s)?.let { s = it }
-            if (!isReady(s)) return@automate
-            seen += s.a.readyGfs()
-            if (pages++ >= MAX_PAGES) break
-            val next = move(s, forward = true)
-            if (next == null) {
-                reachedBottom = !moveFailed
-                if (pages == 1 && s.a.readyViews().any { !it.full }) {
-                    Diagnostics.dump(service, "READY list does not move", s.roots, force = true)
-                }
-                break
-            }
-            s = next
-            if (!isReady(s)) {
-                scrolledAway(s)
-                return@automate
-            }
+            shootNew(s)
+        }
+        // Back to the top to keep watching (scroll command only, never a drag towards the top).
+        var back = 0
+        while (back++ < MAX_PAGES) {
+            s = move(s, forward = false) ?: break
+            if (!isReady(s)) break
         }
         val now = System.currentTimeMillis()
-        // Only a sweep that reached the bottom knows the whole list: then missing orders have left.
-        // An empty list must stay empty on a second look (a list reloading after a pull is empty too).
-        if (reachedBottom && (seen.isNotEmpty() || queueEmpty(OrderTab.READY) == true)) tracker.complete(seen, now)
+        if (count != null && seen.size >= count) tracker.complete(seen, now)
         lastSweepAt = now
-        fingerprint = fingerprintOf(s.a)
         Diagnostics.note(
             service,
-            "sweep Ready: ${seen.size} orders, $pages pages, bottom=$reachedBottom, ${now - started} ms, " +
-                "waiting=${tracker.present().size}, unshot=${tracker.pending()}, moves scroll/drag/none=$scrollMoves/$dragMoves/$stuckMoves",
+            "look below: tab $count, seen ${seen.size} (${seen.joinToString(",")}), moved $moves, " +
+                "unshot=${tracker.pending()} moves scroll/drag/none=$scrollMoves/$dragMoves/$stuckMoves",
         )
     }
 
@@ -636,36 +585,6 @@ class Engine(private val service: ProofService) {
         }
         dragMoves++
         return after
-    }
-
-    /** Our own scroll left the Ready tab (the list was not what we scrolled): stop scrolling for a while. */
-    private fun scrolledAway(s: Screen) {
-        if (SystemClock.uptimeMillis() - lastUserTouchAt < PERSON_GRACE_MS) return
-        // A list that is reloading shows no orders for a moment: only another tab really counts.
-        val tab = tabOf(s)
-        if (tab == null || tab == OrderTab.READY) {
-            Diagnostics.note(service, "sweep Ready stopped: list empty or unreadable for a moment")
-            return
-        }
-        scrollBlockedUntil = SystemClock.uptimeMillis() + SCROLL_BLOCK_MS
-        problem("เลื่อนรายการแล้วแท็บเปลี่ยน — หยุดเลื่อนเอง 30 นาที (ส่งไฟล์ช่วยแก้ปัญหาให้ผู้ดูแล)")
-    }
-
-    /** Orders that need a shot but are cut off at an edge: scroll them fully into view, then shoot. */
-    private suspend fun fixPartials(start: Screen): Screen? {
-        var s = start
-        var changed = false
-        val tried = HashSet<String>()
-        while (true) {
-            val pending = retryable()
-            val v = s.a.readyViews().firstOrNull { !it.full && it.gf in pending && it.gf !in tried } ?: break
-            tried += v.gf
-            val shown = bringIntoView(s, v) ?: break
-            s = shown
-            changed = true
-            shootReady(s)?.let { s = it }
-        }
-        return if (changed) s else null
     }
 
     /** Scrolls the list just enough for [v] to be fully visible; returns the new screen. */
@@ -1014,7 +933,6 @@ class Engine(private val service: ProofService) {
         eodTick()
         guard(w)
         if (w.grabVisible && SystemClock.uptimeMillis() - lastObserveAt > IDLE_OBSERVE_MS) scheduleObserve()
-        if (w.grabVisible && c.autoScroll && sweepDue()) scheduleObserve()
     }
 
     private suspend fun guard(w: WindowsState) {
@@ -1169,7 +1087,11 @@ class Engine(private val service: ProofService) {
                     later(retryAt, "เปิดแท็บ Ready ไม่สำเร็จ")
                     return
                 }
-                sweepReady()
+                reader.read(c)?.takeIf { isReady(it) }?.let { r ->
+                    noteSeen(r, System.currentTimeMillis())
+                    shootNew(r)
+                    lookBelow(r)
+                }
                 val emptyNow = queueEmpty(OrderTab.READY) == true
                 // Seen empty twice: every order the tracker still remembers has been picked up.
                 if (emptyNow) tracker.complete(emptyList(), System.currentTimeMillis())

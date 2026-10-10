@@ -21,12 +21,10 @@ class SettingsActivity : Activity() {
     private lateinit var sDiag: Switch
     private lateinit var sOff: Switch
     private lateinit var fOpen: EditText
-    private lateinit var fBatch: EditText
     private lateinit var fClose: EditText
     private lateinit var fBuffer: EditText
     private lateinit var fRecheck: EditText
     private lateinit var fMaxWait: EditText
-    private lateinit var fSweep: EditText
     private lateinit var fIdle: EditText
     private lateinit var fLate: EditText
     private lateinit var fRetention: EditText
@@ -63,11 +61,7 @@ class SettingsActivity : Activity() {
         sAutoNavigation = Ui.switch(watch, "ให้แอปเลื่อนรายการ / แตะแท็บ Grab เอง (ปิดแล้วยังแคปสิ่งที่อยู่บนจอและแชร์เองได้)",
             ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)) {}
         sReady = Ui.switch(watch, "แคปทุกออเดอร์ที่เข้ามาในแท็บ Ready (ออเดอร์ละครั้ง)", cfg.captureReady) {}
-        sScroll = Ui.switch(watch, "เลื่อนรายการเองเมื่อออเดอร์ยาวเกินจอ", cfg.autoScroll) {}
-        fSweep = Ui.field(watch, "กวาดรายการ Ready ซ้ำทุกกี่นาที (กันพลาด)", cfg.fullSweepMinutes.toString(),
-            help = "ปกติแอปกวาดทันทีเมื่อรายการเปลี่ยน ค่านี้คือรอบสำรอง", number = true)
-        fBatch = Ui.field(watch, "ออเดอร์ใหม่เข้ามาติดกัน รอรวบเป็นภาพเดียวนานสุดกี่วินาที", cfg.readyBatchSeconds.toString(),
-            help = "0 = ถ่ายทันทีทุกครั้ง · ปกติ 12 วินาที (นานกว่านี้ เวลาในภาพจะห่างจากเวลากดพร้อมจริง)", number = true)
+        sScroll = Ui.switch(watch, "เลื่อนลงเองเมื่อตัวเลขบนแท็บมากกว่าออเดอร์ที่เห็นบนจอ", cfg.autoScroll) {}
         fOpen = Ui.field(watch, "เวลาร้านเปิด (เช่น 09:00)", cfg.openTime,
             help = "นอกเวลาเปิดร้าน แอปจะไม่ดึงหน้าจอกลับมาที่ Grab และไม่ร้องเตือนถ้าปิดอยู่")
         sGuard = Ui.switch(watch, "พากลับแท็บ Ready เองเมื่อหลุดไปหน้าอื่น (เฉพาะเวลาร้านเปิด)", cfg.guardReadyTab) {}
@@ -149,7 +143,6 @@ class SettingsActivity : Activity() {
         val cfg = ConfigStore.get(this).copy(
             captureReady = sReady.isChecked,
             autoScroll = sScroll.isChecked,
-            fullSweepMinutes = num(fSweep),
             guardReadyTab = sGuard.isChecked,
             guardIdleMinutes = num(fIdle),
             keepScreenOn = sAwake.isChecked,
@@ -159,7 +152,6 @@ class SettingsActivity : Activity() {
             closeTime = fClose.text.toString().trim(),
             openTime = fOpen.text.toString().trim(),
             autoOffAfterClose = sOff.isChecked,
-            readyBatchSeconds = num(fBatch),
             endBufferMinutes = num(fBuffer),
             recheckMinutes = num(fRecheck),
             endMaxWaitMinutes = num(fMaxWait),

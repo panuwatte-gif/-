@@ -108,6 +108,19 @@ class ReadyTracker(
         return if (quietLeft > 0 && maxLeft > 0) minOf(quietLeft, maxLeft) else 0
     }
 
+    /**
+     * The Ready tab rule: every order listed on screen that has no photo yet is photographed now.
+     * An order only partly on screen (not in [whole]) is photographed once as it is and once more
+     * when it is completely on screen; an order with a complete photo is not photographed again
+     * while it waits. Call after [seen].
+     */
+    @Synchronized
+    fun toShoot(shown: Collection<String>, whole: Set<String>): List<String> =
+        shown.distinct().filter { gf ->
+            val s = stays[gf]
+            s == null || (s.shotAt == null && (gf in whole || s.backupAt == null))
+        }
+
     @Synchronized
     fun failed(gfs: Collection<String>) {
         for (gf in gfs) stays[gf]?.let { it.failures++ }

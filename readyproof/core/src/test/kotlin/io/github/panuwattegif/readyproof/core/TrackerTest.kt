@@ -130,4 +130,23 @@ class TrackerTest {
         t.shot(listOf("GF-1"), 500)
         assertEquals(0, t.batchHold(listOf("GF-1"), 1_000, 4_000, 12_000))
     }
+
+    @Test
+    fun everyNewOrderOnScreenIsPhotographedOnceAndNotAgain() {
+        val t = ReadyTracker(goneAfterMs = 15_000)
+        // three orders on screen, GF-3 only partly (cut at the bottom)
+        t.seen(listOf("GF-1", "GF-2", "GF-3"), 0)
+        assertEquals(listOf("GF-1", "GF-2", "GF-3"), t.toShoot(listOf("GF-1", "GF-2", "GF-3"), setOf("GF-1", "GF-2")))
+        t.shot(listOf("GF-1", "GF-2"), 1_000)
+        t.backup(listOf("GF-3"), 1_000)
+        // same screen again: nothing new, no photo
+        assertTrue(t.toShoot(listOf("GF-1", "GF-2", "GF-3"), setOf("GF-1", "GF-2")).isEmpty())
+        // GF-3 now completely on screen: one more photo, then never again
+        assertEquals(listOf("GF-3"), t.toShoot(listOf("GF-2", "GF-3"), setOf("GF-2", "GF-3")))
+        t.shot(listOf("GF-3"), 2_000)
+        assertTrue(t.toShoot(listOf("GF-2", "GF-3"), setOf("GF-2", "GF-3")).isEmpty())
+        // a new order arrives: only it is photographed
+        t.seen(listOf("GF-2", "GF-3", "GF-4"), 3_000)
+        assertEquals(listOf("GF-4"), t.toShoot(listOf("GF-2", "GF-3", "GF-4"), setOf("GF-2", "GF-3", "GF-4")))
+    }
 }
