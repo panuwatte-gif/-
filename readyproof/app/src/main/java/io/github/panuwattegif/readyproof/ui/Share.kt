@@ -32,6 +32,16 @@ object Share {
         start(a, Intent.createChooser(intent, title))
     }
 
+    /** Several files of mixed types (text + JSON) in one hand-off, e.g. to Google Drive. */
+    fun files(a: Activity, uris: List<Uri>, title: String) {
+        if (uris.isEmpty()) return
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        intent.type = "*/*"
+        intent.clipData = ClipData.newRawUri("", uris[0]).apply { uris.drop(1).forEach { addItem(ClipData.Item(it)) } }
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        start(a, Intent.createChooser(intent, title))
+    }
+
     fun copy(a: Activity, text: String) {
         a.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("ReadyProof", text))
         Ui.toast(a, "คัดลอกแล้ว วางใน LINE / Google Sheets ได้เลย")

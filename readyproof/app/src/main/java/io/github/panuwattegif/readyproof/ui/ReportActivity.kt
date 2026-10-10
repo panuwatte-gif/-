@@ -12,6 +12,7 @@ import android.widget.TextView
 import io.github.panuwattegif.readyproof.ConfigStore
 import io.github.panuwattegif.readyproof.ShopStore
 import io.github.panuwattegif.readyproof.DailyExport
+import io.github.panuwattegif.readyproof.Diagnostics
 import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.EvidenceProvider
 import io.github.panuwattegif.readyproof.MediaSaver
@@ -205,12 +206,7 @@ class ReportActivity : Activity() {
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
-        Ui.button(s, "📄 แชร์สรุปวันนี้เป็นไฟล์", filled = false) {
-            runCatching {
-                Share.file(this, MediaSaver.saveDownload(this, "${r.shopId ?: "UNKNOWN"}_summary-${r.date}.txt",
-                    "text/plain", ReportText.summary(r, zone).toByteArray()), "text/plain", "ส่งสรุปวันนี้")
-            }.onFailure { Ui.alert(this, "แชร์ไม่ได้", it.message ?: "") }
-        }
+        Ui.button(s, "📄 แชร์ไฟล์สรุป + ไฟล์รายละเอียดของวัน (3 ไฟล์)", filled = false) { shareDayFiles(r, zone) }
         Ui.button(s, "📤 แชร์ READY + HISTORY ทุกภาพของวัน (แม้ยังไม่ครบ)", filled = false) {
             val shots = RecordStore.load(this, r.date).filter { it.shopId == r.shopId && it.uri != null }
             Share.images(this, shots.mapNotNull { shot -> shot.uri?.let(Uri::parse) })
@@ -319,6 +315,31 @@ class ReportActivity : Activity() {
             Share.file(this, uri, "text/csv", "ส่งไฟล์ตาราง")
         } catch (e: Exception) {
             Ui.alert(this, "ส่งออกไม่สำเร็จ", e.message ?: "")
+        }
+    }
+
+    /**
+     * The day's summary plus the two files needed to find out why an order has no photo: the
+     * manifest (every order seen / photographed, with times) and the diagnostics (what the phone
+     * did that day). One tap, so the owner can put all three on Drive by hand.
+     */
+    private fun shareDayFiles(r: DailyReport, zone: ZoneId) {
+        try {
+            val shop = r.shopId ?: "UNKNOWN"
+            val uris = ArrayList<Uri>()
+            uris += MediaSaver.saveDownload(this, "${shop}_summary-${r.date}.txt", "text/plain",
+                ReportText.summary(r, zone).toByteArray(Charsets.UTF_8))
+            // Written by the closing History pass; missing until the first pass of that day.
+            val manifest = java.io.File(java.io.File(filesDir, "reports"), "${shop}_manifest-${r.date}.json")
+            if (manifest.exists()) {
+                uris += MediaSaver.saveDownload(this, manifest.name, "application/json", manifest.readBytes())
+            }
+            uris += MediaSaver.saveDownload(this, "${shop}_diagnostics-${r.date}.txt", "text/plain",
+                Diagnostics.daily(this, r.date).toByteArray(Charsets.UTF_8))
+            Ui.toast(this, "บันทึกไว้ที่ Download/ReadyProof แล้ว ${uris.size} ไฟล์")
+            Share.files(this, uris, "ส่งไฟล์สรุปและรายละเอียด")
+        } catch (e: Exception) {
+            Ui.alert(this, "แชร์ไม่ได้", e.message ?: "")
         }
     }
 }
