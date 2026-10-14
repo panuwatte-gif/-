@@ -376,4 +376,15 @@ class DataAndReportTest {
         assertEquals(Verdict.NO_EVIDENCE, r.cases.first { it.gf == "GF-999" }.verdict)
         assertTrue("GF-102@13:58" !in r.missingReadyInstances)
     }
+
+    @Test
+    fun evidenceForGrabIsSentInBatchesThatFitWhatGrabAccepted() {
+        // 20 combined images of 200 KB: 15 in the first send (3.0 MB), 5 in the second
+        val b = GrabLimits.batches(List(20) { 200_000L })
+        assertEquals(listOf(15, 5), b.map { it.size })
+        assertEquals((0 until 20).toList(), b.flatten())
+        // bigger images: the 3 MB limit splits earlier than the 15-file one
+        assertEquals(listOf(12, 8), GrabLimits.batches(List(20) { 250_000L }).map { it.size })
+        assertTrue(GrabLimits.batches(emptyList()).isEmpty())
+    }
 }
