@@ -1,6 +1,7 @@
 package io.github.panuwattegif.readyproof.ui
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -9,18 +10,21 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.FileProvider
 import io.github.panuwattegif.readyproof.ConfigStore
 import io.github.panuwattegif.readyproof.ShopStore
 import io.github.panuwattegif.readyproof.DailyExport
 import io.github.panuwattegif.readyproof.Diagnostics
 import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.EvidenceProvider
+import io.github.panuwattegif.readyproof.GrabPack
 import io.github.panuwattegif.readyproof.MediaSaver
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
 import io.github.panuwattegif.readyproof.core.DailyReport
 import io.github.panuwattegif.readyproof.core.DelayCase
 import io.github.panuwattegif.readyproof.core.EvidenceSet
+import io.github.panuwattegif.readyproof.core.GrabLimits
 import io.github.panuwattegif.readyproof.core.Naming
 import io.github.panuwattegif.readyproof.core.Parsers
 import io.github.panuwattegif.readyproof.core.Record
@@ -186,13 +190,17 @@ class ReportActivity : Activity() {
             )
         }
 
+        // One image per order (Ready photo + History row), at the size Grab accepts.
         val inTime = r.sets(Verdict.IN_TIME)
-        val inTimeFiles = inTime.sumOf { if (it.delay != null) 2L else 1L }
-        Ui.button(s, "📤 ส่งหลักฐานกดทัน ${inTime.size} ชุด ($inTimeFiles ไฟล์) ให้ Grab") { shareSets(inTime) }
+        Ui.button(s, "📤 ส่งหลักฐานกดทัน ${inTime.size} ออเดอร์ ให้ Grab") {
+            sendToGrab(r, inTime, emptyList(), "ส่งหลักฐานกดทัน ${inTime.size} ออเดอร์")
+        }
         val sets = r.sets()
-        val unmatchedDelayFiles = r.withoutEvidence.count { it.delayShot != null }
-        val files = sets.sumOf { if (it.delay != null) 2L else 1L } + unmatchedDelayFiles
-        Ui.button(s, "แชร์ทุกเคสล่าช้า ${r.cases.size} เคส ($files ไฟล์ รวมช้าจริง/ไม่มีหลักฐาน)", filled = false) { shareEvidence(r, sets) }
+        val delayOnly = r.withoutEvidence.filter { it.delayShot != null }
+        Ui.button(s, "แชร์ทุกเคสล่าช้า ${r.cases.size} เคส (รวมช้าจริง/ไม่มีหลักฐาน)", filled = false) {
+            sendToGrab(r, sets, delayOnly, "ส่งหลักฐาน ${r.cases.size} เคส")
+        }
+        Ui.text(s, "ภาพละ 1 ออเดอร์ (หน้าพร้อมจัดส่งคู่กับหน้าประวัติ) ไม่เกิน 250 KB · ส่งครั้งละไม่เกิน 15 ภาพ / 3 MB", 12f, Ui.MUTED, topDp = 2)
 
         if (r.withoutEvidence.any { it.delayShot != null }) {
             Ui.text(
@@ -214,22 +222,34 @@ class ReportActivity : Activity() {
     }
 
     /**
-     * Send every delayed case that has an image. Matched cases contribute READY + DELAY; unmatched
-     * cases still contribute DELAY alone instead of being silently dropped from the Drive handoff.
+     * Grab-ready images ([GrabPack]) shared in sends that fit what Grab accepted ([GrabLimits]);
+     * more than one send: the owner picks them one after another.
      */
-    private fun shareEvidence(report: DailyReport, sets: List<EvidenceSet>) {
-        val uris = ArrayList<Uri>()
-        for (set in sets) {
-            evidenceUri(set.ready, set.readyName)?.let { uris += it }
-            val delay = set.delay
-            val name = set.delayName
-            if (delay != null && name != null) evidenceUri(delay, name)?.let { uris += it }
+    private fun sendToGrab(report: DailyReport, sets: List<EvidenceSet>, delayOnly: List<DelayCase>, title: String) {
+        val files = try {
+            GrabPack.build(this, report.date, sets, delayOnly, ZoneId.systemDefault())
+        } catch (e: Exception) {
+            Ui.alert(this, "ทำภาพสำหรับส่ง Grab ไม่สำเร็จ", e.message ?: "")
+            return
         }
-        for (case in report.withoutEvidence) {
-            val delay = case.delayShot ?: continue
-            evidenceUri(delay, delayName(report, case))?.let { uris += it }
+        if (files.isEmpty()) {
+            Ui.toast(this, "ไม่มีภาพให้ส่ง")
+            return
         }
-        Share.images(this, uris, "ส่งหลักฐาน ${report.cases.size} เคส")
+        val uris = files.map { FileProvider.getUriForFile(this, "$packageName.exports", it) }
+        val batches = GrabLimits.batches(files.map { it.length() })
+        if (batches.size == 1) {
+            Share.images(this, uris, title)
+            return
+        }
+        val labels = batches.mapIndexed { i, b ->
+            "ชุดที่ ${i + 1}: ${b.size} ภาพ (" + String.format(java.util.Locale.ROOT, "%.1f", b.sumOf { files[it].length() } / 1_000_000.0) + " MB)"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("ส่งทีละชุด (Grab รับครั้งละไม่เกิน ${GrabLimits.MAX_FILES_PER_SEND} ภาพ)")
+            .setItems(labels) { _, i -> Share.images(this, batches[i].map { uris[it] }, "$title ชุดที่ ${i + 1}") }
+            .setNegativeButton("ปิด", null)
+            .show()
     }
 
     private fun delayName(report: DailyReport, c: DelayCase): String {
@@ -247,18 +267,6 @@ class ReportActivity : Activity() {
         r.uri?.let { EvidenceProvider.uriFor(Uri.parse(it), name) }
     } catch (e: Exception) {
         null
-    }
-
-    /** Only the given sets: GF-xxx_READY.jpg + GF-xxx_DELAY.jpg each. */
-    private fun shareSets(sets: List<EvidenceSet>) {
-        val uris = ArrayList<Uri>()
-        for (set in sets) {
-            evidenceUri(set.ready, set.readyName)?.let { uris += it }
-            val delay = set.delay
-            val name = set.delayName
-            if (delay != null && name != null) evidenceUri(delay, name)?.let { uris += it }
-        }
-        Share.images(this, uris, "ส่งหลักฐาน ${sets.size} ชุด")
     }
 
     private fun caseCard(col: LinearLayout, c: DelayCase, set: EvidenceSet?, report: DailyReport, zone: ZoneId) {
