@@ -1210,8 +1210,8 @@ class Engine(private val service: ProofService) {
         Notifier.status(
             service,
             "ReadyProof ปิดตัวเองแล้ว — แอปธนาคารใช้ได้",
-            "สรุปของวันนี้เสร็จแล้ว ก่อนร้านเปิด ${c.openTime} ให้เปิดกลับ: กดปุ่มเพิ่มเสียงกับลดเสียงค้างไว้ 3 วินาที " +
-                "(ถ้าตั้งทางลัดไว้) หรือเปิดแอป ReadyProof → เปิดสิทธิ์การช่วยเหลือพิเศษ",
+            "สรุปของวันนี้เสร็จแล้ว ก่อนร้านเปิด ${c.openTime} ให้เปิดกลับ: แตะไอคอน \"เปิด/ปิด ReadyProof\" " +
+                "→ แตะสวิตช์ ReadyProof → อนุญาต",
             Notifier.ID_OFF,
         )
         Diagnostics.note(service, "switching off for the night in ${SELF_OFF_DELAY_MS / 1000} s")

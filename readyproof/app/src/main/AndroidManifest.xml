@@ -30,6 +30,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Second icon on the phone: one tap to switch the watcher off, or to its switch to turn it on. -->
+        <activity
+            android:name=".ui.ToggleActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/toggle_label"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
         <activity android:name=".ui.ReportActivity" android:exported="false" />
         <activity android:name=".ui.CapturesActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />

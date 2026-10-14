@@ -49,17 +49,17 @@ class MainActivity : Activity() {
             enabled -> {
                 Ui.text(status, "⚠ เปิดสิทธิ์แล้ว แต่ระบบยังไม่ทำงาน", 19f, Ui.AMBER, bold = true)
                 Ui.text(status, "มือถือบางรุ่นปิดแอปเบื้องหลังเอง: เข้าหน้าการช่วยเหลือพิเศษ → ReadyProof → ปิดแล้วเปิดใหม่ และกด \"อนุญาตให้ทำงานเบื้องหลังตลอด\" ด้านล่าง", 14f, Ui.MUTED, topDp = 4)
-                Ui.button(status, "เปิดหน้าการช่วยเหลือพิเศษ") { ServiceStatus.openAccessibilitySettings(this) }
+                Ui.button(status, "เปิดสวิตช์ ReadyProof") { ServiceStatus.openOwnSwitch(this) }
             }
             else -> {
-                Ui.text(status, "✕ ยังไม่ได้เปิดสิทธิ์ \"การช่วยเหลือพิเศษ\"", 19f, Ui.RED, bold = true)
+                Ui.text(status, "✕ ReadyProof ปิดอยู่", 19f, Ui.RED, bold = true)
                 Ui.text(
                     status,
-                    "1) กดปุ่มเขียวด้านล่าง → หา ReadyProof (อาจอยู่ในหัวข้อ \"แอปที่ดาวน์โหลด\") → เปิดสวิตช์ → อนุญาต\n" +
+                    "1) กดปุ่มเขียวด้านล่าง → แตะสวิตช์ ReadyProof ให้เปิด → กด \"อนุญาต\" (ถ้าเครื่องพาไปหน้ารายการ ให้หา ReadyProof ในหัวข้อ \"แอปที่ดาวน์โหลด\")\n" +
                         "2) ถ้าสวิตช์เป็นสีเทากดไม่ได้ หรือขึ้นว่า \"การตั้งค่าที่ถูกจำกัด\" → กดปุ่ม \"เปิดหน้าข้อมูลแอป\" → แตะ ⋮ มุมขวาบน → \"อนุญาตการตั้งค่าที่ถูกจำกัด\" → แล้วทำข้อ 1 ใหม่",
                     14f, Ui.MUTED, topDp = 4,
                 )
-                Ui.button(status, "เปิดหน้าการช่วยเหลือพิเศษ") { ServiceStatus.openAccessibilitySettings(this) }
+                Ui.button(status, "▶ เปิด ReadyProof") { ServiceStatus.openOwnSwitch(this) }
                 Ui.button(status, "เปิดหน้าข้อมูลแอป (ถ้าติด \"ถูกจำกัด\")", filled = false) { ServiceStatus.openAppInfo(this) }
             }
         }
@@ -214,8 +214,8 @@ class MainActivity : Activity() {
             } else {
                 Ui.confirm(
                     this, "ปิด ReadyProof ชั่วคราว?",
-                    "ระหว่างปิดจะไม่มีการแคปหลักฐาน ใช้เสร็จแล้วเปิดกลับด้วยการกดปุ่มเพิ่มเสียงกับลดเสียงค้างไว้ 3 วินาที " +
-                        "(ถ้าตั้งทางลัดไว้) หรือกด \"เปิดหน้าการช่วยเหลือพิเศษ\" ในหน้านี้\n\n" +
+                    "ระหว่างปิดจะไม่มีการแคปหลักฐาน ใช้เสร็จแล้วเปิดกลับ: แตะไอคอน \"เปิด/ปิด ReadyProof\" บนหน้าจอหลัก " +
+                        "→ แตะสวิตช์ ReadyProof → อนุญาต\n\n" +
                         "ออเดอร์ที่ยังค้างในแท็บ Ready ตอนเปิดกลับจะถูกแคปทันที",
                     "ปิดเลย",
                 ) { service.switchOff() }

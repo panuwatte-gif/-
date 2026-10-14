@@ -2,6 +2,7 @@ package io.github.panuwattegif.readyproof
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -33,6 +34,18 @@ object ServiceStatus {
         ctx.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(ctx.packageName) ?: true
 
     fun openAccessibilitySettings(a: Activity) = start(a, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+
+    private fun component(ctx: Context) = ComponentName(ctx.packageName, ProofService::class.java.name).flattenToString()
+
+    /**
+     * ReadyProof's own switch in Settings (flip it, then "อนุญาต"), so nobody has to look for it
+     * in the accessibility list; that list when the phone does not offer the direct page.
+     */
+    fun openOwnSwitch(a: Activity) {
+        val direct = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+            .putExtra(Intent.EXTRA_COMPONENT_NAME, component(a))
+        if (!start(a, direct, quiet = true)) openAccessibilitySettings(a)
+    }
 
     fun openAppInfo(a: Activity) =
         start(a, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", a.packageName, null)))

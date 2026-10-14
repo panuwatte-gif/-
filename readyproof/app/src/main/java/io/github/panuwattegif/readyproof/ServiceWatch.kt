@@ -33,7 +33,7 @@ class ServiceWatchWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, p
                 if (enabled) {
                     "เปิดแอป ReadyProof → หน้าแรก → ทำตามที่ขึ้นสีเหลือง/แดง (ปิด-เปิดสิทธิ์การช่วยเหลือพิเศษ 1 ครั้ง)"
                 } else {
-                    "กดปุ่มเพิ่มเสียงกับลดเสียงค้างไว้ 3 วินาที (ถ้าตั้งทางลัดไว้) หรือเปิดแอป ReadyProof → กด \"เปิดหน้าการช่วยเหลือพิเศษ\" → เปิดสวิตช์"
+                    "แตะไอคอน \"เปิด/ปิด ReadyProof\" → แตะสวิตช์ ReadyProof → อนุญาต"
                 },
                 Notifier.ID_WATCH,
                 alertAgain = true,
