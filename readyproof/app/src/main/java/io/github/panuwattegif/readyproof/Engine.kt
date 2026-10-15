@@ -1172,7 +1172,7 @@ class Engine(private val service: ProofService) {
         eodForced = false
         val text = "อ่านประวัติได้ " + (report.grabCompleted?.let { "${report.completedSeen}/$it" } ?: "${report.completedSeen}") +
             " ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
-            "กดทัน ${report.inTime.size} · ช้าจริง ${report.late.size} · ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
+            "กดทัน ${report.inTime.size} · ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
             "% ที่ร้านควรได้ ${ReportText.pct(report.realPct)}" +
             (if (incomplete) "\n⚠ ยังไม่ครบ: ดูรายละเอียดในรายงาน" else "")
         setEodStatus(
@@ -1232,7 +1232,7 @@ class Engine(private val service: ProofService) {
         r.grabCompleted?.let { append(" (Grab ").append(it).append(')') }
         append(" / Cancelled ").append(r.cancelledSeen)
         append(" / Delayed ").append(r.delayed)
-        append(" / กดทัน ").append(r.inTime.size).append(" ช้าจริง ").append(r.late.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
+        append(" / กดทัน ").append(r.inTime.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
         if (!h.reachedEnd) append(" / ไม่ถึงท้ายรายการ")
         if (h.unshot.isNotEmpty()) append(" / ขาดภาพ DELAY ").append(h.unshot.joinToString(","))
         append(if (r.complete) " / MATCH" else " / INCOMPLETE")

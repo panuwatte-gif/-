@@ -120,13 +120,11 @@ class ReportActivity : Activity() {
 
     private fun groupTitle(v: Verdict): String = when (v) {
         Verdict.IN_TIME -> "✅ " + v.label
-        Verdict.LATE -> "⚠️ " + v.label
         Verdict.NO_EVIDENCE -> "❓ " + v.label
     }
 
     private fun colorOf(v: Verdict): Int = when (v) {
         Verdict.IN_TIME -> Ui.GREEN
-        Verdict.LATE -> Ui.AMBER
         Verdict.NO_EVIDENCE -> Ui.RED
     }
 
@@ -168,7 +166,6 @@ class ReportActivity : Activity() {
         )
         Ui.text(s, "ล่าช้าที่อ่านพบ: ${r.delayed}" + if (!r.complete) " · ยังไม่ยืนยันทั้งวัน" else "", 16f, bold = true, topDp = 6)
         Ui.text(s, "✅ ${Verdict.IN_TIME.label}: ${r.inTime.size}", 15f, Ui.GREEN, topDp = 2)
-        Ui.text(s, "⚠️ ${Verdict.LATE.label}: ${r.late.size}", 15f, Ui.AMBER)
         Ui.text(s, "❓ ${Verdict.NO_EVIDENCE.label}: ${r.noEvidence.size}", 15f, Ui.RED)
         Ui.text(s, "% ล่าช้าแบบ Grab = ${r.delayed} / ${r.base} = ${ReportText.pct(r.grabPct)}", 15f, topDp = 4)
         Ui.text(
@@ -197,7 +194,7 @@ class ReportActivity : Activity() {
         }
         val sets = r.sets()
         val delayOnly = r.withoutEvidence.filter { it.delayShot != null }
-        Ui.button(s, "แชร์ทุกเคสล่าช้า ${r.cases.size} เคส (รวมช้าจริง/ไม่มีหลักฐาน)", filled = false) {
+        Ui.button(s, "แชร์ทุกเคสล่าช้า ${r.cases.size} เคส (รวมเคสไม่มีหลักฐาน)", filled = false) {
             sendToGrab(r, sets, delayOnly, "ส่งหลักฐาน ${r.cases.size} เคส")
         }
         Ui.text(s, "ภาพละ 1 ออเดอร์ (หน้าพร้อมจัดส่งคู่กับหน้าประวัติ) ไม่เกิน 250 KB · ส่งครั้งละไม่เกิน 15 ภาพ / 3 MB", 12f, Ui.MUTED, topDp = 2)
@@ -273,7 +270,6 @@ class ReportActivity : Activity() {
         val card = Ui.card(col)
         val head = c.gf + " ล่าช้า " + (c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
         Ui.text(card, head, 16f, colorOf(c.verdict), bold = true)
-        if (c.verdict == Verdict.LATE) Ui.text(card, "ภาพแรกในแท็บ Ready แสดงว่าคนขับมาถึง/Grab เร่งแล้ว", 13f, Ui.AMBER)
         c.doneAt?.let { Ui.text(card, "เสร็จสมบูรณ์ " + Parsers.hhmm(it.toLocalTime()), 14f, Ui.MUTED) }
         c.readyShot?.let {
             Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.time(it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)

@@ -26,7 +26,6 @@ class SettingsActivity : Activity() {
     private lateinit var fRecheck: EditText
     private lateinit var fMaxWait: EditText
     private lateinit var fIdle: EditText
-    private lateinit var fLate: EditText
     private lateinit var fRetention: EditText
     private lateinit var fQuality: EditText
     private lateinit var fReadyTabs: EditText
@@ -78,8 +77,6 @@ class SettingsActivity : Activity() {
         fRecheck = Ui.field(eod, "ถ้ายังมีออเดอร์ค้างในแท็บ Ready ตรวจใหม่ทุกกี่นาที", cfg.recheckMinutes.toString(), number = true)
         fMaxWait = Ui.field(eod, "รอออเดอร์ค้างนานสุดกี่นาที แล้วสรุปเลย", cfg.endMaxWaitMinutes.toString(), number = true)
         sOff = Ui.switch(eod, "สรุปเสร็จแล้วปิดตัวเอง (ให้แอปธนาคาร/สแกนจ่ายใช้ได้ตอนกลางคืน)", cfg.autoOffAfterClose) {}
-        fLate = Ui.field(eod, "สถานะในภาพแรกที่แปลว่า \"ร้านช้าจริง\"", cfg.lateStatus.joinToString("\n"),
-            help = "ถ้าภาพแรกของออเดอร์ในแท็บ Ready มีคำเหล่านี้ = คนขับมาถึงก่อนร้านกดเสร็จ (บรรทัดละ 1 คำ)", multiLine = true)
         fWindow = Ui.field(eod, "จับคู่หลักฐานย้อนหลังกี่ชั่วโมงก่อนเวลาเสร็จ", cfg.evidenceWindowHours.toString(), number = true)
 
         val storage = Ui.card(col)
@@ -155,7 +152,6 @@ class SettingsActivity : Activity() {
             endBufferMinutes = num(fBuffer),
             recheckMinutes = num(fRecheck),
             endMaxWaitMinutes = num(fMaxWait),
-            lateStatus = lines(fLate),
             evidenceWindowHours = num(fWindow),
             retentionDays = num(fRetention),
             jpegQuality = num(fQuality),

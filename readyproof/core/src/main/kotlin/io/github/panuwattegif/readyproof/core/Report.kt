@@ -27,10 +27,11 @@ object TimeResolve {
 
 /** What the Ready-tab evidence says about a delayed order. */
 enum class Verdict(val label: String) {
-    /** First shot shows the order waiting for a rider who had not arrived yet. */
+    /**
+     * Photographed in the Ready tab before it finished: the shop had pressed "พร้อมจัดส่ง". Whatever
+     * the status line said ("คนขับของคุณมาถึงแล้ว", "โปรดเตรียมคำสั่งซื้อนี้...") none of it says late.
+     */
     IN_TIME("หลักฐานว่าร้านกดทัน"),
-    /** First shot already shows the rider there / Grab asking the shop to hurry. */
-    LATE("หลักฐานว่าร้านช้าจริง"),
     /** No usable Ready-tab shot: no evidence or the phone missed it. Not proof of being late. */
     NO_EVIDENCE("ไม่มีหลักฐาน / ระบบจับไม่ได้"),
 }
@@ -105,7 +106,6 @@ data class DailyReport(
     val withEvidence: List<DelayCase> get() = cases.filter { it.hasEvidence }
     val withoutEvidence: List<DelayCase> get() = cases.filter { !it.hasEvidence }
     val inTime: List<DelayCase> get() = cases.filter { it.verdict == Verdict.IN_TIME }
-    val late: List<DelayCase> get() = cases.filter { it.verdict == Verdict.LATE }
     val noEvidence: List<DelayCase> get() = cases.filter { it.verdict == Verdict.NO_EVIDENCE }
     val historyOrders: Int get() = completedSeen + cancelledSeen
     /** Delayed orders left once the ones proven done in time are taken out. */
@@ -245,12 +245,8 @@ object ReportBuilder {
                 r.items.firstOrNull { it.gf == a.gf && it.type == ObsType.READY }?.let { Evidence(r, it.status) }
             }
             val taps = presses.filter { it.t in from..to && it.items.any { i -> i.gf == a.gf && i.type == ObsType.PRESS } }.map { it.t }
-            // The first Ready shot of the order decides: rider not there yet = done in time.
-            val verdict = when {
-                ev.isEmpty() -> Verdict.NO_EVIDENCE
-                TextNorm.containsAny(ev.first().status, cfg.lateStatus) -> Verdict.LATE
-                else -> Verdict.IN_TIME
-            }
+            // In the Ready tab before it finished = the shop had pressed ready; the status text is not a verdict.
+            val verdict = if (ev.isEmpty()) Verdict.NO_EVIDENCE else Verdict.IN_TIME
             DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps,
                 if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY", verdict)
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
@@ -358,14 +354,12 @@ object ReportText {
             .append(if (r.readyVsCompletedMatch) " — MATCH\n" else " — MISMATCH\n")
         append("\nGrab ระบุล่าช้า ").append(r.delayed).append(" ออเดอร์ = ").append(pct(r.grabPct)).append(" (แบบ Grab คิด)\n")
         append("• ").append(Verdict.IN_TIME.label).append(": ").append(r.inTime.size).append('\n')
-        append("• ").append(Verdict.LATE.label).append(": ").append(r.late.size).append('\n')
         append("• ").append(Verdict.NO_EVIDENCE.label).append(": ").append(r.noEvidence.size).append('\n')
         append("% ล่าช้าที่ร้านควรได้ (ตัดออเดอร์ที่มีหลักฐานกดทันออก) = (").append(r.delayed).append(" − ")
             .append(r.inTime.size).append(") / ").append(r.base).append(" = ").append(pct(r.realPct)).append('\n')
         append("ตัวเลขเป็นออเดอร์ที่สแกนพบ ไม่ใช่จำนวนภาพ; ถ้ายังไม่ครบ Total ทั้งวัน = UNKNOWN\n")
         append("% ที่ร้านควรได้ เป็นการคำนวณจากหลักฐาน ไม่ยืนยันว่า Grab ปรับยอดแล้ว\n")
         section(this, "✅ " + Verdict.IN_TIME.label, r.inTime, zone)
-        section(this, "⚠️ " + Verdict.LATE.label, r.late, zone)
         section(this, "❓ " + Verdict.NO_EVIDENCE.label + " (ไม่ได้แปลว่าช้าจริง)", r.noEvidence, zone)
     }
 
