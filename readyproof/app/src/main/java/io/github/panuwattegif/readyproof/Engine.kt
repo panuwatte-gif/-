@@ -79,6 +79,8 @@ class Engine(private val service: ProofService) {
         private const val LOOK_GAP_MS = 60_000L
         /** How often the Ready tab is opened again while its list stays blank (see [guard]). */
         private const val BLANK_RETAP_MS = 15_000L
+        /** Away from Grab's order tabs this long, the guard goes back even if Grab seems in use. */
+        private const val OUTSIDE_MAX_MS = 5 * 60_000L
         /** One move of a list: this share of its height (the slow pass uses smaller steps). */
         private const val PAGE = 0.6f
         /** Minutes after [Config.endMaxWaitMinutes] when the day is closed even without History. */
@@ -131,6 +133,8 @@ class Engine(private val service: ProofService) {
     private var lastLaunchAt = 0L
     private var lastBackAt = 0L
     private var lastBlankTapAt = 0L
+    /** Since when Grab has been on a screen without its order tabs (0 = it is on them). */
+    private var outsideSince = 0L
     private var lastLookAt = 0L
     private var lastLookCount = 0
     private val problemAt = HashMap<String, Long>()
@@ -368,7 +372,12 @@ class Engine(private val service: ProofService) {
         ) {
             lastLookAt = up
             lastLookCount = count ?: 0
-            lookBelow(s)
+            if (!lookBelow(s) && !s.dialog) {
+                // 15 Oct 10:45–11:01 the tab counted orders its list did not show, for minutes;
+                // opening the tab again showed the missing one at once (11:21, 18:06).
+                Diagnostics.note(service, "Ready tab counts $count but its list shows fewer, opening it again")
+                openTab(c.readyTabLabels, OrderTab.READY, again = true)
+            }
         }
         setWhere("เฝ้าแท็บ Ready · รอไรเดอร์ ${tracker.present().size} ออเดอร์")
     }
@@ -505,8 +514,9 @@ class Engine(private val service: ProofService) {
     /**
      * Rule 2: the tab counts more orders than are on screen (or one is cut off): move down the list
      * photographing what appears, stop once every order was seen, then go back to the top.
+     * False when the list showed fewer orders than its tab counts.
      */
-    private suspend fun lookBelow(start: Screen): Unit = automate {
+    private suspend fun lookBelow(start: Screen): Boolean = automate {
         var s = start
         val count = s.a.readyCount
         val seen = LinkedHashSet(s.a.readyGfs())
@@ -538,6 +548,7 @@ class Engine(private val service: ProofService) {
             "look below: tab $count, seen ${seen.size} (${seen.joinToString(",")}), moved $moves, " +
                 "unshot=${tracker.pending()} moves scroll/drag/none=$scrollMoves/$dragMoves/$stuckMoves",
         )
+        count == null || seen.size >= count
     }
 
     /**
@@ -943,6 +954,7 @@ class Engine(private val service: ProofService) {
         val now = SystemClock.uptimeMillis()
         val idleMs = c.guardIdleMinutes * 60_000L
         if (!w.grabVisible) {
+            outsideSince = 0L
             if (w.ownAppVisible) {
                 lastGrabSeenAt = now
                 return
@@ -950,15 +962,31 @@ class Engine(private val service: ProofService) {
             if (!screenUsable()) return
             if (now - lastGrabSeenAt > idleMs && now - lastLaunchAt > LAUNCH_GAP_MS) {
                 lastLaunchAt = now
-                Diagnostics.note(service, "guard: Grab not on screen, opening it")
+                // 15 Oct 17:17–17:32 four launches did not keep Grab on screen: note what was there.
+                Diagnostics.note(service, "guard: Grab not on screen (on screen: ${w.appsText()}), opening it")
                 actor.launch(c.targetPackages.first())
+                var after = w
+                for (i in 1..10) {
+                    delay(1_000)
+                    after = reader.windows(c)
+                    if (after.grabVisible) break
+                }
+                if (!after.grabVisible) {
+                    Diagnostics.note(service, "guard: Grab did not come up (on screen: ${after.appsText()})")
+                    problem("Grab ไม่ได้อยู่บนจอ และเปิดกลับเองไม่ได้ — กรุณาเปิด Grab ที่แท็บพร้อมจัดส่ง")
+                }
             }
             return
         }
-        if (now - lastUserTouchAt < PERSON_GRACE_MS) return
         if (!lane.tryLock()) return
         try {
             val s = reader.read(c) ?: return
+            // Off the order tabs (Grab's home page ...) Grab moves things by itself, which looks like
+            // somebody using it: 15 Oct 09:00–10:24 Grab stayed on its home page and was never
+            // taken back. After a while there, go back whatever seems to be going on.
+            if (s.a.tabsVisible) outsideSince = 0L else if (outsideSince == 0L) outsideSince = now
+            val stuck = outsideSince != 0L && now - outsideSince > OUTSIDE_MAX_MS
+            if (!stuck && now - lastUserTouchAt < PERSON_GRACE_MS) return
             if (isReady(s) || tabOf(s) == OrderTab.READY) {
                 // 10 Oct 11:55–12:25 the Ready list showed no orders while its tab counted some, and
                 // nothing was read for 30 minutes: opening the tab again shows them at once.
@@ -969,12 +997,12 @@ class Engine(private val service: ProofService) {
                 }
                 return
             }
-            if (now - lastUserTouchAt < idleMs) return
+            if (!stuck && now - lastUserTouchAt < idleMs) return
             if (s.dialog) {
                 problem("Grab มีหน้าต่างเด้งค้างอยู่ — กรุณาปิดเอง แล้วเปิดแท็บ Ready")
                 return
             }
-            Diagnostics.note(service, "guard: back to the Ready tab from ${s.a.tab}")
+            Diagnostics.note(service, "guard: back to the Ready tab from ${s.a.tab}" + if (stuck) " (off the order tabs for ${(now - outsideSince) / 60_000} min)" else "")
             setWhere("กำลังกลับหน้า Ready อัตโนมัติ")
             if (!openTab(c.readyTabLabels, OrderTab.READY)) problem("พากลับแท็บ Ready ไม่สำเร็จ — กรุณาเปิด Grab ที่แท็บ Ready เอง")
         } finally {

@@ -297,6 +297,46 @@ class ShopPhoneTest {
     }
 
     @Test
+    fun aSelfPickupOrderWaitingForItsCustomerIsAReadyOrder() {
+        // photo GF-840_READY_2026-10-15_15-15-30: self-pickup GF-066T ("ลูกค้าใกล้ถึงแล้ว") above
+        // GF-840; 1.0.152 counted only GF-840 because GF-066T mentions no driver
+        fun card(desc: String, top: Int) = v(desc, top, top + 234, clickable = true,
+            kids = arrayOf(v(top = top + 109, bottom = top + 157, left = 630, right = 678, cls = "android.widget.ImageView", clickable = true)))
+        val both = ScreenAnalyzer.analyze(
+            listOf(orders10Oct(65, card("GF-066T ลูกค้าใกล้ถึงแล้ว 1 รายการ", 291), card("GF-840 คนขับของคุณมาถึงแล้ว 1 รายการ", 525))),
+            cfg,
+        )
+        assertEquals(listOf("GF-066T", "GF-840"), both.readyViews().filter { it.full && it.gfClear }.map { it.gf })
+        // alone in the list
+        val alone = ScreenAnalyzer.analyze(listOf(orders10Oct(65, card("GF-066T ลูกค้าใกล้ถึงแล้ว 1 รายการ", 291))), cfg)
+        assertEquals(listOf("GF-066T"), alone.readyViews().filter { it.full && it.gfClear }.map { it.gf })
+        // in the same list as an order waiting for its driver, any wording counts: the Ready list
+        // holds nothing else
+        val other = ScreenAnalyzer.analyze(
+            listOf(orders10Oct(65, card("GF-512X รอรับที่ร้าน 1 รายการ", 291), card("GF-840 คนขับของคุณมาถึงแล้ว 1 รายการ", 525))),
+            cfg,
+        )
+        assertEquals(listOf("GF-512X", "GF-840"), other.readyGfs())
+        assertEquals("GF-512X รอรับที่ร้าน 1 รายการ", other.readyViews().first().items.single().status)
+        // ... but never an order still being prepared or already finished
+        val mixed = ScreenAnalyzer.analyze(
+            listOf(
+                orders10Oct(
+                    65,
+                    card("GF-111 พร้อมจัดส่งใน: 5:53 นาที 1 รายการ", 291),
+                    card("GF-222 เสร็จสมบูรณ์เมื่อ 3:15 PM", 525),
+                    card("GF-840 คนขับของคุณมาถึงแล้ว 1 รายการ", 759),
+                ),
+            ),
+            cfg,
+        )
+        assertEquals(listOf("GF-840"), mixed.readyGfs())
+        // an order on its own with an unknown line is not taken for Ready (it could be any tab)
+        val unknown = ScreenAnalyzer.analyze(listOf(orders10Oct(65, card("GF-512X รอรับที่ร้าน 1 รายการ", 291))), cfg)
+        assertTrue(unknown.readyGfs().isEmpty())
+    }
+
+    @Test
     fun realDumpOf1121TheReadyTabCountsAnOrderButItsListIsBlank() {
         // dump-1791606084957: "พร้อมจัดส่ง 1" on the tab, the list shows only the empty-list picture
         val a = ScreenAnalyzer.analyze(

@@ -322,7 +322,7 @@ class DataAndReportTest {
 
     @Test
     fun version4SettingsGainOpeningHoursAndNightSwitchOff() {
-        val old = ConfigCodec.encode(Config(closeTime = "20:00")).replace("\"v\":6", "\"v\":4")
+        val old = ConfigCodec.encode(Config(closeTime = "20:00")).replace("\"v\":${ConfigCodec.VERSION}", "\"v\":4")
             .replace(Regex(",\"openTime\":\"[^\"]*\",\"autoOffAfterClose\":(true|false),\"readyBatchSeconds\":\\d+"), "")
         assertFalse(old.contains("openTime"))
         val c = ConfigCodec.decode(old)
@@ -349,7 +349,7 @@ class DataAndReportTest {
         val a = ScreenAnalyzer.analyze(listOf(page), Config.DEFAULT)
         assertTrue(a.readyGfs().isEmpty())
         // saved settings gain the new word
-        val old = ConfigCodec.encode(Config(readyNone = listOf("Ready in"))).replace("\"v\":6", "\"v\":5")
+        val old = ConfigCodec.encode(Config(readyNone = listOf("Ready in"))).replace("\"v\":${ConfigCodec.VERSION}", "\"v\":5")
         assertTrue("จัดส่งแล้ว" in ConfigCodec.decode(old).readyNone)
     }
 
