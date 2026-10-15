@@ -1,5 +1,6 @@
 package io.github.panuwattegif.readyproof.core
 
+import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
 
@@ -110,8 +111,16 @@ object ScreenAnalyzer {
             val finder = CardFinder(gfx, root)
             visible += finder.visibleGfs()
             val occluderCache = IdentityHashMap<UiNode, List<Box>>()
-            val found = finder.cards().map { card ->
-                val observed = rules.evaluate(card, allowUnknownDelayed || tab == OrderTab.HISTORY)
+            val cards = finder.cards()
+            val observedOf = cards.map { card -> rules.evaluate(card, allowUnknownDelayed || tab == OrderTab.HISTORY) }
+            // No tab marked open (shop phone): a list holding an order that waits for its driver or
+            // customer is the Ready list, so every order in it waits too, whatever its line says.
+            val readyLists = Collections.newSetFromMap(IdentityHashMap<UiNode, Boolean>())
+            if (tab == null) {
+                cards.forEachIndexed { i, card -> if (observedOf[i].any { it.type == ObsType.READY }) card.list?.let { readyLists += it } }
+            }
+            val found = cards.mapIndexed { i, card ->
+                val observed = observedOf[i]
                 val history = observed.filter { it.type == ObsType.DONE || it.type == ObsType.DELAY || it.type == ObsType.CANCELLED }
                 val status = statusLine(card, gfx)
                 val ready = when (tab) {
@@ -123,6 +132,13 @@ object ScreenAnalyzer {
                     }
                     OrderTab.HISTORY, OrderTab.PREPARING, OrderTab.OTHER -> null
                     null -> observed.firstOrNull { it.type == ObsType.READY }
+                        ?: if (card.inList && card.list in readyLists && history.isEmpty() &&
+                            TextNorm.indexOfAny(card.texts, cfg.readyNone) < 0
+                        ) {
+                            Item(card.gf, ObsType.READY, status = status ?: card.texts.firstOrNull(), card = card.texts)
+                        } else {
+                            null
+                        }
                 }
                 val items = listOfNotNull(ready) + history
                 val vp = viewport(card, root)

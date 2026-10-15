@@ -30,8 +30,12 @@ class WindowsState(
     val occluders: List<Box>,
     val dialog: Boolean,
     val ownAppVisible: Boolean,
+    /** What is on screen, top first: app names, or the kind of system window. For the diagnostics only. */
+    val apps: List<String> = emptyList(),
 ) {
     val grabVisible: Boolean get() = grabRoots.isNotEmpty()
+
+    fun appsText(): String = apps.joinToString(", ").ifEmpty { "nothing" }
 }
 
 class ScreenReader(private val service: AccessibilityService) {
@@ -82,6 +86,15 @@ class ScreenReader(private val service: AccessibilityService) {
             }
         }
         val own = all.any { it.pkg == service.packageName }
+        val apps = all.sortedByDescending { it.info.layer }.map { w ->
+            w.pkg ?: when (w.info.type) {
+                AccessibilityWindowInfo.TYPE_APPLICATION -> "app"
+                AccessibilityWindowInfo.TYPE_SYSTEM -> "system"
+                AccessibilityWindowInfo.TYPE_INPUT_METHOD -> "keyboard"
+                AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> "overlay"
+                else -> "window${w.info.type}"
+            }
+        }.distinct()
         if (roots.isEmpty()) {
             // Some phones do not list windows; the active window is enough to keep working.
             val active = service.rootInActiveWindow
@@ -90,7 +103,7 @@ class ScreenReader(private val service: AccessibilityService) {
                 return WindowsState(listOf(active), emptyList(), false, false)
             }
         }
-        return WindowsState(roots, occluders, dialog, own)
+        return WindowsState(roots, occluders, dialog, own, apps)
     }
 
     /** Reads and analyses the Grab screen; null when Grab is not on screen. */

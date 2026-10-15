@@ -39,10 +39,13 @@ data class Config(
     val captureReady: Boolean = true,
     /**
      * Only used when the phone does not report which tab is open: a card with one of these
-     * (and none of [readyNone]) counts as being in the Ready tab.
+     * (and none of [readyNone]) counts as being in the Ready tab, and so does every other order
+     * in the same list. Self-pickup orders wait for the customer, not a driver ("GF-066T
+     * ลูกค้าใกล้ถึงแล้ว", 15 Oct).
      */
     val readyAny: List<String> = listOf(
         "Finding a driver", "Driver", "กำลังค้นหาคนขับ", "คนขับ", "โปรดเตรียมคำสั่งซื้อนี้",
+        "ลูกค้าใกล้ถึง", "ลูกค้ามาถึง",
     ),
     val readyNone: List<String> = listOf(
         "Ready in", "พร้อมจัดส่งใน", "Completed", "เสร็จสมบูรณ์", "Cancelled", "ยกเลิก", "Delivered", "จัดส่งแล้ว",
@@ -164,7 +167,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 6
+    const val VERSION = 7
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -260,7 +263,8 @@ object ConfigCodec {
      * v1 knew only the Thai screens, v3 had no letter-suffixed order numbers (GF-398F), and v4 is
      * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
      * next shot); v5 adds opening hours, switching off at night and shared photos for bursts;
-     * v6 knows that a delivered order ("จัดส่งแล้ว", an order's detail page) is never waiting.
+     * v6 knows that a delivered order ("จัดส่งแล้ว", an order's detail page) is never waiting;
+     * v7 knows self-pickup orders waiting for their customer.
      * Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {
