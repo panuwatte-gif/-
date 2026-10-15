@@ -69,7 +69,7 @@ class DataAndReportTest {
 
     @Test
     fun configRoundTripAndRecovery() {
-        val c = Config(closeTime = "20:30", recheckMinutes = 7, lateStatus = listOf("arrived"), retentionDays = 45, diagnostics = true)
+        val c = Config(closeTime = "20:30", recheckMinutes = 7, retentionDays = 45, diagnostics = true)
         assertEquals(c, ConfigCodec.decode(ConfigCodec.encode(c)))
         assertEquals(Config.DEFAULT, ConfigCodec.decodeOrDefault("{broken"))
         assertEquals(Config.DEFAULT, ConfigCodec.decodeOrDefault(null))
@@ -159,7 +159,7 @@ class DataAndReportTest {
         // a later shot of the same stay does not replace the first one
         val laterShot = rec(ms(2026, 9, 28, 11, 9), RecordKind.READY, Item("GF-613", ObsType.READY, status = "Your driver has arrived"))
         val manualInReadyTab = rec(ms(2026, 9, 28, 11, 30), RecordKind.MANUAL, Item("GF-777", ObsType.READY, status = "คนขับจะมารับใน 3 นาที"))
-        // first seen in the Ready tab when the rider was already there: the shop really was late
+        // first seen in the Ready tab with Grab asking to get it ready: still in the Ready tab before it finished
         val lateShot = rec(ms(2026, 9, 28, 12, 20), RecordKind.READY, Item("GF-533", ObsType.READY, status = "โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง"))
         val history = rec(ms(2026, 9, 28, 19, 14), RecordKind.DELAY,
             Item("GF-613", ObsType.DELAY, delayMin = 4, doneAt = "11:20"),
@@ -198,8 +198,8 @@ class DataAndReportTest {
         assertEquals(false, r.historyMatchesGrab)
         assertFalse(r.complete)
         assertEquals(5, r.delayed)
-        assertEquals(listOf("GF-613", "GF-777"), r.inTime.map { it.gf })
-        assertEquals(listOf("GF-533"), r.late.map { it.gf })
+        // GF-533 was in the Ready tab before it finished: pressed in time, whatever its status said
+        assertEquals(listOf("GF-613", "GF-777", "GF-533"), r.inTime.map { it.gf })
         assertEquals(listOf("GF-888", "GF-156"), r.noEvidence.map { it.gf })
         val c613 = r.cases.first { it.gf == "GF-613" }
         assertEquals(4, c613.delayMin)
@@ -209,24 +209,24 @@ class DataAndReportTest {
         // Ready shots for 4 of the 7 finished orders
         assertEquals(listOf("GF-156@12:40", "GF-888@12:10", "GF-722@12:18"), r.missingReadyInstances)
         assertEquals(4, r.readyOrders)
-        assertEquals(3, r.actualDelayed)
+        assertEquals(2, r.actualDelayed)
         assertEquals(62.5, r.grabPct)
-        assertEquals(37.5, r.realPct)
+        assertEquals(25.0, r.realPct)
 
         // one set per order with a Ready shot, named like the shop's Drive folder
         val sets = r.sets(Verdict.IN_TIME)
-        assertEquals(listOf("GF-613_READY.jpg", "GF-777_READY.jpg"), sets.map { it.readyName })
-        assertEquals(listOf("GF-613_DELAY.jpg", "GF-777_DELAY.jpg"), sets.map { it.delayName })
-        assertEquals(listOf(readyShot.id, manualInReadyTab.id), sets.map { it.ready.id })
-        assertEquals(listOf(history.id, history.id), sets.map { it.delay?.id })
-        assertEquals(listOf("GF-533_READY.jpg"), r.sets(Verdict.LATE).map { it.readyName })
+        assertEquals(listOf("GF-613_READY.jpg", "GF-777_READY.jpg", "GF-533_READY.jpg"), sets.map { it.readyName })
+        assertEquals(listOf("GF-613_DELAY.jpg", "GF-777_DELAY.jpg", "GF-533_DELAY.jpg"), sets.map { it.delayName })
+        assertEquals(listOf(readyShot.id, manualInReadyTab.id, lateShot.id), sets.map { it.ready.id })
+        assertEquals(listOf(history.id, history.id, history.id), sets.map { it.delay?.id })
         assertTrue(r.sets(Verdict.NO_EVIDENCE).isEmpty())
 
         val text = ReportText.summary(r, zone)
         assertTrue(text.contains("วันที่ 28/09/2026"))
         assertTrue(text.contains("ยอดจาก Grab (หัวหน้าประวัติ): เสร็จสมบูรณ์ 8 · ยกเลิก 0 — ⚠ อ่านรายการได้ไม่ครบ"))
         assertTrue(text.contains("Grab ระบุล่าช้า 5 ออเดอร์ = 62.50%"))
-        assertTrue(text.contains("= (5 − 2) / 8 = 37.50%"))
+        assertTrue(text.contains("= (5 − 3) / 8 = 25.00%"))
+        assertFalse(text.contains("ช้าจริง:"))
         assertTrue(text.contains("GF-613 ล่าช้า 4 นาที (เสร็จ 11:20) — อยู่ในแท็บ Ready ตั้งแต่ 11:01 \"Finding a driver...\""))
         assertTrue(text.contains("❓ ไม่มีหลักฐาน / ระบบจับไม่ได้ (ไม่ได้แปลว่าช้าจริง)\nGF-888 ล่าช้า 2 นาที (เสร็จ 12:10)\nGF-156 ล่าช้า 6 นาที (เสร็จ 12:40)\n"))
 
@@ -234,7 +234,7 @@ class DataAndReportTest {
         assertTrue(csv.contains("date,gf,"))
         assertEquals(6, csv.trim().lines().size)
         assertTrue(csv.contains("2026-09-28,GF-613,4,11:20,yes,11:01,Finding a driver...,10:58,GF-613_READY.jpg,GF-613_DELAY.jpg,UNKNOWN,READY_EVIDENCE,IN_TIME"))
-        assertTrue(csv.contains("2026-09-28,GF-533,7,12:35,yes,12:20,โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง,,GF-533_READY.jpg,GF-533_DELAY.jpg,UNKNOWN,READY_EVIDENCE,LATE"))
+        assertTrue(csv.contains("2026-09-28,GF-533,7,12:35,yes,12:20,โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง,,GF-533_READY.jpg,GF-533_DELAY.jpg,UNKNOWN,READY_EVIDENCE,IN_TIME"))
         assertTrue(csv.contains("2026-09-28,GF-156,6,12:40,no,,,,,,UNKNOWN,MISSING_READY,NO_EVIDENCE"))
     }
 

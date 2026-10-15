@@ -151,7 +151,7 @@ class MainActivity : Activity() {
             Ui.text(
                 day,
                 "ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)}) · กดทัน ${report.inTime.size} · " +
-                    "ช้าจริง ${report.late.size} · ไม่มีหลักฐาน ${report.noEvidence.size} → ที่ควรได้ ${ReportText.pct(report.realPct)}",
+                    "ไม่มีหลักฐาน ${report.noEvidence.size} → ที่ควรได้ ${ReportText.pct(report.realPct)}",
                 14f, topDp = 3,
             )
         }

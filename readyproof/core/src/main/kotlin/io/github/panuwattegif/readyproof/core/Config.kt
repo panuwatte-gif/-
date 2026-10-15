@@ -47,14 +47,6 @@ data class Config(
     val readyNone: List<String> = listOf(
         "Ready in", "พร้อมจัดส่งใน", "Completed", "เสร็จสมบูรณ์", "Cancelled", "ยกเลิก", "Delivered", "จัดส่งแล้ว",
     ),
-    /**
-     * Status shown when the order first appeared in the Ready tab that means the shop was late:
-     * the rider was already there, or Grab asked the shop to get the order ready.
-     */
-    val lateStatus: List<String> = listOf(
-        "มาถึงแล้ว", "arrived", "โปรดเตรียมคำสั่งซื้อนี้", "prepare this order", "get this order ready",
-    ),
-
     /** Screenshot the History list where it shows a delayed order. */
     val captureDelay: Boolean = true,
     val doneAny: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
@@ -190,7 +182,6 @@ object ConfigCodec {
             "captureReady" to c.captureReady,
             "readyAny" to c.readyAny,
             "readyNone" to c.readyNone,
-            "lateStatus" to c.lateStatus,
             "captureDelay" to c.captureDelay,
             "doneAny" to c.doneAny,
             "cancelAny" to c.cancelAny,
@@ -236,7 +227,6 @@ object ConfigCodec {
             captureReady = m.bool("captureReady") ?: d.captureReady,
             readyAny = m.strList("readyAny") ?: d.readyAny,
             readyNone = m.strList("readyNone") ?: d.readyNone,
-            lateStatus = m.strList("lateStatus") ?: d.lateStatus,
             captureDelay = m.bool("captureDelay") ?: d.captureDelay,
             doneAny = m.strList("doneAny") ?: d.doneAny,
             cancelAny = m.strList("cancelAny") ?: d.cancelAny,
@@ -316,7 +306,6 @@ fun Config.sanitized(): Config {
         ordersNavLabels = ordersNavLabels.cleanList(),
         readyAny = readyAny.cleanList(),
         readyNone = readyNone.cleanList(),
-        lateStatus = lateStatus.cleanList(),
         doneAny = doneAny.cleanList(),
         cancelAny = cancelAny.cleanList(),
         delayAny = delayAny.cleanList(),
