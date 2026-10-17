@@ -172,7 +172,12 @@ object CleanStore {
                 val pm = endMillis(p)
                 if (pm != null && end != null && pm < end) pm else null
             }.maxOrNull()
-            val candidate = if (end == null) null else readyProofEvents
+            // Fail closed for repeated GF numbers. The Ready event schema currently
+            // stores only GF and capture time, not a verified order-instance ID.
+            // Never claim a matched Ready when the same GF occurs multiple times
+            // in History, or the completion timestamp is absent.
+            val uniqueInstance = byGf[d.gf].orEmpty().size == 1
+            val candidate = if (!uniqueInstance || end == null) null else readyProofEvents
                 .filter { d.gf in it.gfs && it.t <= end && it.t > (previous ?: day.atStartOfDay(zone).toInstant().toEpochMilli()) }
                 .minByOrNull { it.t }
             MatchedDelay(d, candidate?.uri, historyProof[d.key])
