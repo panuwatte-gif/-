@@ -235,15 +235,15 @@ class ShopPhoneTest {
     }
 
     /** Orders screen as dumped on 10 Oct: tab labels carry their counts, the list reports both scroll flags. */
-    private fun orders10Oct(top: Int, vararg list: UiNode): UiNode {
+    private fun orders10Oct(top: Int, vararg list: UiNode, preparing: String = "กำลังเตรียม 2", ready: String = "พร้อมจัดส่ง 1"): UiNode {
         val tabStrip = v(
             top = top + 128, bottom = top + 224,
             kids = arrayOf(
                 v(
                     cls = "android.widget.HorizontalScrollView", top = top + 128, bottom = top + 224, scrollable = true, horizontal = true,
                     kids = arrayOf(
-                        v("กำลังเตรียม 2", top + 128, top + 224, 0, 240, clickable = true),
-                        v("พร้อมจัดส่ง 1", top + 128, top + 224, 240, 480, clickable = true),
+                        v(preparing, top + 128, top + 224, 0, 240, clickable = true),
+                        v(ready, top + 128, top + 224, 240, 480, clickable = true),
                         v("ที่กำลังจะถึง", top + 128, top + 224, 480, 720, clickable = true),
                     ),
                 ),
@@ -318,22 +318,132 @@ class ShopPhoneTest {
         )
         assertEquals(listOf("GF-512X", "GF-840"), other.readyGfs())
         assertEquals("GF-512X รอรับที่ร้าน 1 รายการ", other.readyViews().first().items.single().status)
-        // ... but never an order still being prepared or already finished
+        // ... but never an order already finished
         val mixed = ScreenAnalyzer.analyze(
-            listOf(
-                orders10Oct(
-                    65,
-                    card("GF-111 พร้อมจัดส่งใน: 5:53 นาที 1 รายการ", 291),
-                    card("GF-222 เสร็จสมบูรณ์เมื่อ 3:15 PM", 525),
-                    card("GF-840 คนขับของคุณมาถึงแล้ว 1 รายการ", 759),
-                ),
-            ),
+            listOf(orders10Oct(65, card("GF-222 เสร็จสมบูรณ์เมื่อ 3:15 PM", 291), card("GF-840 คนขับของคุณมาถึงแล้ว 1 รายการ", 525))),
             cfg,
         )
         assertEquals(listOf("GF-840"), mixed.readyGfs())
         // an order on its own with an unknown line is not taken for Ready (it could be any tab)
         val unknown = ScreenAnalyzer.analyze(listOf(orders10Oct(65, card("GF-512X รอรับที่ร้าน 1 รายการ", 291))), cfg)
         assertTrue(unknown.readyGfs().isEmpty())
+    }
+
+    /** A Preparing card as one element with the order's own green button inside it. */
+    private fun prepCard(desc: String, top: Int, button: String = "พร้อมจัดส่ง", height: Int = 250) = v(
+        desc, top, top + height, clickable = true,
+        kids = arrayOf(v(button, top + 75, top + 140, 460, 690, cls = "android.widget.Button", clickable = true)),
+    )
+
+    @Test
+    fun thePreparingTabShowsTheTimeLeftAndNothingOnItIsReady() {
+        // 22 Oct 11:10: GF-961 has run out of time (red 0:00) and has not been pressed
+        val a = ScreenAnalyzer.analyze(
+            listOf(
+                orders10Oct(
+                    65,
+                    v("เสร็จสิ้นคำสั่งซื้อนี้เร็ว ๆ นี้", 291, 340),
+                    v("อย่าลืมกดปุ่ม 'พร้อมจัดส่ง' หลังจากที่คุณเตรียมคำสั่งซื้อเสร็จแล้ว", 340, 380),
+                    prepCard("GF-961 พร้อมจัดส่งใน: 0:00 นาที 1 รายการ", 390),
+                    prepCard("GF-992 พร้อมจัดส่งใน: 1:40 นาที 1 รายการ", 640),
+                    prepCard("GF-952 พร้อมจัดส่งใน: 5:44 นาที 1 รายการ", 890),
+                    prepCard("GF-884 พร้อมจัดส่งใน: 3:42 นาที 1 รายการ", 1140),
+                    prepCard("GF-147 พร้อมจัดส่งใน: 8:40 นาที 2 รายการ", 1390, height = 104),
+                    preparing = "กำลังเตรียม 5", ready = "พร้อมจัดส่ง 2",
+                ),
+            ),
+            cfg,
+        )
+        assertEquals(OrderTab.PREPARING, a.tab)
+        assertTrue(a.readyGfs().isEmpty())
+        assertEquals(
+            listOf("GF-961" to 0, "GF-992" to 100, "GF-952" to 344, "GF-884" to 222, "GF-147" to 520),
+            a.preparingViews().map { v -> v.gf to v.items.single { it.type == ObsType.PREPARING }.dueSeconds },
+        )
+        assertEquals(5, a.preparingCount)
+        assertEquals(2, a.readyCount)
+        // the red one is completely on screen (photo); the last one is cut off at the bottom
+        assertTrue(a.preparingViews().first { it.gf == "GF-961" }.full)
+        assertTrue(!a.preparingViews().first { it.gf == "GF-147" }.full)
+        // the only thing ever tapped there is the tab name, never an order's own button
+        val gfx = cfg.gfExtractor()
+        assertEquals("พร้อมจัดส่ง 2", TabDetector.tapTarget(listOf(orders10Oct(65, prepCard("GF-961 พร้อมจัดส่งใน: 0:00 นาที 1 รายการ", 390),
+            ready = "พร้อมจัดส่ง 2")), cfg.readyTabLabels, cfg.tabLabels, gfx)?.desc)
+    }
+
+    @Test
+    fun anOrderOfABatchAlreadyMarkedReadyIsNotTakenForReadyOnThePreparingTab() {
+        // 22 Oct 16:08: one driver for two orders; GF-595 is done (✓), GF-556 ran out of time
+        val group = v(
+            top = 400, bottom = 900, clickable = false,
+            kids = arrayOf(
+                v("คำสั่งซื้อเหล่านี้จะมีคนขับคนเดียวกันมารับ โปรดเตรียมคำสั่งซื้อพร้อมกัน", 400, 480),
+                v("GF-595 คนขับจะมารับใน 0 นาที 1 รายการ", 480, 660,
+                    kids = arrayOf(v(top = 540, bottom = 600, left = 600, right = 660, cls = "android.widget.ImageView"))),
+                prepCard("GF-556 พร้อมจัดส่งใน: 0:00 นาที 2 รายการ", 660, height = 200),
+            ),
+        )
+        val a = ScreenAnalyzer.analyze(listOf(orders10Oct(65, group, preparing = "กำลังเตรียม 1", ready = "พร้อมจัดส่ง 1")), cfg)
+        assertEquals(OrderTab.PREPARING, a.tab)
+        assertTrue(a.readyGfs().isEmpty())
+        assertEquals(listOf("GF-556" to "0:00"), a.preparingViews().map { v -> v.gf to v.items.single { it.type == ObsType.PREPARING }.countdown })
+    }
+
+    @Test
+    fun englishAndNewerPreparingLayoutsAreReadToo() {
+        // 12:54 in English
+        val en = ScreenAnalyzer.analyze(
+            listOf(orders10Oct(65, prepCard("GF-173 Ready in: 0:00 min 1 item", 390, button = "Ready"),
+                prepCard("GF-960 Ready in: 9:09 min 3 items", 640, button = "Ready"))),
+            cfg,
+        )
+        assertEquals(listOf("GF-173" to 0, "GF-960" to 549), en.preparingViews().map { v -> v.gf to v.items.single { it.type == ObsType.PREPARING }.dueSeconds })
+        assertTrue(en.readyGfs().isEmpty())
+        // 11:14, newer layout: no "Ready in", the time stands under the button, and the line above
+        // the order talks about the driver ("Driver should arrive in 5-10 mins")
+        fun newCard(gf: String, items: String, time: String, top: Int) = v(
+            top = top, bottom = top + 360, clickable = false,
+            kids = arrayOf(
+                v("Driver should arrive in 5-10 mins", top, top + 120),
+                v(top = top + 120, bottom = top + 360, kids = arrayOf(
+                    v(gf, top + 150, top + 220, 40, 300), v(items, top + 220, top + 270, 40, 300),
+                    v("Ready", top + 150, top + 240, 550, 860, cls = "android.widget.Button", clickable = true),
+                    v(time, top + 250, top + 300, 640, 760),
+                )),
+            ),
+        )
+        val newer = ScreenAnalyzer.analyze(
+            listOf(orders10Oct(65, newCard("GF-229", "3 items", "00:53", 380), newCard("GF-763", "1 item", "02:31", 740))),
+            cfg,
+        )
+        assertTrue(newer.readyGfs().isEmpty(), "unexpected ${newer.items}")
+        assertEquals(listOf("GF-229" to 53, "GF-763" to 151), newer.preparingViews().map { v -> v.gf to v.items.single { it.type == ObsType.PREPARING }.dueSeconds })
+    }
+
+    @Test
+    fun theReadyTabOf22OctIsUnchanged() {
+        // 10:01: five orders, one of them red ("โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง") — still in the Ready tab
+        fun card(desc: String, top: Int) = v(desc, top, top + 234, clickable = true,
+            kids = arrayOf(v(top = top + 109, bottom = top + 157, left = 630, right = 678, cls = "android.widget.ImageView", clickable = true)))
+        val a = ScreenAnalyzer.analyze(
+            listOf(
+                orders10Oct(
+                    65,
+                    card("GF-577 คนขับของคุณมาถึงแล้ว 2 รายการ", 291),
+                    card("GF-176 โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง 3 รายการ", 525),
+                    card("GF-371 คนขับจะมารับใน 10 นาที 2 รายการ", 759),
+                    card("GF-081 คนขับจะมารับใน 4 นาที 2 รายการ", 993),
+                    card("GF-437 คนขับจะมารับใน 0 นาที 2 รายการ", 1227),
+                    preparing = "กำลังเตรียม", ready = "พร้อมจัดส่ง 5",
+                ),
+            ),
+            cfg,
+        )
+        assertNull(a.tab)
+        assertEquals(listOf("GF-577", "GF-176", "GF-371", "GF-081", "GF-437"), a.readyGfs())
+        assertTrue(a.preparingViews().isEmpty())
+        assertNull(a.preparingCount)
+        assertEquals(5, a.readyCount)
     }
 
     @Test

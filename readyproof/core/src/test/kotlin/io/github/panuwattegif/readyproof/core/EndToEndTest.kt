@@ -28,7 +28,9 @@ class EndToEndTest {
         assertEquals(3, r.historyOrders) // two completed plus one cancelled, not four screenshots
         assertEquals(2, r.delayed)
         assertEquals(1, r.withEvidence.size)
-        assertEquals(1, r.actualDelayed)
+        // its countdown was never read, so it is not taken out as pressed in time
+        assertEquals(Verdict.UNCHECKED, r.withEvidence.single().verdict)
+        assertEquals(2, r.actualDelayed)
         assertEquals(listOf("GF-002@10:30"), r.pendingReadyGfs)
         assertEquals(listOf("GF-003@11:00"), r.missingHistoryInstances)
         assertFalse(r.complete)

@@ -40,7 +40,8 @@ object DailyExport {
             // Grab's own totals from the History header and the evidence verdicts (schema 3).
             "grabCompleted" to report.grabCompleted, "grabCancelled" to report.grabCancelled,
             "historyMatchesGrab" to report.historyMatchesGrab,
-            "inTime" to report.inTime.size, "noEvidence" to report.noEvidence.size,
+            "inTime" to report.inTime.size, "late" to report.late.size, "unchecked" to report.unchecked.size,
+            "noEvidence" to report.noEvidence.size,
             "grabPercent" to report.grabPct, "shopPercent" to report.realPct,
             "pendingReadyGF" to report.pendingReadyGfs,
             "missingReadyInstances" to report.missingReadyInstances,

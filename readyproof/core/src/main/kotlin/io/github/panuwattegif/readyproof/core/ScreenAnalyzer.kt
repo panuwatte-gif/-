@@ -54,6 +54,8 @@ data class ScreenAnalysis(
     val tabsVisible: Boolean = false,
     /** Number badge on the Ready tab, if shown. */
     val readyCount: Int? = null,
+    /** Number badge on the Preparing tab, if shown (none = no order being prepared). */
+    val preparingCount: Int? = null,
 ) {
     /**
      * Grab's Ready tab says it has orders but its list shows none (the empty-list picture): the
@@ -80,6 +82,9 @@ data class ScreenAnalysis(
 
     fun readyViews(): List<CardView> = views.filter { it.has(ObsType.READY) }
 
+    /** Orders in the Preparing tab, each with its countdown. */
+    fun preparingViews(): List<CardView> = views.filter { it.has(ObsType.PREPARING) }
+
     /** History rows: finished or cancelled orders. */
     fun historyViews(): List<CardView> = views.filter { it.has(ObsType.DONE) || it.has(ObsType.CANCELLED) }
 
@@ -104,15 +109,28 @@ object ScreenAnalyzer {
     ): ScreenAnalysis {
         val gfx = cfg.gfExtractor()
         val rules = StatusRules(cfg)
-        val tab = TabDetector.openTab(roots, cfg)
+        val shownTab = TabDetector.openTab(roots, cfg)
+        class Scan(val root: UiNode, val finder: CardFinder, val cards: List<Card>, val observed: List<List<Item>>)
+        val scans = roots.map { root ->
+            val finder = CardFinder(gfx, root)
+            val cards = finder.cards()
+            Scan(root, finder, cards, cards.map { rules.evaluate(it, allowUnknownDelayed || shownTab == OrderTab.HISTORY) })
+        }
+        // No tab marked open (shop phone): orders with a countdown mean the Preparing tab is open,
+        // and nothing on it is Ready, not even an order of a batch already marked ready (✓).
+        val tab = shownTab ?: if (scans.any { sc -> sc.observed.any { o -> o.any { it.type == ObsType.PREPARING } } }) {
+            OrderTab.PREPARING
+        } else {
+            null
+        }
         val views = ArrayList<CardView>()
         val visible = LinkedHashSet<String>()
-        for (root in roots) {
-            val finder = CardFinder(gfx, root)
-            visible += finder.visibleGfs()
+        for (sc in scans) {
+            val root = sc.root
+            visible += sc.finder.visibleGfs()
             val occluderCache = IdentityHashMap<UiNode, List<Box>>()
-            val cards = finder.cards()
-            val observedOf = cards.map { card -> rules.evaluate(card, allowUnknownDelayed || tab == OrderTab.HISTORY) }
+            val cards = sc.cards
+            val observedOf = sc.observed
             // No tab marked open (shop phone): a list holding an order that waits for its driver or
             // customer is the Ready list, so every order in it waits too, whatever its line says.
             val readyLists = Collections.newSetFromMap(IdentityHashMap<UiNode, Boolean>())
@@ -140,7 +158,7 @@ object ScreenAnalyzer {
                             null
                         }
                 }
-                val items = listOfNotNull(ready) + history
+                val items = listOfNotNull(ready) + history + observed.filter { it.type == ObsType.PREPARING }
                 val vp = viewport(card, root)
                 val occluders = ctx.occluders + (card.list?.let { l -> occluderCache.getOrPut(l) { inAppOccluders(root, l, vp) } } ?: emptyList())
                 Found(card, items, status, keyNodes(card, items, cfg, gfx), vp, occluders)
@@ -165,7 +183,12 @@ object ScreenAnalyzer {
             header = if (tab == OrderTab.HISTORY) HistoryReader.read(roots, cfg) else null,
             tabsVisible = tabsVisible,
             // The Ready tab's own count, whichever tab is open (the shop phone marks none as open).
-            readyCount = if (tab == OrderTab.READY || (tab == null && tabsVisible)) TabDetector.readyCount(roots, cfg) else null,
+            readyCount = if (tab == OrderTab.READY || tab == OrderTab.PREPARING || (tab == null && tabsVisible)) {
+                TabDetector.readyCount(roots, cfg)
+            } else {
+                null
+            },
+            preparingCount = if (tabsVisible) TabDetector.preparingCount(roots, cfg) else null,
         )
     }
 
@@ -268,6 +291,8 @@ object ScreenAnalyzer {
     private fun keyNodes(card: Card, items: List<Item>, cfg: Config, gfx: GfExtractor): List<UiNode> {
         val second: UiNode? = when {
             items.any { it.type == ObsType.DELAY } -> nodeWith(card, gfx) { TextNorm.containsAny(it, cfg.delayAny) }
+            items.any { it.type == ObsType.PREPARING } -> items.first { it.type == ObsType.PREPARING }.status
+                .let { line -> nodeWith(card, gfx) { it == line } }
             items.any { it.type == ObsType.DONE } -> nodeWith(card, gfx) { TextNorm.containsAny(it, cfg.doneAny) }
             items.any { it.type == ObsType.CANCELLED } -> nodeWith(card, gfx) { TextNorm.containsAny(it, cfg.cancelAny) }
             else -> nodeWith(card, gfx) { gfx.extract(it).isEmpty() }

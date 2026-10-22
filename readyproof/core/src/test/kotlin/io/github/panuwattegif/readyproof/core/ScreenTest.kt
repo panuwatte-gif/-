@@ -31,7 +31,9 @@ class ScreenTest {
     fun englishPreparingTabIsNeverReadyEvenWithDriverText() {
         val a = analyze(Trees.preparingTabEn())
         assertEquals(false, a.readyTab)
-        assertTrue(a.items.isEmpty(), "unexpected ${a.items}")
+        assertTrue(a.readyGfs().isEmpty(), "unexpected ${a.items}")
+        // what it does show: the time left to prepare each order
+        assertEquals(listOf("GF-861" to "9:32", "GF-862" to "3:10"), ofType(a, ObsType.PREPARING).map { it.gf to it.countdown })
     }
 
     @Test
@@ -99,7 +101,10 @@ class ScreenTest {
     fun preparingTabIsNeverReadyEvenWithADriverAssigned() {
         val a = analyze(Trees.preparingTab())
         assertEquals(listOf("GF-961", "GF-147", "GF-697", "GF-450"), a.visible)
-        assertTrue(a.items.isEmpty(), "unexpected ${a.items}")
+        assertTrue(a.readyGfs().isEmpty(), "unexpected ${a.items}")
+        assertEquals(OrderTab.PREPARING, a.tab)
+        assertEquals(listOf("0:00", "5:53", "8:32", "8:15"), ofType(a, ObsType.PREPARING).map { it.countdown })
+        assertEquals(listOf(0, 353, 512, 495), ofType(a, ObsType.PREPARING).map { it.dueSeconds })
     }
 
     @Test
@@ -132,8 +137,10 @@ class ScreenTest {
 
     @Test
     fun detailPageWithOneOrderUsesWholeScreenAsCard() {
+        // the page still offers the order's own "พร้อมจัดส่ง" button: it has not been pressed yet
         val a = analyze(Trees.detailPage())
-        assertEquals(listOf("GF-613"), ofType(a, ObsType.READY).map { it.gf })
+        assertEquals(listOf("GF-613"), a.visible)
+        assertTrue(ofType(a, ObsType.READY).isEmpty())
     }
 
     @Test
@@ -142,7 +149,9 @@ class ScreenTest {
         // READY for the listed orders, VISIBLE for the banner's order number
         assertEquals(listOf("GF-231" to ObsType.READY, "GF-439" to ObsType.READY, "GF-941" to ObsType.VISIBLE), ready.map { it.gf to it.type })
         val preparing = ScreenAnalyzer.manualItems(analyze(Trees.preparingTabEn()), cfg)
-        assertTrue(preparing.all { it.type == ObsType.VISIBLE })
+        // the orders show their time left; the banner's order number is only visible
+        assertEquals(listOf("GF-861" to ObsType.PREPARING, "GF-862" to ObsType.PREPARING, "GF-941" to ObsType.VISIBLE),
+            preparing.map { it.gf to it.type })
         assertEquals("Ready in: 9:32 min", preparing.first { it.gf == "GF-861" }.status)
     }
 

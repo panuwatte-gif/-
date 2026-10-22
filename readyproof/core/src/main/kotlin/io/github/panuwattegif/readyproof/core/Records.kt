@@ -15,10 +15,13 @@ enum class RecordKind(val label: String) {
     HISTORY("HISTORY"),
     /** Grab's own totals at the top of History ("Completed 77, Cancelled 0") for [Record.historyDate]. */
     STATS("ยอดในประวัติ"),
+    /** The Preparing tab with an order whose countdown ran out (red 0:00): pressed late. */
+    PREPARING("กำลังเตรียม"),
 }
 
 /** What was observed about one order. PRESS only appears in logs of older versions. */
-enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE }
+/** PREPARING: still in the Preparing tab, [Item.countdown] = time left ("5:53", "0:00"). */
+enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE, PREPARING }
 
 data class Item(
     val gf: String,
@@ -29,12 +32,23 @@ data class Item(
     val delayMin: Int? = null,
     /** Finish time as HH:mm (24h) from "เสร็จสมบูรณ์เมื่อ 12:56 PM". */
     val doneAt: String? = null,
-    /** Prep countdown shown when the button was tapped, e.g. "5:53". */
+    /** Prep countdown shown on the Preparing tab, e.g. "5:53" ("0:00" = time ran out). */
     val countdown: String? = null,
     /** Strings of the order card, for search and for the report. */
     val card: List<String> = emptyList(),
     val historyDate: String? = null,
-)
+) {
+    /** Seconds left on [countdown]; 0 once it ran out (also for an overrun shown as "-1:20"). */
+    val dueSeconds: Int?
+        get() = countdown?.let { c ->
+            val m = COUNTDOWN.matchEntire(c.trim()) ?: return@let null
+            if (m.groupValues[1].isNotEmpty()) 0 else m.groupValues[2].toInt() * 60 + m.groupValues[3].toInt()
+        }
+
+    private companion object {
+        val COUNTDOWN = Regex("""(-?)(\d{1,3}):(\d{2})""")
+    }
+}
 
 data class Record(
     val id: String,
