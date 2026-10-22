@@ -110,22 +110,31 @@ class ReportActivity : Activity() {
                 val cases = report.cases.filter { it.verdict == v }
                 if (cases.isEmpty()) continue
                 Ui.text(col, groupTitle(v) + " ${cases.size} เคส", 17f, colorOf(v), bold = true, topDp = 6)
-                if (v == Verdict.NO_EVIDENCE) {
-                    Ui.text(col, "ไม่ได้แปลว่าร้านช้าจริง: ไม่มีภาพในแท็บ Ready ของออเดอร์นี้ (ไม่ได้ผ่านแท็บ Ready หรือระบบจับไม่ได้)", 13f, Ui.MUTED)
-                }
+                explanation(v)?.let { Ui.text(col, it, 13f, Ui.MUTED) }
                 cases.forEach { caseCard(col, it, sets[it], report, zone) }
             }
         }
     }
 
     private fun groupTitle(v: Verdict): String = when (v) {
-        Verdict.IN_TIME -> "✅ " + v.label
+        Verdict.IN_TIME -> "✅ " + v.label + " — ส่ง Grab ได้"
+        Verdict.LATE -> "❌ " + v.label + " — ห้ามส่ง Grab"
+        Verdict.UNCHECKED -> "⚠️ " + v.label + " — ตรวจเองก่อนส่ง"
         Verdict.NO_EVIDENCE -> "❓ " + v.label
+    }
+
+    private fun explanation(v: Verdict): String? = when (v) {
+        Verdict.IN_TIME -> null
+        Verdict.LATE -> "เวลานับถอยหลังในแท็บกำลังเตรียมหมด (0:00) ก่อนออเดอร์เข้าแท็บ Ready — ร้านกดช้าจริง แม้จะมีภาพ Ready"
+        Verdict.UNCHECKED -> "มีภาพในแท็บ Ready แต่แอปไม่ได้อ่านเวลานับถอยหลังของออเดอร์นี้ (เช่นช่วงที่แอปปิดอยู่) จึงบอกไม่ได้ว่ากดทันหรือไม่"
+        Verdict.NO_EVIDENCE -> "ไม่ได้แปลว่าร้านช้าจริง: ไม่มีภาพในแท็บ Ready ของออเดอร์นี้ (ไม่ได้ผ่านแท็บ Ready หรือระบบจับไม่ได้)"
     }
 
     private fun colorOf(v: Verdict): Int = when (v) {
         Verdict.IN_TIME -> Ui.GREEN
-        Verdict.NO_EVIDENCE -> Ui.RED
+        Verdict.LATE -> Ui.RED
+        Verdict.UNCHECKED -> Ui.AMBER
+        Verdict.NO_EVIDENCE -> Ui.MUTED
     }
 
     private fun summaryCard(col: LinearLayout, r: DailyReport, zone: ZoneId) {
@@ -166,7 +175,9 @@ class ReportActivity : Activity() {
         )
         Ui.text(s, "ล่าช้าที่อ่านพบ: ${r.delayed}" + if (!r.complete) " · ยังไม่ยืนยันทั้งวัน" else "", 16f, bold = true, topDp = 6)
         Ui.text(s, "✅ ${Verdict.IN_TIME.label}: ${r.inTime.size}", 15f, Ui.GREEN, topDp = 2)
-        Ui.text(s, "❓ ${Verdict.NO_EVIDENCE.label}: ${r.noEvidence.size}", 15f, Ui.RED)
+        Ui.text(s, "❌ ${Verdict.LATE.label}: ${r.late.size}", 15f, Ui.RED)
+        Ui.text(s, "⚠️ ${Verdict.UNCHECKED.label}: ${r.unchecked.size}", 15f, Ui.AMBER)
+        Ui.text(s, "❓ ${Verdict.NO_EVIDENCE.label}: ${r.noEvidence.size}", 15f, Ui.MUTED)
         Ui.text(s, "% ล่าช้าแบบ Grab = ${r.delayed} / ${r.base} = ${ReportText.pct(r.grabPct)}", 15f, topDp = 4)
         Ui.text(
             s,
@@ -272,13 +283,27 @@ class ReportActivity : Activity() {
         Ui.text(card, head, 16f, colorOf(c.verdict), bold = true)
         c.doneAt?.let { Ui.text(card, "เสร็จสมบูรณ์ " + Parsers.hhmm(it.toLocalTime()), 14f, Ui.MUTED) }
         c.readyShot?.let {
-            Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.time(it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
+            Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.timeSec(c.readyAt ?: it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
+        }
+        val p = c.prep
+        when {
+            c.readyShot == null -> {}
+            p == null -> Ui.text(card, "ไม่มีข้อมูลหน้ากำลังเตรียมของออเดอร์นี้", 13f, Ui.AMBER)
+            p.ranOut -> Ui.text(card, "หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน " + ReportText.timeSec(p.readAt, zone) +
+                " — ยังไม่ได้กด", 14f, Ui.RED)
+            else -> Ui.text(
+                card,
+                "ต้องกดภายใน " + ReportText.timeSec(p.deadline, zone) + " (หน้ากำลังเตรียมเหลือ " + p.countdown + " ตอน " +
+                    ReportText.timeSec(p.readAt, zone) + ")",
+                14f, if (c.verdict == Verdict.IN_TIME) Ui.GREEN else Ui.RED,
+            )
         }
         c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
         if (c.matchStatus == "UNKNOWN_INSTANCE") Ui.text(card, "UNKNOWN: ยังยืนยัน instance ไม่ได้ ห้ามใช้ GF อย่างเดียวจับคู่", 13f, Ui.AMBER)
         if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ — เก็บเคสนี้ไว้ ไม่ตัดออก", 13f, Ui.RED, topDp = 2)
         if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้า History ของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
         val shots = ArrayList<Pair<Record, String>>()
+        c.prep?.overdueShot?.let { shots += it to "กำลังเตรียม 0:00" }
         c.readyShot?.let { shots += it.record to (set?.readyName ?: "READY") }
         c.delayShot?.let { shots += it to (set?.delayName ?: delayName(report, c)) }
         thumbRow(card, shots)

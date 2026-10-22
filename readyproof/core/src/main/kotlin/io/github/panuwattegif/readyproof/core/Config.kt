@@ -56,6 +56,11 @@ data class Config(
     /** Cancelled History rows count toward the day total even though they are never delayed. */
     val cancelAny: List<String> = listOf("Cancelled", "Canceled", "ยกเลิก"),
     val delayAny: List<String> = listOf("Delayed by", "ล่าช้าไป"),
+    /**
+     * Words before the countdown of an order still being prepared ("พร้อมจัดส่งใน: 5:53 นาที").
+     * At 0:00 the card turns red: the shop did not press ready in time.
+     */
+    val countdownAny: List<String> = listOf("Ready in", "พร้อมจัดส่งใน"),
     /** Labels of the totals at the top of History ("Completed 77", "Cancelled 0"). */
     val completedLabels: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
     val cancelledLabels: List<String> = listOf("Cancelled", "ยกเลิก"),
@@ -96,6 +101,11 @@ data class Config(
     val autoOffAfterClose: Boolean = true,
     /** New Ready orders arriving together share one photo: wait at most this many seconds for the next one. */
     val readyBatchSeconds: Int = 12,
+    /**
+     * Look at the Preparing tab for a few seconds now and then (a new order, a countdown running
+     * out) so an order pressed after its time ran out is never reported as pressed in time.
+     */
+    val watchPreparing: Boolean = true,
 
     val showToast: Boolean = false,
     val jpegQuality: Int = 80,
@@ -167,7 +177,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 7
+    const val VERSION = 8
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -189,6 +199,7 @@ object ConfigCodec {
             "doneAny" to c.doneAny,
             "cancelAny" to c.cancelAny,
             "delayAny" to c.delayAny,
+            "countdownAny" to c.countdownAny,
             "completedLabels" to c.completedLabels,
             "cancelledLabels" to c.cancelledLabels,
             "evidenceWindowHours" to c.evidenceWindowHours,
@@ -205,6 +216,7 @@ object ConfigCodec {
             "openTime" to c.openTime,
             "autoOffAfterClose" to c.autoOffAfterClose,
             "readyBatchSeconds" to c.readyBatchSeconds,
+            "watchPreparing" to c.watchPreparing,
             "showToast" to c.showToast,
             "jpegQuality" to c.jpegQuality,
             "retentionDays" to c.retentionDays,
@@ -234,6 +246,7 @@ object ConfigCodec {
             doneAny = m.strList("doneAny") ?: d.doneAny,
             cancelAny = m.strList("cancelAny") ?: d.cancelAny,
             delayAny = m.strList("delayAny") ?: d.delayAny,
+            countdownAny = m.strList("countdownAny") ?: d.countdownAny,
             completedLabels = m.strList("completedLabels") ?: d.completedLabels,
             cancelledLabels = m.strList("cancelledLabels") ?: d.cancelledLabels,
             evidenceWindowHours = m.int("evidenceWindowHours") ?: d.evidenceWindowHours,
@@ -250,6 +263,7 @@ object ConfigCodec {
             openTime = m.str("openTime") ?: d.openTime,
             autoOffAfterClose = m.bool("autoOffAfterClose") ?: d.autoOffAfterClose,
             readyBatchSeconds = m.int("readyBatchSeconds") ?: d.readyBatchSeconds,
+            watchPreparing = m.bool("watchPreparing") ?: d.watchPreparing,
             showToast = m.bool("showToast") ?: d.showToast,
             jpegQuality = m.int("jpegQuality") ?: d.jpegQuality,
             retentionDays = m.int("retentionDays") ?: d.retentionDays,
@@ -264,7 +278,7 @@ object ConfigCodec {
      * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
      * next shot); v5 adds opening hours, switching off at night and shared photos for bursts;
      * v6 knows that a delivered order ("จัดส่งแล้ว", an order's detail page) is never waiting;
-     * v7 knows self-pickup orders waiting for their customer.
+     * v7 knows self-pickup orders waiting for their customer; v8 reads the Preparing countdown.
      * Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {
@@ -278,6 +292,7 @@ object ConfigCodec {
             doneAny = merge(c.doneAny, d.doneAny),
             cancelAny = merge(c.cancelAny, d.cancelAny),
             delayAny = merge(c.delayAny, d.delayAny),
+            countdownAny = merge(c.countdownAny, d.countdownAny),
             showToast = if (from < 4) false else c.showToast,
         )
     }
@@ -313,6 +328,7 @@ fun Config.sanitized(): Config {
         doneAny = doneAny.cleanList(),
         cancelAny = cancelAny.cleanList(),
         delayAny = delayAny.cleanList(),
+        countdownAny = countdownAny.cleanList(),
         completedLabels = completedLabels.cleanList(),
         cancelledLabels = cancelledLabels.cleanList(),
         closeTime = if (Config.parseTime(closeTime) != null) closeTime.trim() else d.closeTime,

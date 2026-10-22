@@ -74,6 +74,24 @@ object Parsers {
         val rest = after(text, keywords) ?: return null
         return COUNTDOWN.find(rest)?.groupValues?.get(1)
     }
+
+    private val BARE_COUNTDOWN = Regex("""^-?\d{1,3}:\d{2}$""")
+
+    /**
+     * The countdown of an order card still in the Preparing tab, with the text holding it: after
+     * [Config.countdownAny] ("พร้อมจัดส่งใน: 0:00 นาที"), or on its own next to the order's own
+     * "Ready" button (newer Grab layout: "GF-229 · 3 items · [Ready] 00:53").
+     */
+    fun prepCountdown(texts: List<String>, cfg: Config): Pair<String, String>? {
+        for (t in texts) countdown(t, cfg.countdownAny)?.let { return it to t }
+        if (!hasReadyButton(texts, cfg)) return null
+        val t = texts.firstOrNull { BARE_COUNTDOWN.matches(TextNorm.clean(it)) } ?: return null
+        return TextNorm.clean(t) to t
+    }
+
+    /** The card carries the order's own "Ready" / "พร้อมจัดส่ง" button: it is in the Preparing tab. */
+    fun hasReadyButton(texts: List<String>, cfg: Config): Boolean =
+        texts.any { t -> cfg.readyTabLabels.any { TextNorm.key(t) == TextNorm.key(it) } }
 }
 
 /** Turns one order card into observations according to the [Config] keyword lists. */
@@ -83,8 +101,14 @@ class StatusRules(private val cfg: Config) {
         val texts = card.texts
         val out = ArrayList<Item>(2)
 
+        // Still being prepared: never Ready, whatever else the card says ("Driver should arrive ...").
+        val prep = Parsers.prepCountdown(texts, cfg)
+        if (prep != null) {
+            out += Item(card.gf, ObsType.PREPARING, status = prep.second, countdown = prep.first, card = texts)
+        }
         val readyIdx = TextNorm.indexOfAny(texts, cfg.readyAny)
-        val readyBlocked = TextNorm.indexOfAny(texts, cfg.readyNone) >= 0
+        val readyBlocked = TextNorm.indexOfAny(texts, cfg.readyNone) >= 0 || prep != null ||
+            Parsers.hasReadyButton(texts, cfg)
         if (readyIdx >= 0 && !readyBlocked) {
             out += Item(card.gf, ObsType.READY, status = texts[readyIdx], card = texts)
         }

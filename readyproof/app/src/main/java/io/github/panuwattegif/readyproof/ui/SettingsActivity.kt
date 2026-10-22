@@ -20,6 +20,7 @@ class SettingsActivity : Activity() {
     private lateinit var sToast: Switch
     private lateinit var sDiag: Switch
     private lateinit var sOff: Switch
+    private lateinit var sPrep: Switch
     private lateinit var fOpen: EditText
     private lateinit var fClose: EditText
     private lateinit var fBuffer: EditText
@@ -61,6 +62,7 @@ class SettingsActivity : Activity() {
             ConfigStore.prefs(this).getBoolean("auto_navigation_enabled", true)) {}
         sReady = Ui.switch(watch, "แคปทุกออเดอร์ที่เข้ามาในแท็บ Ready (ออเดอร์ละครั้ง)", cfg.captureReady) {}
         sScroll = Ui.switch(watch, "เลื่อนลงเองเมื่อตัวเลขบนแท็บมากกว่าออเดอร์ที่เห็นบนจอ", cfg.autoScroll) {}
+        sPrep = Ui.switch(watch, "แวบไปดูแท็บกำลังเตรียม (อ่านเวลานับถอยหลัง + แคปตอนขึ้นแดง 0:00) แล้วกลับ Ready", cfg.watchPreparing) {}
         fOpen = Ui.field(watch, "เวลาร้านเปิด (เช่น 09:00)", cfg.openTime,
             help = "นอกเวลาเปิดร้าน แอปจะไม่ดึงหน้าจอกลับมาที่ Grab และไม่ร้องเตือนถ้าปิดอยู่")
         sGuard = Ui.switch(watch, "พากลับแท็บ Ready เองเมื่อหลุดไปหน้าอื่น (เฉพาะเวลาร้านเปิด)", cfg.guardReadyTab) {}
@@ -149,6 +151,7 @@ class SettingsActivity : Activity() {
             closeTime = fClose.text.toString().trim(),
             openTime = fOpen.text.toString().trim(),
             autoOffAfterClose = sOff.isChecked,
+            watchPreparing = sPrep.isChecked,
             endBufferMinutes = num(fBuffer),
             recheckMinutes = num(fRecheck),
             endMaxWaitMinutes = num(fMaxWait),

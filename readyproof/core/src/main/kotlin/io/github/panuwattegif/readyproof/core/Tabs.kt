@@ -86,13 +86,18 @@ object TabDetector {
      * The number badge on the Ready tab ("พร้อมจัดส่ง 4"), or null when none is shown.
      * Only a hint that the list changed; never used to decide what is in the list.
      */
-    fun readyCount(roots: List<UiNode>, cfg: Config): Int? {
+    fun readyCount(roots: List<UiNode>, cfg: Config): Int? = tabCount(roots, cfg, cfg.readyTabLabels)
+
+    /** Number badge on the Preparing tab ("กำลังเตรียม 4"); null when it shows none. */
+    fun preparingCount(roots: List<UiNode>, cfg: Config): Int? = tabCount(roots, cfg, cfg.preparingTabLabels)
+
+    private fun tabCount(roots: List<UiNode>, cfg: Config, labels: List<String>): Int? {
         val gfx = cfg.gfExtractor()
         for (root in roots) {
             for (n in root.walk()) {
-                val s = n.ownStrings().firstOrNull { s -> cfg.readyTabLabels.any { isLabel(s, it) } } ?: continue
+                val s = n.ownStrings().firstOrNull { s -> labels.any { isLabel(s, it) } } ?: continue
                 if (!inBar(n, cfg.tabLabels, gfx)) continue
-                val label = cfg.readyTabLabels.first { isLabel(s, it) }
+                val label = labels.first { isLabel(s, it) }
                 TRAILING_NUMBER.find(TextNorm.clean(s).substring(TextNorm.clean(label).length))
                     ?.let { return it.groupValues[1].toInt() }
                 // badge as its own element next to the label

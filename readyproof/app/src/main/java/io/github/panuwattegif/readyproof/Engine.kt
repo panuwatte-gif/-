@@ -18,6 +18,7 @@ import io.github.panuwattegif.readyproof.core.HistoryHeader
 import io.github.panuwattegif.readyproof.core.Item
 import io.github.panuwattegif.readyproof.core.ObsType
 import io.github.panuwattegif.readyproof.core.OrderTab
+import io.github.panuwattegif.readyproof.core.PrepTracker
 import io.github.panuwattegif.readyproof.core.ReadyTracker
 import io.github.panuwattegif.readyproof.core.Record
 import io.github.panuwattegif.readyproof.core.RecordKind
@@ -79,6 +80,13 @@ class Engine(private val service: ProofService) {
         private const val LOOK_GAP_MS = 60_000L
         /** How often the Ready tab is opened again while its list stays blank (see [guard]). */
         private const val BLANK_RETAP_MS = 15_000L
+        /** After an order's countdown runs out, look at the Preparing tab this soon (its red card). */
+        private const val PREP_RUNOUT_GRACE_MS = 3_000L
+        /** At least this long between two looks at the Preparing tab. */
+        private const val PREP_MIN_GAP_MS = 15_000L
+        /** While orders are being prepared, look at least this often (what the tab count misses). */
+        private const val PREP_RECHECK_MS = 5 * 60_000L
+        private const val MAX_PREP_PAGES = 5
         /** Away from Grab's order tabs this long, the guard goes back even if Grab seems in use. */
         private const val OUTSIDE_MAX_MS = 5 * 60_000L
         /** One move of a list: this share of its height (the slow pass uses smaller steps). */
@@ -110,6 +118,8 @@ class Engine(private val service: ProofService) {
     private val actor = Actor(service)
     val capture = CaptureManager(service)
     val tracker = ReadyTracker()
+    /** Countdowns read on the Preparing tab (see [visitPreparing]). */
+    val prepTracker = PrepTracker()
     private val historySeen = Deduper()
     private val seq = AtomicInteger()
 
@@ -137,6 +147,9 @@ class Engine(private val service: ProofService) {
     private var outsideSince = 0L
     private var lastLookAt = 0L
     private var lastLookCount = 0
+    private var lastPrepVisitAt = 0L
+    /** The Preparing tab's count at the last look: a higher count means a new order to read. */
+    private var lastPrepCount = 0
     private val problemAt = HashMap<String, Long>()
     private var historyDay: String? = null
     private var lastStats: String? = null
@@ -212,6 +225,8 @@ class Engine(private val service: ProofService) {
         }
         tracker.clear()
         tracker.seed(recent, System.currentTimeMillis())
+        val todayStart = today.atStartOfDay(zone).toInstant().toEpochMilli()
+        prepTracker.seed(recent.filter { it.t >= todayStart })
         historySeen.clear()
         historySeen.seed(recent)
         if (prefs.getString(PREF_EOD_DONE, null) == today.toString()) eod = Eod.DONE
@@ -282,6 +297,12 @@ class Engine(private val service: ProofService) {
             when {
                 isReady(s) -> onReady(s)
                 s.a.tab == OrderTab.HISTORY -> onHistory(s)
+                // somebody opened the Preparing tab: its countdowns count too
+                s.a.tab == OrderTab.PREPARING -> {
+                    historyDay = null
+                    setWhere("Grab เปิดอยู่ที่แท็บกำลังเตรียม")
+                    onPreparing(s)
+                }
                 else -> {
                     historyDay = null
                     setWhere("Grab เปิดอยู่ แต่ไม่ใช่แท็บ Ready")
@@ -358,6 +379,7 @@ class Engine(private val service: ProofService) {
         val listed = s.a.readyGfs()
         val count = s.a.readyCount
         noteSeen(s, now)
+        prepTracker.left(listed)
         // The whole list is on screen: whatever is not listed has been picked up.
         if (if (count != null) listed.size >= count else !mayOverflow(s)) tracker.complete(listed, now)
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
@@ -379,7 +401,104 @@ class Engine(private val service: ProofService) {
                 openTab(c.readyTabLabels, OrderTab.READY, again = true)
             }
         }
+        maybeVisitPreparing(s, personScrolling)
         setWhere("เฝ้าแท็บ Ready · รอไรเดอร์ ${tracker.present().size} ออเดอร์")
+    }
+
+    // ---- Preparing tab --------------------------------------------------------------------------
+
+    /**
+     * A few seconds on the Preparing tab, then back to Ready: when its tab counts a new order (to
+     * read the countdown), when a countdown ran out and the order has not reached Ready (to
+     * photograph its red 0:00 card), and every 5 minutes while orders are being prepared. The
+     * Ready tab tells Grab the shop was not late; this keeps the shop from claiming that wrongly.
+     */
+    private suspend fun maybeVisitPreparing(s: Screen, personBusy: Boolean) {
+        val c = cfg
+        val count = s.a.preparingCount ?: 0
+        if (count < lastPrepCount) lastPrepCount = count
+        if (!c.watchPreparing || !autoNavigation() || personBusy || s.dialog || eod == Eod.RUNNING) return
+        val up = SystemClock.uptimeMillis()
+        if (up - lastPrepVisitAt < PREP_MIN_GAP_MS) return
+        val why = when {
+            count > lastPrepCount -> "new order"
+            prepTracker.runOutUnseen(System.currentTimeMillis(), PREP_RUNOUT_GRACE_MS) -> "time ran out"
+            count > 0 && up - lastPrepVisitAt > PREP_RECHECK_MS -> "check"
+            else -> return
+        }
+        visitPreparing(why, count)
+    }
+
+    private suspend fun visitPreparing(why: String, countBefore: Int): Unit = automate {
+        val c = cfg
+        lastPrepVisitAt = SystemClock.uptimeMillis()
+        var first = if (openTab(c.preparingTabLabels, OrderTab.PREPARING)) reader.read(c) else null
+        if (first != null && first.a.preparingViews().isEmpty() && (first.a.preparingCount ?: 0) > 0) {
+            delay(1_200) // the list may take a moment to show
+            first = reader.read(c)
+        }
+        // There for sure: orders with a countdown, or an empty list (nothing waiting for a driver).
+        val there = first != null && (first.a.tab == OrderTab.PREPARING || (first.a.tabsVisible && first.a.views.isEmpty()))
+        val read = LinkedHashMap<String, String?>()
+        var count: Int? = null
+        var pages = 0
+        if (first != null && there) {
+            var s: Screen = first
+            referenceDump(s)
+            count = s.a.preparingCount
+            onPreparing(s).forEach { read[it.gf] = it.countdown }
+            // Further down with the scroll command only, never a finger: these orders carry their
+            // own "Ready" button.
+            while (count != null && read.size < count && pages < MAX_PREP_PAGES) {
+                val next = move(s, forward = true, drag = false) ?: break
+                if (next.a.tab != OrderTab.PREPARING) break
+                s = next
+                pages++
+                onPreparing(s).forEach { read[it.gf] = it.countdown }
+            }
+            repeat(pages) { s = move(s, forward = false, drag = false) ?: return@repeat }
+            if (count != null && read.size >= count) prepTracker.complete(read.keys)
+            prepTracker.checked(System.currentTimeMillis())
+            lastPrepCount = countBefore
+        }
+        Diagnostics.note(
+            service,
+            if (there) {
+                "preparing ($why): tab $count, seen ${read.size} (${read.entries.joinToString(",") { "${it.key} ${it.value}" }}), pages $pages"
+            } else {
+                "preparing ($why): did not reach the Preparing tab"
+            },
+        )
+        if (!openTab(c.readyTabLabels, OrderTab.READY)) {
+            problem("กลับแท็บ Ready ไม่สำเร็จหลังดูแท็บกำลังเตรียม — กรุณาเปิด Grab ที่แท็บพร้อมจัดส่ง")
+        }
+    }
+
+    /** The Preparing tab on screen: note each order's countdown, photograph a red 0:00 card once. */
+    private suspend fun onPreparing(s: Screen): List<Item> {
+        val now = System.currentTimeMillis()
+        val views = s.a.preparingViews()
+        val items = views.flatMap { v -> v.items.filter { it.type == ObsType.PREPARING } }
+        val fresh = prepTracker.read(items, now)
+        if (fresh.isNotEmpty()) {
+            RecordStore.append(
+                service,
+                Record(
+                    id = "$now-p${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN, items = fresh,
+                    visible = s.a.visible, note = "PREPARING", shopId = shop(),
+                ),
+            )
+        }
+        val red = views.filter { v ->
+            v.full && v.items.any { it.type == ObsType.PREPARING && it.dueSeconds == 0 } && prepTracker.needsOverdueShot(v.gf)
+        }
+        if (red.isNotEmpty() && cfg.captureReady) {
+            val (ok, _) = shoot(RecordKind.PREPARING, s, red, null, note = "หมดเวลาในแท็บกำลังเตรียม") { v ->
+                v.items.filter { it.type == ObsType.PREPARING }
+            }
+            prepTracker.shotOverdue(ok.map { it.gf }, now)
+        }
+        return items
     }
 
     /**
@@ -556,7 +675,7 @@ class Engine(private val service: ProofService) {
      * command, else with a finger drag. Returns the new screen if anything moved, null if nothing
      * did (the end of the list, or a list that cannot move).
      */
-    private suspend fun move(s: Screen, forward: Boolean, page: Float = PAGE, scrollAction: Boolean = true): Screen? {
+    private suspend fun move(s: Screen, forward: Boolean, page: Float = PAGE, scrollAction: Boolean = true, drag: Boolean = true): Screen? {
         moveFailed = false
         val before = s.a.motionKey()
         if (before.isEmpty()) return null
@@ -574,8 +693,8 @@ class Engine(private val service: ProofService) {
             }
         }
         // Never drag towards the top: at the top that pulls Grab's list down to refresh it, the
-        // orders vanish for a moment and the list jumps.
-        if (!forward) return null
+        // orders vanish for a moment and the list jumps. [drag] off: no finger on this list at all.
+        if (!forward || !drag) return null
         val vp = viewportOf(s) ?: return null
         val dy = vp.height * page
         val x = vp.left + vp.width * 0.3f
@@ -944,6 +1063,8 @@ class Engine(private val service: ProofService) {
         eodTick()
         guard(w)
         if (w.grabVisible && SystemClock.uptimeMillis() - lastObserveAt > IDLE_OBSERVE_MS) scheduleObserve()
+        // a countdown just ran out: look now, not at the next idle look
+        if (w.grabVisible && c.watchPreparing && prepTracker.runOutUnseen(System.currentTimeMillis(), PREP_RUNOUT_GRACE_MS)) scheduleObserve()
     }
 
     private suspend fun guard(w: WindowsState) {
@@ -1200,7 +1321,8 @@ class Engine(private val service: ProofService) {
         eodForced = false
         val text = "อ่านประวัติได้ " + (report.grabCompleted?.let { "${report.completedSeen}/$it" } ?: "${report.completedSeen}") +
             " ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
-            "กดทัน ${report.inTime.size} · ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
+            "กดทัน ${report.inTime.size} · กดช้า ${report.late.size} · ไม่ได้ดูหน้ากำลังเตรียม ${report.unchecked.size} · " +
+            "ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
             "% ที่ร้านควรได้ ${ReportText.pct(report.realPct)}" +
             (if (incomplete) "\n⚠ ยังไม่ครบ: ดูรายละเอียดในรายงาน" else "")
         setEodStatus(
@@ -1260,7 +1382,8 @@ class Engine(private val service: ProofService) {
         r.grabCompleted?.let { append(" (Grab ").append(it).append(')') }
         append(" / Cancelled ").append(r.cancelledSeen)
         append(" / Delayed ").append(r.delayed)
-        append(" / กดทัน ").append(r.inTime.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
+        append(" / กดทัน ").append(r.inTime.size).append(" กดช้า ").append(r.late.size)
+            .append(" ไม่ได้ดูหน้ากำลังเตรียม ").append(r.unchecked.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
         if (!h.reachedEnd) append(" / ไม่ถึงท้ายรายการ")
         if (h.unshot.isNotEmpty()) append(" / ขาดภาพ DELAY ").append(h.unshot.joinToString(","))
         append(if (r.complete) " / MATCH" else " / INCOMPLETE")
