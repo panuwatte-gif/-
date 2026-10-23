@@ -27,6 +27,7 @@ class SettingsActivity : Activity() {
     private lateinit var fRecheck: EditText
     private lateinit var fMaxWait: EditText
     private lateinit var fIdle: EditText
+    private lateinit var fSlack: EditText
     private lateinit var fRetention: EditText
     private lateinit var fQuality: EditText
     private lateinit var fReadyTabs: EditText
@@ -63,6 +64,9 @@ class SettingsActivity : Activity() {
         sReady = Ui.switch(watch, "แคปทุกออเดอร์ที่เข้ามาในแท็บ Ready (ออเดอร์ละครั้ง)", cfg.captureReady) {}
         sScroll = Ui.switch(watch, "เลื่อนลงเองเมื่อตัวเลขบนแท็บมากกว่าออเดอร์ที่เห็นบนจอ", cfg.autoScroll) {}
         sPrep = Ui.switch(watch, "แวบไปดูแท็บกำลังเตรียม (อ่านเวลานับถอยหลัง + แคปตอนขึ้นแดง 0:00) แล้วกลับ Ready", cfg.watchPreparing) {}
+        fSlack = Ui.field(watch, "เผื่อคลาดเคลื่อนกี่วินาที (0–60)", cfg.pressSlackSeconds.toString(), number = true,
+            help = "ใช้เฉพาะตอนที่แอปเห็นไม่ทันว่าอะไรเกิดก่อน (แอปเห็นการกดช้ากว่าจริงไม่กี่วินาที) · " +
+                "ถ้าเห็นการ์ดแดง 0:00 หรือเห็นหน้า Ready ที่ยังไม่มีออเดอร์นั้นหลังหมดเวลา = กดช้าเสมอ · ใส่ 0 = ไม่เผื่อเลย")
         fOpen = Ui.field(watch, "เวลาร้านเปิด (เช่น 09:00)", cfg.openTime,
             help = "นอกเวลาเปิดร้าน แอปจะไม่ดึงหน้าจอกลับมาที่ Grab และไม่ร้องเตือนถ้าปิดอยู่")
         sGuard = Ui.switch(watch, "พากลับแท็บ Ready เองเมื่อหลุดไปหน้าอื่น (เฉพาะเวลาร้านเปิด)", cfg.guardReadyTab) {}
@@ -144,6 +148,7 @@ class SettingsActivity : Activity() {
             autoScroll = sScroll.isChecked,
             guardReadyTab = sGuard.isChecked,
             guardIdleMinutes = num(fIdle),
+            pressSlackSeconds = num(fSlack),
             keepScreenOn = sAwake.isChecked,
             showToast = sToast.isChecked,
             autoEndOfDay = sEod.isChecked,

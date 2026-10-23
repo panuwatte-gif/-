@@ -108,6 +108,13 @@ data class Config(
      * out) so an order pressed after its time ran out is never reported as pressed in time.
      */
     val watchPreparing: Boolean = true,
+    /**
+     * Seconds after an order's countdown ran out that its first sighting in the Ready tab still
+     * counts as in time, only when the phone could not see which came first (it notices a press a
+     * few seconds late, e.g. while looking at the Preparing tab). Never used when it saw the red
+     * 0:00 card, or the Ready list without the order, after the time ran out.
+     */
+    val pressSlackSeconds: Int = 10,
 
     val showToast: Boolean = false,
     val jpegQuality: Int = 80,
@@ -147,6 +154,7 @@ data class Config(
         if (endMaxWaitMinutes !in 5..600) errors += "เวลารอออเดอร์ค้างนานสุดต้องอยู่ระหว่าง 5–600 นาที"
         if (fullSweepMinutes !in 1..60) errors += "รอบกวาดแท็บ Ready ต้องอยู่ระหว่าง 1–60 นาที"
         if (guardIdleMinutes !in 1..60) errors += "เวลารอก่อนพากลับแท็บ Ready ต้องอยู่ระหว่าง 1–60 นาที"
+        if (pressSlackSeconds !in 0..60) errors += "เวลาเผื่อคลาดเคลื่อนต้องอยู่ระหว่าง 0–60 วินาที"
         if (jpegQuality !in 30..100) errors += "คุณภาพภาพต้องอยู่ระหว่าง 30–100"
         if (retentionDays !in 1..365) errors += "จำนวนวันค้นย้อนหลังต้องอยู่ระหว่าง 1–365"
         if (evidenceWindowHours !in 1..24) errors += "ช่วงเวลาจับคู่หลักฐานต้องอยู่ระหว่าง 1–24 ชั่วโมง"
@@ -220,6 +228,7 @@ object ConfigCodec {
             "autoOffAfterClose" to c.autoOffAfterClose,
             "readyBatchSeconds" to c.readyBatchSeconds,
             "watchPreparing" to c.watchPreparing,
+            "pressSlackSeconds" to c.pressSlackSeconds,
             "showToast" to c.showToast,
             "jpegQuality" to c.jpegQuality,
             "retentionDays" to c.retentionDays,
@@ -268,6 +277,7 @@ object ConfigCodec {
             autoOffAfterClose = m.bool("autoOffAfterClose") ?: d.autoOffAfterClose,
             readyBatchSeconds = m.int("readyBatchSeconds") ?: d.readyBatchSeconds,
             watchPreparing = m.bool("watchPreparing") ?: d.watchPreparing,
+            pressSlackSeconds = m.int("pressSlackSeconds") ?: d.pressSlackSeconds,
             showToast = m.bool("showToast") ?: d.showToast,
             jpegQuality = m.int("jpegQuality") ?: d.jpegQuality,
             retentionDays = m.int("retentionDays") ?: d.retentionDays,
@@ -346,6 +356,7 @@ fun Config.sanitized(): Config {
         readyBatchSeconds = readyBatchSeconds.coerceIn(0, 30),
         fullSweepMinutes = fullSweepMinutes.coerceIn(1, 60),
         guardIdleMinutes = guardIdleMinutes.coerceIn(1, 60),
+        pressSlackSeconds = pressSlackSeconds.coerceIn(0, 60),
         jpegQuality = jpegQuality.coerceIn(30, 100),
         retentionDays = retentionDays.coerceIn(1, 365),
         evidenceWindowHours = evidenceWindowHours.coerceIn(1, 24),
