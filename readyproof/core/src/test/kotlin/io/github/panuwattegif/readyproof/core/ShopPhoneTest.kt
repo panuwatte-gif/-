@@ -447,6 +447,36 @@ class ShopPhoneTest {
     }
 
     @Test
+    fun anEmptyReadyOrPreparingTabIsStillKnown() {
+        // 23 Oct: nothing in the Ready tab, a new order being prepared — the watcher must still
+        // know it is on the Ready tab (1.0.170 did not, and never went to read the new order)
+        val empty = ScreenAnalyzer.analyze(
+            listOf(
+                orders10Oct(
+                    65,
+                    v("พร้อมจัดส่ง", 962, 994),
+                    v(top = 843, bottom = 1245, cls = "android.widget.ImageView"),
+                    v("อัปเดตสถานะคำสั่งซื้อทันทีเมื่อเตรียมเสร็จแล้ว", 1295, 1343),
+                    preparing = "กำลังเตรียม 1", ready = "พร้อมจัดส่ง",
+                ),
+            ),
+            cfg,
+        )
+        assertEquals(OrderTab.READY, empty.tab)
+        assertEquals(1, empty.preparingCount)
+        assertNull(empty.readyCount)
+        assertTrue(!empty.readyListBlank)
+        // the same for an empty Preparing tab
+        val prep = ScreenAnalyzer.analyze(
+            listOf(orders10Oct(65, v("กำลังเตรียม", 962, 994), preparing = "กำลังเตรียม", ready = "พร้อมจัดส่ง 2")),
+            cfg,
+        )
+        assertEquals(OrderTab.PREPARING, prep.tab)
+        // no title at all: unknown, as before
+        assertNull(ScreenAnalyzer.analyze(listOf(orders10Oct(65, v("กำลังโหลด", 962, 994))), cfg).tab)
+    }
+
+    @Test
     fun realDumpOf1121TheReadyTabCountsAnOrderButItsListIsBlank() {
         // dump-1791606084957: "พร้อมจัดส่ง 1" on the tab, the list shows only the empty-list picture
         val a = ScreenAnalyzer.analyze(
@@ -461,7 +491,8 @@ class ShopPhoneTest {
             ),
             cfg,
         )
-        assertNull(a.tab)
+        // the empty list's own title says it is the Ready tab
+        assertEquals(OrderTab.READY, a.tab)
         assertTrue(a.readyGfs().isEmpty())
         assertEquals(1, a.readyCount)
         assertTrue(a.readyListBlank)

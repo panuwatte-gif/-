@@ -88,6 +88,29 @@ object TabDetector {
      */
     fun readyCount(roots: List<UiNode>, cfg: Config): Int? = tabCount(roots, cfg, cfg.readyTabLabels)
 
+    /**
+     * A tab with no order in it shows its own name as a title below the tab bar ("พร้อมจัดส่ง"
+     * above "อัปเดตสถานะคำสั่งซื้อทันทีเมื่อเตรียมเสร็จแล้ว"), so an empty Ready or Preparing tab is
+     * still known. Only for a screen with no order on it: an order's own "พร้อมจัดส่ง" button
+     * has the same text.
+     */
+    fun emptyTab(roots: List<UiNode>, cfg: Config): OrderTab? {
+        val gfx = cfg.gfExtractor()
+        val barBottom = (tapTarget(roots, cfg.readyTabLabels, cfg.tabLabels, gfx)
+            ?: tapTarget(roots, cfg.preparingTabLabels, cfg.tabLabels, gfx))?.bottom ?: return null
+        for (root in roots) {
+            for (n in root.walk()) {
+                if (!n.shown || n.top < barBottom) continue
+                for (str in n.ownStrings()) {
+                    val key = TextNorm.key(str)
+                    if (cfg.readyTabLabels.any { TextNorm.key(it) == key }) return OrderTab.READY
+                    if (cfg.preparingTabLabels.any { TextNorm.key(it) == key }) return OrderTab.PREPARING
+                }
+            }
+        }
+        return null
+    }
+
     /** Number badge on the Preparing tab ("กำลังเตรียม 4"); null when it shows none. */
     fun preparingCount(roots: List<UiNode>, cfg: Config): Int? = tabCount(roots, cfg, cfg.preparingTabLabels)
 
