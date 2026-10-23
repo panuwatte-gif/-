@@ -118,10 +118,11 @@ object ScreenAnalyzer {
         }
         // No tab marked open (shop phone): orders with a countdown mean the Preparing tab is open,
         // and nothing on it is Ready, not even an order of a batch already marked ready (✓).
-        val tab = shownTab ?: if (scans.any { sc -> sc.observed.any { o -> o.any { it.type == ObsType.PREPARING } } }) {
-            OrderTab.PREPARING
-        } else {
-            null
+        val tab = shownTab ?: when {
+            scans.any { sc -> sc.observed.any { o -> o.any { it.type == ObsType.PREPARING } } } -> OrderTab.PREPARING
+            // nothing listed: the empty tab's title says which one it is
+            scans.all { it.cards.isEmpty() } -> TabDetector.emptyTab(roots, cfg)
+            else -> null
         }
         val views = ArrayList<CardView>()
         val visible = LinkedHashSet<String>()

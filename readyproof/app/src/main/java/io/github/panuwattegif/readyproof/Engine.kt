@@ -148,6 +148,7 @@ class Engine(private val service: ProofService) {
     private var lastLookAt = 0L
     private var lastLookCount = 0
     private var lastPrepVisitAt = 0L
+    private var lastPrepWaitNoteAt = 0L
     /** Last time the whole Ready list was known: an order first seen later was pressed after this. */
     private var lastCompleteLookAt = 0L
     /** Driver (or customer) at the shop: when it was first seen, and the last time it was not yet. */
@@ -326,7 +327,10 @@ class Engine(private val service: ProofService) {
 
     private fun isReady(s: Screen): Boolean =
         s.a.tab == OrderTab.READY ||
-            (s.a.tab == null && tabOf(s).let { it == null || it == OrderTab.READY } && s.a.readyGfs().isNotEmpty())
+            (s.a.tab == null && tabOf(s).let { it == null || it == OrderTab.READY } && s.a.readyGfs().isNotEmpty()) ||
+            // an empty list on the tab we opened ourselves: still the Ready tab (new orders are
+            // read on the Preparing tab from here too)
+            (s.a.tab == null && s.a.tabsVisible && s.a.views.isEmpty() && tabOf(s) == OrderTab.READY)
 
     /** The open tab: what Grab reports or shows, else the tab we tapped ourselves (see [assumedTab]). */
     private fun tabOf(s: Screen): OrderTab? {
@@ -386,7 +390,9 @@ class Engine(private val service: ProofService) {
         noteSeen(s, now)
         prepTracker.left(listed)
         // The whole list is on screen: whatever is not listed has been picked up.
-        if (if (count != null) listed.size >= count else !mayOverflow(s)) completeReady(listed, now)
+        // Grab shows a count on the tab whenever orders wait: an empty list without one is empty
+        val whole = if (count != null) listed.size >= count else (s.a.views.isEmpty() && !loading(s)) || !mayOverflow(s)
+        if (whole) completeReady(listed, now)
         noteArrivals(s.a.readyViews(), now)
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
         shootNew(s)
@@ -423,8 +429,16 @@ class Engine(private val service: ProofService) {
         val c = cfg
         val count = s.a.preparingCount ?: 0
         if (count < lastPrepCount) lastPrepCount = count
-        if (!c.watchPreparing || !autoNavigation() || personBusy || s.dialog || eod == Eod.RUNNING) return
+        if (!c.watchPreparing || !autoNavigation() || eod == Eod.RUNNING) return
         val up = SystemClock.uptimeMillis()
+        if (personBusy || s.dialog) {
+            // say why nothing happens when a look is due (at most every 2 minutes)
+            if (count > lastPrepCount && up - lastPrepWaitNoteAt > 120_000L) {
+                lastPrepWaitNoteAt = up
+                Diagnostics.note(service, "preparing: new order, waiting (" + (if (s.dialog) "pop-up on screen" else "phone in use") + ")")
+            }
+            return
+        }
         if (up - lastPrepVisitAt < PREP_MIN_GAP_MS) return
         val why = when {
             count > lastPrepCount -> "new order"
@@ -438,6 +452,7 @@ class Engine(private val service: ProofService) {
     private suspend fun visitPreparing(why: String, countBefore: Int): Unit = automate {
         val c = cfg
         lastPrepVisitAt = SystemClock.uptimeMillis()
+        setWhere("กำลังดูแท็บกำลังเตรียม แล้วจะกลับแท็บ Ready")
         var first = if (openTab(c.preparingTabLabels, OrderTab.PREPARING)) reader.read(c) else null
         if (first != null && first.a.preparingViews().isEmpty() && (first.a.preparingCount ?: 0) > 0) {
             delay(1_200) // the list may take a moment to show
@@ -1096,10 +1111,15 @@ class Engine(private val service: ProofService) {
             val s = reader.read(cfg) ?: return null
             if (tabOf(s) != want) return null
             if (s.a.views.any { it.card.inList }) return false
-            val texts = s.roots.flatMap { r -> r.walk().filter { it.shown }.flatMap { it.ownStrings().asSequence() }.toList() }
-            if (texts.any { t -> NOT_READY_WORDS.any { TextNorm.key(t).contains(it) } }) return null
+            if (loading(s)) return null
         }
         return true
+    }
+
+    /** The page says it is still loading or failed: an empty list there proves nothing. */
+    private fun loading(s: Screen): Boolean {
+        val texts = s.roots.flatMap { r -> r.walk().filter { it.shown }.flatMap { it.ownStrings().asSequence() }.toList() }
+        return texts.any { t -> NOT_READY_WORDS.any { TextNorm.key(t).contains(it) } }
     }
 
     // ---- the 10-second heartbeat ----------------------------------------------------------------
