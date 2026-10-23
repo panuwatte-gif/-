@@ -20,8 +20,12 @@ enum class RecordKind(val label: String) {
 }
 
 /** What was observed about one order. PRESS only appears in logs of older versions. */
-/** PREPARING: still in the Preparing tab, [Item.countdown] = time left ("5:53", "0:00"). */
-enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE, PREPARING }
+/**
+ * PREPARING: still in the Preparing tab, [Item.countdown] = time left ("5:53", "0:00").
+ * LEFT_READY: gone from the Ready tab (the driver took it), [Item.prevAt] = last seen there.
+ * ARRIVED: first seen with "คนขับของคุณมาถึงแล้ว" (driver or customer at the shop).
+ */
+enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE, PREPARING, LEFT_READY, ARRIVED }
 
 data class Item(
     val gf: String,
@@ -37,6 +41,12 @@ data class Item(
     /** Strings of the order card, for search and for the report. */
     val card: List<String> = emptyList(),
     val historyDate: String? = null,
+    /**
+     * The moment before, when it was not so yet: for READY the last look at the whole Ready list
+     * without it, for LEFT_READY the last time it was still there, for ARRIVED the last time its
+     * line did not say so. What happened lies between this and the record's time.
+     */
+    val prevAt: Long? = null,
 ) {
     /** Seconds left on [countdown]; 0 once it ran out (also for an overrun shown as "-1:20"). */
     val dueSeconds: Int?
@@ -118,6 +128,7 @@ object RecordCodec {
         "countdown" to i.countdown,
         "card" to i.card.take(MAX_CARD_TEXTS).map { it.take(MAX_TEXT) }.ifEmpty { null },
         "historyDate" to i.historyDate,
+        "prevAt" to i.prevAt,
     )
 
     /** Returns null for blank, corrupt or unknown-kind lines instead of throwing. */
@@ -157,6 +168,7 @@ object RecordCodec {
             countdown = m.str("countdown"),
             card = m.strList("card") ?: emptyList(),
             historyDate = m.str("historyDate"),
+            prevAt = m.long("prevAt"),
         )
     }
 }

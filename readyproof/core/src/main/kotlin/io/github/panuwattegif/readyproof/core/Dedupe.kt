@@ -59,7 +59,7 @@ class Deduper {
             ObsType.DONE -> "DONE|${item.gf}|${item.doneAt ?: "-"}|${item.historyDate ?: "UNKNOWN"}"
             ObsType.CANCELLED -> "CANCELLED|${item.gf}|${item.doneAt ?: "-"}|${item.historyDate ?: "UNKNOWN"}"
             // the Preparing tab is handled by [PrepTracker]
-            ObsType.PRESS, ObsType.VISIBLE, ObsType.PREPARING -> null
+            ObsType.PRESS, ObsType.VISIBLE, ObsType.PREPARING, ObsType.LEFT_READY, ObsType.ARRIVED -> null
         }
 
         /** History rows are photographed once; the Ready tab is handled by [ReadyTracker]. */
@@ -67,7 +67,7 @@ class Deduper {
         fun windowMs(type: ObsType, cfg: Config): Long = when (type) {
             ObsType.READY -> 10 * 60_000L
             ObsType.DELAY, ObsType.DONE, ObsType.CANCELLED -> 36L * 3600_000
-            ObsType.PRESS, ObsType.VISIBLE, ObsType.PREPARING -> 0L
+            ObsType.PRESS, ObsType.VISIBLE, ObsType.PREPARING, ObsType.LEFT_READY, ObsType.ARRIVED -> 0L
         }
     }
 }

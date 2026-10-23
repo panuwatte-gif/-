@@ -29,7 +29,7 @@ import java.time.ZoneId
 object GrabPack {
     private const val PHOTO_H = 1200
     private const val MARGIN = 24
-    private const val TITLE_H = 96
+    private const val TITLE_H = 150
     private const val CAPTION_H = 120
 
     /** Builds the images (oldest order first); orders whose photos cannot be read are left out. */
@@ -45,14 +45,15 @@ object GrabPack {
             val readyLine = "หน้า พร้อมจัดส่ง เวลา " + ReportText.time(ready.t, zone)
             val readyStatus = c.readyShot?.status?.let { stripGf(it, c.gf) }
             val name = set.readyName.replace("_READY", "_Ready+History")
-            image(ctx, dir, name, title(c, day), listOfNotNull(
+            image(ctx, dir, name, title(c, day), ReportText.grabTimeline(c, zone), listOfNotNull(
                 Panel(ready, readyLine, readyStatus),
                 set.delay?.let { Panel(it, "หน้า ประวัติ", historyLine(c)) },
             ))?.let { out += it }
         }
         for (c in delayOnly) {
             val delay = c.delayShot ?: continue
-            image(ctx, dir, Naming.setName(c.gf, "History"), title(c, day), listOf(Panel(delay, "หน้า ประวัติ", historyLine(c))))
+            image(ctx, dir, Naming.setName(c.gf, "History"), title(c, day), ReportText.grabTimeline(c, zone),
+                listOf(Panel(delay, "หน้า ประวัติ", historyLine(c))))
                 ?.let { out += it }
         }
         return out
@@ -69,7 +70,7 @@ object GrabPack {
 
     private fun stripGf(status: String, gf: String): String = status.replace(gf, "").trim(' ', ',', '·')
 
-    private fun image(ctx: Context, dir: File, name: String, title: String, panels: List<Panel>): File? {
+    private fun image(ctx: Context, dir: File, name: String, title: String, times: String, panels: List<Panel>): File? {
         val bitmaps = panels.map { p -> load(ctx, p.record) }
         if (bitmaps.any { it == null }) {
             bitmaps.forEach { it?.recycle() }
@@ -83,6 +84,10 @@ object GrabPack {
         canvas.drawColor(Color.WHITE)
         val titlePaint = paint(40f, Color.rgb(20, 20, 20), bold = true)
         drawFit(canvas, title, MARGIN.toFloat(), 62f, (width - 2 * MARGIN).toFloat(), titlePaint)
+        // when it had to be ready, was pressed, picked up, delivered (Grab looks at times too)
+        if (times.isNotBlank()) {
+            drawFit(canvas, times, MARGIN.toFloat(), 122f, (width - 2 * MARGIN).toFloat(), paint(30f, Color.rgb(60, 60, 60), bold = false))
+        }
         var x = MARGIN
         val line1 = paint(30f, Color.rgb(20, 20, 20), bold = true)
         val line2 = paint(28f, Color.rgb(90, 90, 90), bold = false)
