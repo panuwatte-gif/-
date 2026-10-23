@@ -16,6 +16,18 @@ class TrackerTest {
     }
 
     @Test
+    fun aPickedUpOrderComesBackWithWhenItWasLastSeenAndWhenItWasMissed() {
+        val t = ReadyTracker(goneAfterMs = 15_000)
+        t.complete(listOf("GF-1"), 0)
+        t.complete(listOf("GF-1"), 5_000)
+        assertTrue(t.complete(emptyList(), 8_000).isEmpty())
+        val gone = t.complete(emptyList(), 23_000)
+        assertEquals(listOf("GF-1"), gone.map { it.gf })
+        assertEquals(5_000L, gone.single().lastSeen)
+        assertEquals(8_000L, gone.single().missingSince)
+    }
+
+    @Test
     fun newOrderIsShotEvenWhileOldOnesAreStillListed() {
         val t = ReadyTracker()
         t.seen(listOf("GF-1", "GF-2"), 0)

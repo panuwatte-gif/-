@@ -61,6 +61,8 @@ data class Config(
      * At 0:00 the card turns red: the shop did not press ready in time.
      */
     val countdownAny: List<String> = listOf("Ready in", "พร้อมจัดส่งใน"),
+    /** An order's line once its driver (or the customer, for pickup) is at the shop. */
+    val arrivedAny: List<String> = listOf("มาถึงแล้ว", "has arrived", "arrived"),
     /** Labels of the totals at the top of History ("Completed 77", "Cancelled 0"). */
     val completedLabels: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
     val cancelledLabels: List<String> = listOf("Cancelled", "ยกเลิก"),
@@ -177,7 +179,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 8
+    const val VERSION = 9
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -200,6 +202,7 @@ object ConfigCodec {
             "cancelAny" to c.cancelAny,
             "delayAny" to c.delayAny,
             "countdownAny" to c.countdownAny,
+            "arrivedAny" to c.arrivedAny,
             "completedLabels" to c.completedLabels,
             "cancelledLabels" to c.cancelledLabels,
             "evidenceWindowHours" to c.evidenceWindowHours,
@@ -247,6 +250,7 @@ object ConfigCodec {
             cancelAny = m.strList("cancelAny") ?: d.cancelAny,
             delayAny = m.strList("delayAny") ?: d.delayAny,
             countdownAny = m.strList("countdownAny") ?: d.countdownAny,
+            arrivedAny = m.strList("arrivedAny") ?: d.arrivedAny,
             completedLabels = m.strList("completedLabels") ?: d.completedLabels,
             cancelledLabels = m.strList("cancelledLabels") ?: d.cancelledLabels,
             evidenceWindowHours = m.int("evidenceWindowHours") ?: d.evidenceWindowHours,
@@ -278,7 +282,8 @@ object ConfigCodec {
      * the unattended Ready-tab phone (no pop-up messages, which could cover an order number in the
      * next shot); v5 adds opening hours, switching off at night and shared photos for bursts;
      * v6 knows that a delivered order ("จัดส่งแล้ว", an order's detail page) is never waiting;
-     * v7 knows self-pickup orders waiting for their customer; v8 reads the Preparing countdown.
+     * v7 knows self-pickup orders waiting for their customer; v8 reads the Preparing countdown;
+     * v9 notes when the driver is at the shop.
      * Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {
@@ -293,6 +298,7 @@ object ConfigCodec {
             cancelAny = merge(c.cancelAny, d.cancelAny),
             delayAny = merge(c.delayAny, d.delayAny),
             countdownAny = merge(c.countdownAny, d.countdownAny),
+            arrivedAny = merge(c.arrivedAny, d.arrivedAny),
             showToast = if (from < 4) false else c.showToast,
         )
     }
@@ -329,6 +335,7 @@ fun Config.sanitized(): Config {
         cancelAny = cancelAny.cleanList(),
         delayAny = delayAny.cleanList(),
         countdownAny = countdownAny.cleanList(),
+        arrivedAny = arrivedAny.cleanList(),
         completedLabels = completedLabels.cleanList(),
         cancelledLabels = cancelledLabels.cleanList(),
         closeTime = if (Config.parseTime(closeTime) != null) closeTime.trim() else d.closeTime,

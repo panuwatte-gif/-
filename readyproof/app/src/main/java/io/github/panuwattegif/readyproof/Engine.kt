@@ -148,6 +148,11 @@ class Engine(private val service: ProofService) {
     private var lastLookAt = 0L
     private var lastLookCount = 0
     private var lastPrepVisitAt = 0L
+    /** Last time the whole Ready list was known: an order first seen later was pressed after this. */
+    private var lastCompleteLookAt = 0L
+    /** Driver (or customer) at the shop: when it was first seen, and the last time it was not yet. */
+    private val arrivedAt = HashMap<String, Long>()
+    private val notArrivedAt = HashMap<String, Long>()
     /** The Preparing tab's count at the last look: a higher count means a new order to read. */
     private var lastPrepCount = 0
     private val problemAt = HashMap<String, Long>()
@@ -381,7 +386,8 @@ class Engine(private val service: ProofService) {
         noteSeen(s, now)
         prepTracker.left(listed)
         // The whole list is on screen: whatever is not listed has been picked up.
-        if (if (count != null) listed.size >= count else !mayOverflow(s)) tracker.complete(listed, now)
+        if (if (count != null) listed.size >= count else !mayOverflow(s)) completeReady(listed, now)
+        noteArrivals(s.a.readyViews(), now)
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
         shootNew(s)
         warnUnphotographed()
@@ -479,6 +485,7 @@ class Engine(private val service: ProofService) {
         val now = System.currentTimeMillis()
         val views = s.a.preparingViews()
         val items = views.flatMap { v -> v.items.filter { it.type == ObsType.PREPARING } }
+        noteArrivals(views, now)
         val fresh = prepTracker.read(items, now)
         if (fresh.isNotEmpty()) {
             RecordStore.append(
@@ -502,6 +509,51 @@ class Engine(private val service: ProofService) {
     }
 
     /**
+     * The whole Ready list is known: orders gone from it were taken by their driver. Each one is
+     * written down with when it was noticed gone and when it was last seen there.
+     */
+    private fun completeReady(all: Collection<String>, now: Long) {
+        val gone = tracker.complete(all, now)
+        lastCompleteLookAt = now
+        for (stay in gone) {
+            arrivedAt.remove(stay.gf)
+            notArrivedAt.remove(stay.gf)
+            val at = stay.missingSince ?: now
+            RecordStore.append(
+                service,
+                Record(
+                    id = "$at-l${seq.incrementAndGet()}", t = at, kind = RecordKind.SEEN,
+                    items = listOf(Item(stay.gf, ObsType.LEFT_READY, prevAt = stay.lastSeen)),
+                    note = "LEFT_READY", shopId = shop(),
+                ),
+            )
+        }
+    }
+
+    /** The first time an order's line says its driver (or customer) is at the shop, with when it did not yet. */
+    private fun noteArrivals(views: List<CardView>, now: Long) {
+        val words = cfg.arrivedAny
+        for (v in views) {
+            if (v.gf in arrivedAt) continue
+            if (v.card.texts.none { TextNorm.containsAny(it, words) }) {
+                notArrivedAt[v.gf] = now
+                continue
+            }
+            arrivedAt[v.gf] = now
+            RecordStore.append(
+                service,
+                Record(
+                    id = "$now-a${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN,
+                    items = listOf(Item(v.gf, ObsType.ARRIVED, status = v.status ?: v.card.texts.firstOrNull(), prevAt = notArrivedAt[v.gf])),
+                    note = "ARRIVED", shopId = shop(),
+                ),
+            )
+        }
+        if (arrivedAt.size > 300) arrivedAt.entries.removeAll { now - it.value > 6 * 3600_000L }
+        if (notArrivedAt.size > 300) notArrivedAt.entries.removeAll { now - it.value > 6 * 3600_000L }
+    }
+
+    /**
      * Orders listed in the Ready tab, written down as soon as they are seen (before any shot), so
      * the report can tell "seen but no photo yet" apart from "never reached the Ready tab".
      */
@@ -514,7 +566,9 @@ class Engine(private val service: ProofService) {
             service,
             Record(
                 id = "$now-rs${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN,
-                items = fresh.flatMap { v -> v.items.filter { it.type == ObsType.READY } },
+                // pressed after the last time the whole list was seen without it
+                items = fresh.flatMap { v -> v.items.filter { it.type == ObsType.READY } }
+                    .map { if (lastCompleteLookAt > 0) it.copy(prevAt = lastCompleteLookAt) else it },
                 visible = s.a.visible, note = "READY_SEEN_PENDING_UNTIL_IMAGE", shopId = shop(),
             ),
         )
@@ -660,7 +714,7 @@ class Engine(private val service: ProofService) {
             if (!isReady(s)) break
         }
         val now = System.currentTimeMillis()
-        if (count != null && seen.size >= count) tracker.complete(seen, now)
+        if (count != null && seen.size >= count) completeReady(seen, now)
         lastSweepAt = now
         Diagnostics.note(
             service,
@@ -1243,7 +1297,7 @@ class Engine(private val service: ProofService) {
                 }
                 val emptyNow = queueEmpty(OrderTab.READY) == true
                 // Seen empty twice: every order the tracker still remembers has been picked up.
-                if (emptyNow) tracker.complete(emptyList(), System.currentTimeMillis())
+                if (emptyNow) completeReady(emptyList(), System.currentTimeMillis())
                 val left = tracker.present()
                 val readyEmpty = left.isEmpty() && emptyNow
                 if (!readyEmpty) {
@@ -1321,7 +1375,7 @@ class Engine(private val service: ProofService) {
         eodForced = false
         val text = "อ่านประวัติได้ " + (report.grabCompleted?.let { "${report.completedSeen}/$it" } ?: "${report.completedSeen}") +
             " ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
-            "กดทัน ${report.inTime.size} · กดช้า ${report.late.size} · ไม่ได้ดูหน้ากำลังเตรียม ${report.unchecked.size} · " +
+            "กดทัน ${report.inTime.size} · กดช้า ${report.late.size} · บอกไม่ได้ ${report.unchecked.size} · " +
             "ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
             "% ที่ร้านควรได้ ${ReportText.pct(report.realPct)}" +
             (if (incomplete) "\n⚠ ยังไม่ครบ: ดูรายละเอียดในรายงาน" else "")
@@ -1383,7 +1437,7 @@ class Engine(private val service: ProofService) {
         append(" / Cancelled ").append(r.cancelledSeen)
         append(" / Delayed ").append(r.delayed)
         append(" / กดทัน ").append(r.inTime.size).append(" กดช้า ").append(r.late.size)
-            .append(" ไม่ได้ดูหน้ากำลังเตรียม ").append(r.unchecked.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
+            .append(" บอกไม่ได้ ").append(r.unchecked.size).append(" ไม่มีหลักฐาน ").append(r.noEvidence.size)
         if (!h.reachedEnd) append(" / ไม่ถึงท้ายรายการ")
         if (h.unshot.isNotEmpty()) append(" / ขาดภาพ DELAY ").append(h.unshot.joinToString(","))
         append(if (r.complete) " / MATCH" else " / INCOMPLETE")

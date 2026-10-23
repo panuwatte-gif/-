@@ -398,12 +398,22 @@ class DataAndReportTest {
             rec(ms(2026, 10, 19, 15, 38, 10), RecordKind.SEEN, Item("GF-022", ObsType.PREPARING, countdown = "8:50"), uri = null),
             overdue,
             rec(ms(2026, 10, 19, 15, 49, 33), RecordKind.READY, Item("GF-022", ObsType.READY, status = "GF-022 คนขับของคุณมาถึงแล้ว 1 รายการ")),
-            // pressed with time to spare
+            // pressed with time to spare; the driver came and took it
             rec(ms(2026, 10, 19, 11, 5), RecordKind.SEEN, Item("GF-204", ObsType.PREPARING, countdown = "6:30"), uri = null),
-            rec(ms(2026, 10, 19, 11, 9, 40), RecordKind.READY, Item("GF-204", ObsType.READY, status = "GF-204 กำลังค้นหาคนขับ... 2 รายการ")),
-            // never seen at 0:00, but reached Ready 45 s after its time ran out
+            rec(ms(2026, 10, 19, 11, 9, 40), RecordKind.SEEN, Item("GF-204", ObsType.READY, status = "GF-204 กำลังค้นหาคนขับ... 2 รายการ",
+                prevAt = ms(2026, 10, 19, 11, 9, 36)), uri = null),
+            rec(ms(2026, 10, 19, 11, 9, 41), RecordKind.READY, Item("GF-204", ObsType.READY, status = "GF-204 กำลังค้นหาคนขับ... 2 รายการ")),
+            rec(ms(2026, 10, 19, 11, 15, 2), RecordKind.SEEN, Item("GF-204", ObsType.ARRIVED, prevAt = ms(2026, 10, 19, 11, 14, 58)), uri = null),
+            rec(ms(2026, 10, 19, 11, 16, 30), RecordKind.SEEN, Item("GF-204", ObsType.LEFT_READY, prevAt = ms(2026, 10, 19, 11, 16, 25)), uri = null),
+            // never seen at 0:00, but the whole Ready list was seen without it after its time ran out
             rec(ms(2026, 10, 19, 12, 0), RecordKind.SEEN, Item("GF-328", ObsType.PREPARING, countdown = "1:40"), uri = null),
-            rec(ms(2026, 10, 19, 12, 2, 25), RecordKind.READY, Item("GF-328", ObsType.READY, status = "GF-328 กำลังค้นหาคนขับ... 1 รายการ")),
+            rec(ms(2026, 10, 19, 12, 2, 25), RecordKind.SEEN, Item("GF-328", ObsType.READY, status = "GF-328 กำลังค้นหาคนขับ... 1 รายการ",
+                prevAt = ms(2026, 10, 19, 12, 2, 20)), uri = null),
+            rec(ms(2026, 10, 19, 12, 2, 26), RecordKind.READY, Item("GF-328", ObsType.READY, status = "GF-328 กำลังค้นหาคนขับ... 1 รายการ")),
+            // nobody was watching when its time ran out (Grab off the screen): not called late on a guess
+            rec(ms(2026, 10, 19, 15, 0), RecordKind.SEEN, Item("GF-500", ObsType.PREPARING, countdown = "2:00"), uri = null),
+            rec(ms(2026, 10, 19, 15, 20), RecordKind.SEEN, Item("GF-500", ObsType.READY, prevAt = ms(2026, 10, 19, 14, 58)), uri = null),
+            rec(ms(2026, 10, 19, 15, 20, 1), RecordKind.READY, Item("GF-500", ObsType.READY)),
             // 5 s after: closer than the app can tell apart
             rec(ms(2026, 10, 19, 13, 0), RecordKind.SEEN, Item("GF-674", ObsType.PREPARING, countdown = "2:00"), uri = null),
             rec(ms(2026, 10, 19, 13, 2, 5), RecordKind.READY, Item("GF-674", ObsType.READY)),
@@ -419,24 +429,38 @@ class DataAndReportTest {
                 Item("GF-328", ObsType.DELAY, delayMin = 5, doneAt = "12:22"),
                 Item("GF-674", ObsType.DELAY, delayMin = 7, doneAt = "13:17"),
                 Item("GF-234", ObsType.DELAY, delayMin = 4, doneAt = "14:12"),
+                Item("GF-500", ObsType.DELAY, delayMin = 5, doneAt = "15:44"),
                 Item("GF-191", ObsType.DELAY, delayMin = 3, doneAt = "11:51")).copy(historyDate = "2026-10-19"),
         )
         val r = ReportBuilder.build(records, day, zone, cfg)
         assertEquals(listOf("GF-204", "GF-674", "GF-234"), r.inTime.map { it.gf })
         assertEquals(listOf("GF-328", "GF-022"), r.late.map { it.gf })
-        assertEquals(listOf("GF-191"), r.unchecked.map { it.gf })
+        assertEquals(listOf("GF-191", "GF-500"), r.unchecked.map { it.gf })
         val c022 = r.cases.first { it.gf == "GF-022" }
         assertTrue(c022.prep!!.ranOut)
         assertEquals(overdue.id, c022.prep!!.overdueShot?.id)
         // only orders pressed in time go to Grab
         assertEquals(listOf("GF-204", "GF-674", "GF-234"), r.sets(Verdict.IN_TIME).map { it.case.gf })
-        assertEquals(50.0, r.realPct) // (6 − 3) / 6
+        assertEquals(57.14, Math.round(r.realPct!! * 100) / 100.0) // (7 − 3) / 7
         val text = ReportText.summary(r, zone)
         assertTrue(text.contains("GF-022 ล่าช้า 6 นาที (เสร็จ 16:27) — อยู่ในแท็บ Ready ตั้งแต่ 15:49:33 \"GF-022 คนขับของคุณมาถึงแล้ว 1 รายการ\" · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 15:47:05 มีภาพ"), text)
         assertTrue(text.contains("GF-328 ล่าช้า 5 นาที (เสร็จ 12:22) — อยู่ในแท็บ Ready ตั้งแต่ 12:02:25 \"GF-328 กำลังค้นหาคนขับ... 1 รายการ\" · ต้องกดภายใน 12:01:40 (อ่านได้ 1:40 ตอน 12:00:00) ช้าไป 0:45"), text)
         assertTrue(text.contains("GF-204 ล่าช้า 4 นาที (เสร็จ 11:42) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:40 \"GF-204 กำลังค้นหาคนขับ... 2 รายการ\" · ต้องกดภายใน 11:11:30 (อ่านได้ 6:30 ตอน 11:05:00) เหลือเวลา 1:50"), text)
         assertTrue(text.contains("· ต้องกดภายใน 13:02:00 (อ่านได้ 2:00 ตอน 13:00:00) ทันพอดี (ห่าง 0:05)"), text)
         assertTrue(text.contains("GF-191 ล่าช้า 3 นาที (เสร็จ 11:51) — อยู่ในแท็บ Ready ตั้งแต่ 10:40:00 · ไม่มีข้อมูลหน้ากำลังเตรียม"), text)
+        assertTrue(text.contains("GF-500 ล่าช้า 5 นาที (เสร็จ 15:44) — อยู่ในแท็บ Ready ตั้งแต่ 15:20:00 · ต้องกดภายใน 15:02:00 " +
+            "แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ระหว่าง 14:58:00–15:20:00)"), text)
+        // the times of each order, to compare with Grab's own (accepted, picked up, delivered)
+        assertTrue(text.contains("\n   ⏱ เห็นในกำลังเตรียม 11:05:00 · หมดเวลา 11:11:30 · กดพร้อมจัดส่ง 11:09:40 · " +
+            "คนขับมาถึง 11:15:02 · คนขับรับของ 11:16:30 · เสร็จ 11:42\n"), text)
+        assertEquals("ต้องพร้อมภายใน 11:11:30 · กดพร้อมจัดส่ง 11:09:40 · คนขับมาถึง 11:15:02 · คนขับรับของ 11:16:30 · ส่งเสร็จ 11:42",
+            ReportText.grabTimeline(r.cases.first { it.gf == "GF-204" }, zone))
+        val c204 = r.cases.first { it.gf == "GF-204" }.timeline
+        assertEquals(ms(2026, 10, 19, 11, 9, 36), c204.readyAfter)
+        assertEquals(ms(2026, 10, 19, 11, 16, 25), c204.leftAfter)
+        val times = ReportText.timelineCsv(r, zone)
+        assertTrue(times.contains("2026-10-19,GF-204,completed,4,11:05:00,11:11:30,11:09:36,11:09:40,11:14:58,11:15:02,11:16:25,11:16:30,11:42"), times)
+        assertEquals(7, r.orders.size)
     }
 
     @Test

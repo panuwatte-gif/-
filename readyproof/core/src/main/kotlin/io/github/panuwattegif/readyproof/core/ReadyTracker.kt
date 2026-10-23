@@ -44,11 +44,13 @@ class ReadyTracker(
 
     /**
      * The whole list is known ([all] = every order in it): it fits on one screen, or a sweep went
-     * from top to bottom. Orders not in it have left (a rider picked them up).
+     * from top to bottom. Orders not in it have left (a rider picked them up). Returns the stays
+     * that ended now: each left between its [Stay.lastSeen] and its [Stay.missingSince].
      */
     @Synchronized
-    fun complete(all: Collection<String>, now: Long) {
+    fun complete(all: Collection<String>, now: Long): List<Stay> {
         seen(all, now)
+        val gone = ArrayList<Stay>()
         val it = stays.values.iterator()
         while (it.hasNext()) {
             val s = it.next()
@@ -58,8 +60,10 @@ class ReadyTracker(
                 s.missingSince = now
             } else if (now - since >= goneAfterMs) {
                 it.remove()
+                gone += s
             }
         }
+        return gone
     }
 
     @Synchronized

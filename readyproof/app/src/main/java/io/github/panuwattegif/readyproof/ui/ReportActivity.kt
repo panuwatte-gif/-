@@ -126,7 +126,8 @@ class ReportActivity : Activity() {
     private fun explanation(v: Verdict): String? = when (v) {
         Verdict.IN_TIME -> null
         Verdict.LATE -> "เวลานับถอยหลังในแท็บกำลังเตรียมหมด (0:00) ก่อนออเดอร์เข้าแท็บ Ready — ร้านกดช้าจริง แม้จะมีภาพ Ready"
-        Verdict.UNCHECKED -> "มีภาพในแท็บ Ready แต่แอปไม่ได้อ่านเวลานับถอยหลังของออเดอร์นี้ (เช่นช่วงที่แอปปิดอยู่) จึงบอกไม่ได้ว่ากดทันหรือไม่"
+        Verdict.UNCHECKED -> "มีภาพในแท็บ Ready แต่แอปไม่ได้อ่านเวลานับถอยหลังของออเดอร์นี้ หรือไม่ได้ดูจออยู่ตอนเวลาหมด " +
+            "(เช่นช่วงที่แอปปิดหรือ Grab ไม่อยู่บนจอ) จึงไม่ตัดสินจากการเดา"
         Verdict.NO_EVIDENCE -> "ไม่ได้แปลว่าร้านช้าจริง: ไม่มีภาพในแท็บ Ready ของออเดอร์นี้ (ไม่ได้ผ่านแท็บ Ready หรือระบบจับไม่ได้)"
     }
 
@@ -222,7 +223,8 @@ class ReportActivity : Activity() {
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
-        Ui.button(s, "📄 แชร์ไฟล์สรุป + ไฟล์รายละเอียดของวัน (3 ไฟล์)", filled = false) { shareDayFiles(r, zone) }
+        Ui.button(s, "🕒 ส่งออกเวลาทุกออเดอร์ (CSV)", filled = false) { exportTimes(r, zone) }
+        Ui.button(s, "📄 แชร์ไฟล์สรุป + ไฟล์รายละเอียดของวัน (4 ไฟล์)", filled = false) { shareDayFiles(r, zone) }
         Ui.button(s, "📤 แชร์ READY + HISTORY ทุกภาพของวัน (แม้ยังไม่ครบ)", filled = false) {
             val shots = RecordStore.load(this, r.date).filter { it.shopId == r.shopId && it.uri != null }
             Share.images(this, shots.mapNotNull { shot -> shot.uri?.let(Uri::parse) })
@@ -295,10 +297,11 @@ class ReportActivity : Activity() {
                 card,
                 "ต้องกดภายใน " + ReportText.timeSec(p.deadline, zone) + " (หน้ากำลังเตรียมเหลือ " + p.countdown + " ตอน " +
                     ReportText.timeSec(p.readAt, zone) + ")",
-                14f, if (c.verdict == Verdict.IN_TIME) Ui.GREEN else Ui.RED,
+                14f, colorOf(c.verdict),
             )
         }
         c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
+        if (!c.timeline.empty) Ui.text(card, "⏱ " + ReportText.timelineText(c.timeline, c.doneAt, zone), 13f, Ui.MUTED, topDp = 2)
         if (c.matchStatus == "UNKNOWN_INSTANCE") Ui.text(card, "UNKNOWN: ยังยืนยัน instance ไม่ได้ ห้ามใช้ GF อย่างเดียวจับคู่", 13f, Ui.AMBER)
         if (!c.hasEvidence) Ui.text(card, "ไม่พบภาพในแท็บ Ready ของเลขนี้ก่อนเวลาเสร็จ — เก็บเคสนี้ไว้ ไม่ตัดออก", 13f, Ui.RED, topDp = 2)
         if (c.delayShot == null) Ui.text(card, "ยังไม่มีภาพหน้า History ของออเดอร์นี้", 13f, Ui.AMBER, topDp = 2)
@@ -347,6 +350,18 @@ class ReportActivity : Activity() {
         }
     }
 
+    /** Every order's times (Preparing, pressed, driver at the shop, picked up, done), to compare with Grab's. */
+    private fun exportTimes(r: DailyReport, zone: ZoneId) {
+        try {
+            val bytes = ReportText.timelineCsv(r, zone).toByteArray(Charsets.UTF_8)
+            val uri = MediaSaver.saveDownload(this, "${r.shopId ?: "UNKNOWN"}_times-${r.date}.csv", "text/csv", bytes)
+            Ui.toast(this, "บันทึกไว้ที่ Download/ReadyProof แล้ว")
+            Share.file(this, uri, "text/csv", "ส่งไฟล์เวลาทุกออเดอร์")
+        } catch (e: Exception) {
+            Ui.alert(this, "ส่งออกไม่สำเร็จ", e.message ?: "")
+        }
+    }
+
     /**
      * The day's summary plus the two files needed to find out why an order has no photo: the
      * manifest (every order seen / photographed, with times) and the diagnostics (what the phone
@@ -365,6 +380,8 @@ class ReportActivity : Activity() {
             }
             uris += MediaSaver.saveDownload(this, "${shop}_diagnostics-${r.date}.txt", "text/plain",
                 Diagnostics.daily(this, r.date).toByteArray(Charsets.UTF_8))
+            uris += MediaSaver.saveDownload(this, "${shop}_times-${r.date}.csv", "text/csv",
+                ReportText.timelineCsv(r, zone).toByteArray(Charsets.UTF_8))
             Ui.toast(this, "บันทึกไว้ที่ Download/ReadyProof แล้ว ${uris.size} ไฟล์")
             Share.files(this, uris, "ส่งไฟล์สรุปและรายละเอียด")
         } catch (e: Exception) {
