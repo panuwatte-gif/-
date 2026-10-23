@@ -11,8 +11,19 @@ class PrepTracker {
         var recordedRanOut: Boolean,
         /** Last time the Preparing tab was looked at while this order was known. */
         var checkedAt: Long,
+        /** Photo of the red card checked to show it (number and line still in place after it). */
         var overdueShotAt: Long? = null,
-    )
+        /** Photo of the red card kept although the screen moved while it was taken (to look at). */
+        var overdueBackupAt: Long? = null,
+        /** First seen red (0:00) on the Preparing tab. */
+        var seenRedAt: Long? = null,
+        /** Looks at its red card that ended without any photo (not on screen, capture failed). */
+        var overdueMisses: Int = 0,
+        /** Seen red at the last look but no photo saved: look again. */
+        var retry: Boolean = false,
+    ) {
+        val hasOverduePhoto: Boolean get() = overdueShotAt != null || overdueBackupAt != null
+    }
 
     private val entries = HashMap<String, Entry>()
 
@@ -30,13 +41,14 @@ class PrepTracker {
             val deadline = now + due * 1000L
             val e = entries[item.gf]
             if (e == null) {
-                entries[item.gf] = Entry(deadline, deadline, due == 0, now)
+                entries[item.gf] = Entry(deadline, deadline, due == 0, now, seenRedAt = if (due == 0) now else null)
                 keep += item
                 continue
             }
             e.deadline = if (due == 0) minOf(e.deadline, now) else deadline
             e.checkedAt = now
             val ranOut = due == 0
+            if (ranOut && e.seenRedAt == null) e.seenRedAt = now
             if ((ranOut && !e.recordedRanOut) || (!ranOut && kotlin.math.abs(deadline - e.lastRecorded) > MOVE_MS)) {
                 e.lastRecorded = deadline
                 e.recordedRanOut = ranOut
@@ -46,19 +58,53 @@ class PrepTracker {
         return keep
     }
 
-    /** Orders whose red 0:00 card still needs its one photo. */
+    /**
+     * The red card of [gf] still needs a photo: none yet, or only a kept-but-unchecked one while
+     * the card is now completely on screen ([whole]). Never more than that.
+     */
     @Synchronized
-    fun needsOverdueShot(gf: String): Boolean = entries[gf]?.overdueShotAt == null
+    fun needsOverdueShot(gf: String, whole: Boolean = true): Boolean {
+        val e = entries[gf] ?: return true
+        return e.overdueShotAt == null && (e.overdueBackupAt == null || whole)
+    }
 
+    /** Photos of red cards saved and checked. */
     @Synchronized
     fun shotOverdue(gfs: Collection<String>, now: Long) {
         gfs.forEach { entries[it]?.overdueShotAt = now }
     }
 
-    /** The Preparing tab was looked at [now] (whatever it showed). */
+    /** Photos of red cards saved, but the screen moved while they were taken: kept to look at. */
     @Synchronized
-    fun checked(now: Long) {
-        entries.values.forEach { it.checkedAt = now }
+    fun backupOverdue(gfs: Collection<String>, now: Long) {
+        gfs.forEach { entries[it]?.overdueBackupAt = now }
+    }
+
+    /**
+     * Red cards seen without any photo saved (not on screen, capture or save failed): look again.
+     * [counts]: a look the app made itself; only those use up the [MAX_MISSES] tries (someone
+     * scrolling the tab shows the same card again and again).
+     */
+    @Synchronized
+    fun missedOverdue(gfs: Collection<String>, counts: Boolean = true) {
+        gfs.forEach { gf ->
+            entries[gf]?.let {
+                if (counts) it.overdueMisses++
+                it.retry = true
+            }
+        }
+    }
+
+    /**
+     * The Preparing tab was looked at [now]; [seen] = the orders it showed (null = not known). An
+     * order that was not on it cannot be photographed there: no second look for its red card.
+     */
+    @Synchronized
+    fun checked(now: Long, seen: Collection<String>? = null) {
+        entries.forEach { (gf, e) ->
+            e.checkedAt = now
+            if (seen != null && gf !in seen) e.retry = false
+        }
     }
 
     /** The whole Preparing list was on screen: orders not on it have left the tab. */
@@ -74,12 +120,15 @@ class PrepTracker {
     }
 
     /**
-     * An order's countdown ran out [graceMs] ago and nobody has looked at the Preparing tab since:
-     * time to photograph its red card (or find it already pressed).
+     * Time to look at the Preparing tab for a red card: an order's countdown ran out [graceMs] ago
+     * and nobody has looked since, or its red card was seen but no photo could be saved (at most
+     * [MAX_MISSES] tries). Seeing an order, seeing it red and having its photo saved are three
+     * different things: only the saved photo ends the job.
      */
     @Synchronized
     fun runOutUnseen(now: Long, graceMs: Long): Boolean = entries.values.any { e ->
-        e.overdueShotAt == null && e.deadline + graceMs <= now && e.checkedAt < e.deadline + graceMs
+        !e.hasOverduePhoto && e.deadline + graceMs <= now &&
+            (e.checkedAt < e.deadline + graceMs || (e.retry && e.overdueMisses < MAX_MISSES))
     }
 
     @Synchronized
@@ -103,7 +152,10 @@ class PrepTracker {
                         e.lastRecorded = deadline
                         e.recordedRanOut = due == 0
                         e.checkedAt = maxOf(e.checkedAt, r.t)
-                        if (r.uri != null && due == 0) e.overdueShotAt = r.t
+                        if (due == 0 && e.seenRedAt == null) e.seenRedAt = r.t
+                        if (r.uri != null && due == 0) {
+                            if (r.note == BACKUP_NOTE) e.overdueBackupAt = r.t else e.overdueShotAt = r.t
+                        }
                     }
                     ObsType.READY -> entries.remove(item.gf)
                     else -> {}
@@ -115,5 +167,9 @@ class PrepTracker {
     companion object {
         /** A countdown that moved more than this was given more time: worth a new log line. */
         const val MOVE_MS = 30_000L
+        /** Looks at a red card that may end without a photo before giving up on it. */
+        const val MAX_MISSES = 3
+        /** Note on a red-card photo whose screen moved while it was taken. */
+        const val BACKUP_NOTE = "PREP_BACKUP รอตรวจสอบ"
     }
 }

@@ -451,16 +451,67 @@ class DataAndReportTest {
         assertTrue(text.contains("GF-500 ล่าช้า 5 นาที (เสร็จ 15:44) — อยู่ในแท็บ Ready ตั้งแต่ 15:20:00 · ต้องกดภายใน 15:02:00 " +
             "แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ระหว่าง 14:58:00–15:20:00)"), text)
         // the times of each order, to compare with Grab's own (accepted, picked up, delivered)
-        assertTrue(text.contains("\n   ⏱ เห็นในกำลังเตรียม 11:05:00 · หมดเวลา 11:11:30 · กดพร้อมจัดส่ง 11:09:40 · " +
-            "คนขับมาถึง 11:15:02 · คนขับรับของ 11:16:30 · เสร็จ 11:42\n"), text)
-        assertEquals("ต้องพร้อมภายใน 11:11:30 · กดพร้อมจัดส่ง 11:09:40 · คนขับมาถึง 11:15:02 · คนขับรับของ 11:16:30 · ส่งเสร็จ 11:42",
+        // a time known only between two looks is shown as that range, never as one time
+        assertTrue(text.contains("\n   ⏱ เห็นในกำลังเตรียม 11:05:00 · หมดเวลา 11:11:30 · กดพร้อมจัดส่ง ระหว่าง 11:09:36–11:09:40 · " +
+            "ภาพ Ready 11:09:41 · คนขับมาถึง ระหว่าง 11:14:58–11:15:02 · คนขับรับของ ระหว่าง 11:16:25–11:16:30 · เสร็จ 11:42\n"), text)
+        assertTrue(text.contains(ReportText.TIMES_LEGEND))
+        assertEquals("ต้องพร้อมภายใน 11:11:30 · กดพร้อมจัดส่ง ระหว่าง 11:09:36–11:09:40 · คนขับมาถึง ระหว่าง 11:14:58–11:15:02 · " +
+            "คนขับรับของ ระหว่าง 11:16:25–11:16:30 · ส่งเสร็จ 11:42",
             ReportText.grabTimeline(r.cases.first { it.gf == "GF-204" }, zone))
         val c204 = r.cases.first { it.gf == "GF-204" }.timeline
         assertEquals(ms(2026, 10, 19, 11, 9, 36), c204.readyAfter)
         assertEquals(ms(2026, 10, 19, 11, 16, 25), c204.leftAfter)
         val times = ReportText.timelineCsv(r, zone)
-        assertTrue(times.contains("2026-10-19,GF-204,completed,4,11:05:00,11:11:30,11:09:36,11:09:40,11:14:58,11:15:02,11:16:25,11:16:30,11:42"), times)
+        assertTrue(times.contains("2026-10-19,GF-204,completed,4,11:05:00,11:11:30,11:09:36,11:09:40,11:09:41,11:14:58,11:15:02,11:16:25,11:16:30,11:42"), times)
         assertEquals(7, r.orders.size)
+    }
+
+    @Test
+    fun timesAndVerdictsDoNotWaitForAPhoto() {
+        val day = LocalDate.of(2026, 10, 23)
+        val records = listOf(
+            // seen in the Ready tab in time, but no Ready photo could be saved
+            rec(ms(2026, 10, 23, 11, 0), RecordKind.SEEN, Item("GF-101", ObsType.PREPARING, countdown = "5:00"), uri = null),
+            rec(ms(2026, 10, 23, 11, 3), RecordKind.SEEN, Item("GF-101", ObsType.READY, prevAt = ms(2026, 10, 23, 11, 2, 58)), uri = null),
+            // its red card photographed, never seen in the Ready tab
+            rec(ms(2026, 10, 23, 12, 0), RecordKind.SEEN, Item("GF-102", ObsType.PREPARING, countdown = "2:00"), uri = null),
+            rec(ms(2026, 10, 23, 12, 2, 4), RecordKind.PREPARING, Item("GF-102", ObsType.PREPARING, countdown = "0:00")),
+            // seen red (no photo saved), never seen in the Ready tab
+            rec(ms(2026, 10, 23, 13, 0), RecordKind.SEEN, Item("GF-103", ObsType.PREPARING, countdown = "0:00"), uri = null),
+            // countdown read, then nothing
+            rec(ms(2026, 10, 23, 14, 0), RecordKind.SEEN, Item("GF-104", ObsType.PREPARING, countdown = "6:00"), uri = null),
+            // the same number twice in a day: the first one ran out, the second was in time
+            rec(ms(2026, 10, 23, 15, 0), RecordKind.PREPARING, Item("GF-105", ObsType.PREPARING, countdown = "0:00")),
+            rec(ms(2026, 10, 23, 17, 0), RecordKind.SEEN, Item("GF-105", ObsType.PREPARING, countdown = "8:00"), uri = null),
+            rec(ms(2026, 10, 23, 17, 5), RecordKind.READY, Item("GF-105", ObsType.READY)),
+            rec(ms(2026, 10, 23, 19, 5), RecordKind.DELAY,
+                Item("GF-101", ObsType.DELAY, delayMin = 3, doneAt = "11:30"),
+                Item("GF-102", ObsType.DELAY, delayMin = 5, doneAt = "12:40"),
+                Item("GF-103", ObsType.DELAY, delayMin = 4, doneAt = "13:40"),
+                Item("GF-104", ObsType.DELAY, delayMin = 2, doneAt = "14:40"),
+                Item("GF-105", ObsType.DELAY, delayMin = 6, doneAt = "15:40"),
+                Item("GF-105", ObsType.DELAY, delayMin = 3, doneAt = "17:40")).copy(historyDate = "2026-10-23"),
+        )
+        val r = ReportBuilder.build(records, day, zone, cfg)
+        fun case(gf: String, done: String) = r.cases.first { it.gf == gf && Parsers.hhmm(it.doneAt!!.toLocalTime()) == done }
+        val c101 = case("GF-101", "11:30")
+        assertEquals(Verdict.IN_TIME, c101.verdict)
+        assertEquals(ms(2026, 10, 23, 11, 3), c101.readyAt)
+        assertNull(c101.timeline.readyPhotoAt)
+        assertFalse(c101.hasEvidence)
+        // pressed in time, but nothing to send without a photo
+        assertTrue(r.sets(Verdict.IN_TIME).none { it.case.gf == "GF-101" })
+        assertEquals(Verdict.LATE, case("GF-102", "12:40").verdict)
+        assertNotNull(case("GF-102", "12:40").prep?.overdueShot)
+        assertEquals(Verdict.LATE, case("GF-103", "13:40").verdict)
+        assertEquals(Verdict.NO_EVIDENCE, case("GF-104", "14:40").verdict)
+        assertEquals(Verdict.LATE, case("GF-105", "15:40").verdict)
+        // the red card of the first GF-105 is never used for the second one
+        assertEquals(Verdict.IN_TIME, case("GF-105", "17:40").verdict)
+        val text = ReportText.summary(r, zone)
+        assertTrue(text.contains("GF-101 ล่าช้า 3 นาที (เสร็จ 11:30) — เห็นในแท็บ Ready ตั้งแต่ 11:03:00 (ไม่มีภาพ ส่ง Grab ไม่ได้)"), text)
+        assertTrue(text.contains("GF-103 ล่าช้า 4 นาที (เสร็จ 13:40) · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 13:00:00 (ไม่มีภาพ)"), text)
+        assertTrue(text.contains("กดทัน (เข้า Ready ก่อนหมดเวลา): 2 (มีภาพ Ready ส่ง Grab ได้ 1)"), text)
     }
 
     @Test

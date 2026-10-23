@@ -442,7 +442,7 @@ class ShopPhoneTest {
         assertNull(a.tab)
         assertEquals(listOf("GF-577", "GF-176", "GF-371", "GF-081", "GF-437"), a.readyGfs())
         assertTrue(a.preparingViews().isEmpty())
-        assertNull(a.preparingCount)
+        assertEquals(0, a.preparingCount) // "กำลังเตรียม" without a number: nothing being prepared
         assertEquals(5, a.readyCount)
     }
 
@@ -464,7 +464,7 @@ class ShopPhoneTest {
         )
         assertEquals(OrderTab.READY, empty.tab)
         assertEquals(1, empty.preparingCount)
-        assertNull(empty.readyCount)
+        assertEquals(0, empty.readyCount)
         assertTrue(!empty.readyListBlank)
         // the same for an empty Preparing tab
         val prep = ScreenAnalyzer.analyze(

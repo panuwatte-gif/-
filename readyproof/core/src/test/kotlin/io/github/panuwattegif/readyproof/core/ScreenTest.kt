@@ -378,7 +378,10 @@ class ScreenTest {
         assertEquals(3, TabDetector.readyCount(listOf(Trees.readyTab()), cfg))
         val inline = Trees.box(Trees.tab("Preparing", null), Trees.n("Ready (4)", selected = true), Trees.tab("History", null))
         assertEquals(4, TabDetector.readyCount(listOf(inline), cfg))
+        // Grab shows no number on an empty tab: 0, not "unknown"
         val none = Trees.box(Trees.tab("Preparing", null), Trees.tab("Ready", null, selected = true), Trees.tab("History", null))
-        assertNull(TabDetector.readyCount(listOf(none), cfg))
+        assertEquals(0, TabDetector.readyCount(listOf(none), cfg))
+        // no tab bar on screen at all: unknown
+        assertNull(TabDetector.readyCount(listOf(Trees.box(Trees.n("GF-001"), Trees.n("Ready in: 5:00 min"))), cfg))
     }
 }
