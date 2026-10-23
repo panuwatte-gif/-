@@ -52,6 +52,58 @@ class PrepTrackerTest {
     }
 
     @Test
+    fun aRedCardWhosePhotoFailedIsLookedAtAgainUntilItsPhotoIsSaved() {
+        val t = PrepTracker()
+        t.read(listOf(prep("GF-7", "0:10")), 0)
+        assertTrue(t.runOutUnseen(13_000, 3_000))
+        // the look finds it red, but the photo is not saved (capture failed / not on screen)
+        t.read(listOf(prep("GF-7", "0:00")), 14_000)
+        t.missedOverdue(listOf("GF-7"))
+        t.checked(15_000, setOf("GF-7"))
+        // seen and seen red, but no photo: the job is not done
+        assertTrue(t.needsOverdueShot("GF-7"))
+        assertTrue(t.runOutUnseen(30_000, 3_000))
+        // second try saves it: done, no more looks
+        t.shotOverdue(listOf("GF-7"), 31_000)
+        assertFalse(t.runOutUnseen(60_000, 3_000))
+        assertFalse(t.needsOverdueShot("GF-7"))
+    }
+
+    @Test
+    fun triesStopAfterThreeMissesOrWhenTheCardIsGone() {
+        val t = PrepTracker()
+        t.read(listOf(prep("GF-8", "0:00"), prep("GF-9", "0:00")), 0)
+        repeat(PrepTracker.MAX_MISSES) { i ->
+            t.missedOverdue(listOf("GF-8"))
+            t.checked(10_000L * (i + 1), setOf("GF-8", "GF-9"))
+        }
+        t.shotOverdue(listOf("GF-9"), 1_000)
+        // three looks without a photo: no endless switching
+        assertFalse(t.runOutUnseen(100_000, 3_000))
+        // a red card missed once, then not on the tab at the next look (pressed): no more looks
+        val u = PrepTracker()
+        u.read(listOf(prep("GF-10", "0:00")), 0)
+        u.missedOverdue(listOf("GF-10"))
+        u.checked(5_000, setOf("GF-10"))
+        assertTrue(u.runOutUnseen(20_000, 3_000))
+        u.checked(21_000, emptySet())
+        assertFalse(u.runOutUnseen(40_000, 3_000))
+    }
+
+    @Test
+    fun aRedPhotoKeptWhileTheScreenMovedCountsButOneCheckedPhotoMayFollow() {
+        val t = PrepTracker()
+        t.read(listOf(prep("GF-11", "0:00")), 0)
+        t.backupOverdue(listOf("GF-11"), 1_000)
+        assertFalse(t.runOutUnseen(60_000, 3_000))
+        // only partly on screen next time: no new photo; completely on screen: one checked photo
+        assertFalse(t.needsOverdueShot("GF-11", whole = false))
+        assertTrue(t.needsOverdueShot("GF-11", whole = true))
+        t.shotOverdue(listOf("GF-11"), 70_000)
+        assertFalse(t.needsOverdueShot("GF-11", whole = true))
+    }
+
+    @Test
     fun memoryComesBackAfterARestart() {
         val t = PrepTracker()
         t.seed(
@@ -59,9 +111,16 @@ class PrepTrackerTest {
                 Record("a", 0, RecordKind.SEEN, listOf(prep("GF-4", "5:00"), prep("GF-5", "6:00"))),
                 Record("b", 300_000, RecordKind.PREPARING, listOf(prep("GF-4", "0:00")), uri = "content://x"),
                 Record("c", 330_000, RecordKind.READY, listOf(Item("GF-5", ObsType.READY)), uri = "content://y"),
+                // red seen, its photo kept while the screen moved
+                Record("d", 340_000, RecordKind.SEEN, listOf(prep("GF-6", "0:00"))),
+                Record("e", 341_000, RecordKind.PREPARING, listOf(prep("GF-6", "0:00")), uri = "content://z", note = PrepTracker.BACKUP_NOTE),
+                // red seen, no photo yet
+                Record("f", 350_000, RecordKind.SEEN, listOf(prep("GF-12", "0:00"))),
             ),
         )
-        assertEquals(setOf("GF-4"), t.known())
+        assertEquals(setOf("GF-4", "GF-6", "GF-12"), t.known())
         assertFalse(t.needsOverdueShot("GF-4"))
+        assertFalse(t.needsOverdueShot("GF-6", whole = false))
+        assertTrue(t.needsOverdueShot("GF-12"))
     }
 }

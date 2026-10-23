@@ -111,9 +111,14 @@ object TabDetector {
         return null
     }
 
-    /** Number badge on the Preparing tab ("กำลังเตรียม 4"); null when it shows none. */
+    /** Number badge on the Preparing tab ("กำลังเตรียม 4"); 0 when the tab shows none, null = tab not found. */
     fun preparingCount(roots: List<UiNode>, cfg: Config): Int? = tabCount(roots, cfg, cfg.preparingTabLabels)
 
+    /**
+     * The tab's count: the number after its name ("กำลังเตรียม 4") or in a badge right after it.
+     * Grab shows no number when the tab is empty, so the name alone is 0. Null only when the tab
+     * name itself cannot be found: unknown, never taken for 0.
+     */
     private fun tabCount(roots: List<UiNode>, cfg: Config, labels: List<String>): Int? {
         val gfx = cfg.gfExtractor()
         for (root in roots) {
@@ -124,13 +129,13 @@ object TabDetector {
                 TRAILING_NUMBER.find(TextNorm.clean(s).substring(TextNorm.clean(label).length))
                     ?.let { return it.groupValues[1].toInt() }
                 // badge as its own element next to the label
-                val siblings = n.parent?.children ?: return null
+                val siblings = n.parent?.children ?: return 0
                 val idx = siblings.indexOfFirst { it === n }
                 for (i in idx + 1 until siblings.size) {
                     val t = siblings[i].collectTexts(4).firstOrNull() ?: continue
-                    return NUMBER.find(TextNorm.clean(t))?.groupValues?.get(1)?.toInt()
+                    return NUMBER.find(TextNorm.clean(t))?.groupValues?.get(1)?.toInt() ?: 0
                 }
-                return null
+                return 0
             }
         }
         return null

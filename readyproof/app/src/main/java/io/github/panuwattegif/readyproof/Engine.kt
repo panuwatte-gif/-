@@ -149,6 +149,8 @@ class Engine(private val service: ProofService) {
     private var lastLookCount = 0
     private var lastPrepVisitAt = 0L
     private var lastPrepWaitNoteAt = 0L
+    /** Looks at the Preparing tab in a row that could not reach it (opened less often after 3). */
+    private var prepMisses = 0
     /** Last time the whole Ready list was known: an order first seen later was pressed after this. */
     private var lastCompleteLookAt = 0L
     /** Driver (or customer) at the shop: when it was first seen, and the last time it was not yet. */
@@ -386,9 +388,9 @@ class Engine(private val service: ProofService) {
         val now = System.currentTimeMillis()
         val s = first
         val listed = s.a.readyGfs()
-        val count = s.a.readyCount
+        // a tab without a number counts 0; with orders listed that is Grab lagging: unknown
+        val count = s.a.readyCount?.takeIf { it > 0 || listed.isEmpty() }
         noteSeen(s, now)
-        prepTracker.left(listed)
         // The whole list is on screen: whatever is not listed has been picked up.
         // Grab shows a count on the tab whenever orders wait: an empty list without one is empty
         val whole = if (count != null) listed.size >= count else (s.a.views.isEmpty() && !loading(s)) || !mayOverflow(s)
@@ -427,29 +429,33 @@ class Engine(private val service: ProofService) {
      */
     private suspend fun maybeVisitPreparing(s: Screen, personBusy: Boolean) {
         val c = cfg
-        val count = s.a.preparingCount ?: 0
-        if (count < lastPrepCount) lastPrepCount = count
+        // null = the count could not be read: unknown, never taken for 0
+        val count = s.a.preparingCount
+        if (count != null && count < lastPrepCount) lastPrepCount = count
         if (!c.watchPreparing || !autoNavigation() || eod == Eod.RUNNING) return
         val up = SystemClock.uptimeMillis()
+        val newOrder = count != null && count > lastPrepCount
         if (personBusy || s.dialog) {
             // say why nothing happens when a look is due (at most every 2 minutes)
-            if (count > lastPrepCount && up - lastPrepWaitNoteAt > 120_000L) {
+            if (newOrder && up - lastPrepWaitNoteAt > 120_000L) {
                 lastPrepWaitNoteAt = up
                 Diagnostics.note(service, "preparing: new order, waiting (" + (if (s.dialog) "pop-up on screen" else "phone in use") + ")")
             }
             return
         }
-        if (up - lastPrepVisitAt < PREP_MIN_GAP_MS) return
+        val gap = if (prepMisses >= 3) PREP_RECHECK_MS / 2 else PREP_MIN_GAP_MS
+        if (up - lastPrepVisitAt < gap) return
         val why = when {
-            count > lastPrepCount -> "new order"
+            newOrder -> "new order"
             prepTracker.runOutUnseen(System.currentTimeMillis(), PREP_RUNOUT_GRACE_MS) -> "time ran out"
-            count > 0 && up - lastPrepVisitAt > PREP_RECHECK_MS -> "check"
+            // count unreadable: the orders already being followed tell whether anything is preparing
+            (count ?: prepTracker.known().size) > 0 && up - lastPrepVisitAt > PREP_RECHECK_MS -> "check"
             else -> return
         }
-        visitPreparing(why, count)
+        visitPreparing(why)
     }
 
-    private suspend fun visitPreparing(why: String, countBefore: Int): Unit = automate {
+    private suspend fun visitPreparing(why: String): Unit = automate {
         val c = cfg
         lastPrepVisitAt = SystemClock.uptimeMillis()
         setWhere("กำลังดูแท็บกำลังเตรียม แล้วจะกลับแท็บ Ready")
@@ -458,16 +464,23 @@ class Engine(private val service: ProofService) {
             delay(1_200) // the list may take a moment to show
             first = reader.read(c)
         }
-        // There for sure: orders with a countdown, or an empty list (nothing waiting for a driver).
-        val there = first != null && (first.a.tab == OrderTab.PREPARING || (first.a.tabsVisible && first.a.views.isEmpty()))
+        // Only a screen that shows it is the Preparing tab counts (orders with a countdown, or the
+        // empty tab's own title); an empty list alone may still be the Ready tab.
+        val there = first != null && first.a.tab == OrderTab.PREPARING
+        // Its count says 0: nothing is being prepared, whichever tab is open.
+        val emptyByCount = !there && first?.a?.preparingCount == 0
         val read = LinkedHashMap<String, String?>()
         var count: Int? = null
         var pages = 0
+        if (emptyByCount) {
+            prepTracker.complete(emptyList())
+            lastPrepCount = 0
+        }
         if (first != null && there) {
             var s: Screen = first
             referenceDump(s)
             count = s.a.preparingCount
-            onPreparing(s).forEach { read[it.gf] = it.countdown }
+            onPreparing(s, visit = true).forEach { read[it.gf] = it.countdown }
             // Further down with the scroll command only, never a finger: these orders carry their
             // own "Ready" button.
             while (count != null && read.size < count && pages < MAX_PREP_PAGES) {
@@ -475,28 +488,35 @@ class Engine(private val service: ProofService) {
                 if (next.a.tab != OrderTab.PREPARING) break
                 s = next
                 pages++
-                onPreparing(s).forEach { read[it.gf] = it.countdown }
+                onPreparing(s, visit = true).forEach { read[it.gf] = it.countdown }
             }
             repeat(pages) { s = move(s, forward = false, drag = false) ?: return@repeat }
-            if (count != null && read.size >= count) prepTracker.complete(read.keys)
-            prepTracker.checked(System.currentTimeMillis())
-            lastPrepCount = countBefore
+            val whole = count != null && read.size >= count
+            if (whole) prepTracker.complete(read.keys)
+            // a red card still waiting for its photo keeps its second look unless the whole list was seen without it
+            prepTracker.checked(System.currentTimeMillis(), if (whole) read.keys else null)
+            if (count != null) lastPrepCount = count
         }
+        prepMisses = if (there || emptyByCount) 0 else prepMisses + 1
         Diagnostics.note(
             service,
-            if (there) {
-                "preparing ($why): tab $count, seen ${read.size} (${read.entries.joinToString(",") { "${it.key} ${it.value}" }}), pages $pages"
-            } else {
-                "preparing ($why): did not reach the Preparing tab"
+            when {
+                there -> "preparing ($why): tab $count, seen ${read.size} (${read.entries.joinToString(",") { "${it.key} ${it.value}" }}), pages $pages"
+                emptyByCount -> "preparing ($why): its tab counts 0"
+                else -> "preparing ($why): did not reach the Preparing tab ($prepMisses in a row)"
             },
         )
+        if (prepMisses == 3) problem("เปิดแท็บกำลังเตรียมไม่สำเร็จ 3 ครั้งติด — แอปจะลองใหม่ทุก 2–3 นาที (ออเดอร์ที่รออยู่ยังติดตามต่อ)")
         if (!openTab(c.readyTabLabels, OrderTab.READY)) {
             problem("กลับแท็บ Ready ไม่สำเร็จหลังดูแท็บกำลังเตรียม — กรุณาเปิด Grab ที่แท็บพร้อมจัดส่ง")
         }
     }
 
-    /** The Preparing tab on screen: note each order's countdown, photograph a red 0:00 card once. */
-    private suspend fun onPreparing(s: Screen): List<Item> {
+    /**
+     * The Preparing tab on screen: note each order's countdown, photograph a red 0:00 card once.
+     * [visit]: the app opened the tab itself (a red card it could not photograph counts as a try).
+     */
+    private suspend fun onPreparing(s: Screen, visit: Boolean = false): List<Item> {
         val now = System.currentTimeMillis()
         val views = s.a.preparingViews()
         val items = views.flatMap { v -> v.items.filter { it.type == ObsType.PREPARING } }
@@ -512,15 +532,55 @@ class Engine(private val service: ProofService) {
             )
         }
         val red = views.filter { v ->
-            v.full && v.items.any { it.type == ObsType.PREPARING && it.dueSeconds == 0 } && prepTracker.needsOverdueShot(v.gf)
+            v.items.any { it.type == ObsType.PREPARING && it.dueSeconds == 0 } && prepTracker.needsOverdueShot(v.gf, v.full)
         }
-        if (red.isNotEmpty() && cfg.captureReady) {
-            val (ok, _) = shoot(RecordKind.PREPARING, s, red, null, note = "หมดเวลาในแท็บกำลังเตรียม") { v ->
-                v.items.filter { it.type == ObsType.PREPARING }
-            }
-            prepTracker.shotOverdue(ok.map { it.gf }, now)
-        }
+        if (red.isNotEmpty() && cfg.captureReady) shootRed(s, red, visit)
         return items
+    }
+
+    /**
+     * Red 0:00 cards: photographed at once, and the photo is kept even when the screen moved
+     * while it was taken (marked to look at), because the card may be gone a moment later. An
+     * order counts as photographed only once its file is saved; otherwise it is looked at again.
+     */
+    private suspend fun shootRed(s: Screen, red: List<CardView>, visit: Boolean) {
+        val shootable = red.filter { it.full || it.gfClear }
+        prepTracker.missedOverdue(red.filter { it !in shootable }.map { it.gf }, counts = visit)
+        if (shootable.isEmpty()) return
+        val t = System.currentTimeMillis()
+        val bitmap = capture.take()
+        if (bitmap == null) {
+            prepTracker.missedOverdue(shootable.map { it.gf }, counts = visit)
+            problem("แคปหน้าจอไม่สำเร็จ: ${capture.lastError ?: "-"}", kind = "capture")
+            return
+        }
+        val after = reader.read(cfg)
+        val checked = shootable.filter { b ->
+            b.full && after != null && after.a.views.any { a ->
+                a.gf == b.gf && a.full && sameBoxes(a.keyBoxes, b.keyBoxes) &&
+                    a.items.any { it.type == ObsType.PREPARING && it.dueSeconds == 0 }
+            }
+        }
+        val record = capture.save(
+            bitmap, RecordKind.PREPARING, t,
+            CaptureMeta(
+                items = shootable.flatMap { v -> v.items.filter { it.type == ObsType.PREPARING } }, visible = s.a.visible,
+                note = if (checked.size == shootable.size) "หมดเวลาในแท็บกำลังเตรียม" else PrepTracker.BACKUP_NOTE, shopId = shop(),
+            ),
+        )
+        if (record == null) {
+            prepTracker.missedOverdue(shootable.map { it.gf }, counts = visit)
+            return
+        }
+        prepTracker.shotOverdue(checked.map { it.gf }, t)
+        prepTracker.backupOverdue(shootable.filter { it !in checked }.map { it.gf }, t)
+        lastShotText = record.kind.label + " " + record.gfs.joinToString(", ") + " · " + ReportText.time(record.t, zone)
+        ProofService.lastCaptureText = lastShotText
+        Diagnostics.note(
+            service,
+            "shot PREPARING 0:00 ${shootable.joinToString(",") { it.gf }}" +
+                if (checked.size < shootable.size) " (kept to look at: ${shootable.filter { it !in checked }.joinToString(",") { it.gf }})" else "",
+        )
     }
 
     /**
@@ -576,6 +636,8 @@ class Engine(private val service: ProofService) {
         val views = s.a.readyViews()
         val fresh = views.filter { tracker.stay(it.gf) == null }
         tracker.seen(views.map { it.gf }, now)
+        // in the Ready tab: no more looks at the Preparing tab for these (also when found further down)
+        prepTracker.left(views.map { it.gf })
         if (fresh.isEmpty()) return
         RecordStore.append(
             service,
@@ -706,7 +768,8 @@ class Engine(private val service: ProofService) {
      */
     private suspend fun lookBelow(start: Screen): Boolean = automate {
         var s = start
-        val count = s.a.readyCount
+        // as in [onReady]: no number on the tab while orders are listed = unknown, not 0
+        val count = s.a.readyCount?.takeIf { it > 0 || s.a.readyGfs().isEmpty() }
         val seen = LinkedHashSet(s.a.readyGfs())
         var pages = 0
         var moves = 0

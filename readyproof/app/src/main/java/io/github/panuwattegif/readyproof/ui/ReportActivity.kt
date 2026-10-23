@@ -284,15 +284,17 @@ class ReportActivity : Activity() {
         val head = c.gf + " ล่าช้า " + (c.delayMin?.let { "$it นาที" } ?: "(ไม่ระบุนาที)")
         Ui.text(card, head, 16f, colorOf(c.verdict), bold = true)
         c.doneAt?.let { Ui.text(card, "เสร็จสมบูรณ์ " + Parsers.hhmm(it.toLocalTime()), 14f, Ui.MUTED) }
-        c.readyShot?.let {
-            Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.timeSec(c.readyAt ?: it.t, zone) + (it.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
+        val shot = c.readyShot
+        if (shot != null) {
+            Ui.text(card, "อยู่ในแท็บ Ready ตั้งแต่ " + ReportText.timeSec(c.readyAt ?: shot.t, zone) + (shot.status?.let { s -> " · $s" } ?: ""), 14f, topDp = 4)
+        } else {
+            c.readyAt?.let { Ui.text(card, "เห็นในแท็บ Ready ตั้งแต่ " + ReportText.timeSec(it, zone) + " แต่ไม่มีภาพ — ส่ง Grab ไม่ได้", 14f, Ui.AMBER, topDp = 4) }
         }
         val p = c.prep
         when {
-            c.readyShot == null -> {}
-            p == null -> Ui.text(card, "ไม่มีข้อมูลหน้ากำลังเตรียมของออเดอร์นี้", 13f, Ui.AMBER)
+            p == null -> if (c.readyAt != null) Ui.text(card, "ไม่มีข้อมูลหน้ากำลังเตรียมของออเดอร์นี้", 13f, Ui.AMBER)
             p.ranOut -> Ui.text(card, "หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน " + ReportText.timeSec(p.readAt, zone) +
-                " — ยังไม่ได้กด", 14f, Ui.RED)
+                " — ยังไม่ได้กด" + if (p.overdueShot == null) " (ไม่มีภาพ)" else "", 14f, Ui.RED)
             else -> Ui.text(
                 card,
                 "ต้องกดภายใน " + ReportText.timeSec(p.deadline, zone) + " (หน้ากำลังเตรียมเหลือ " + p.countdown + " ตอน " +
