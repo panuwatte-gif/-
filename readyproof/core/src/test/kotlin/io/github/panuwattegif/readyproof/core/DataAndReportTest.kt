@@ -446,7 +446,7 @@ class DataAndReportTest {
         assertTrue(text.contains("GF-022 ล่าช้า 6 นาที (เสร็จ 16:27) — อยู่ในแท็บ Ready ตั้งแต่ 15:49:33 \"GF-022 คนขับของคุณมาถึงแล้ว 1 รายการ\" · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 15:47:05 มีภาพ"), text)
         assertTrue(text.contains("GF-328 ล่าช้า 5 นาที (เสร็จ 12:22) — อยู่ในแท็บ Ready ตั้งแต่ 12:02:25 \"GF-328 กำลังค้นหาคนขับ... 1 รายการ\" · ต้องกดภายใน 12:01:40 (อ่านได้ 1:40 ตอน 12:00:00) ช้าไป 0:45"), text)
         assertTrue(text.contains("GF-204 ล่าช้า 4 นาที (เสร็จ 11:42) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:40 \"GF-204 กำลังค้นหาคนขับ... 2 รายการ\" · ต้องกดภายใน 11:11:30 (อ่านได้ 6:30 ตอน 11:05:00) เหลือเวลา 1:50"), text)
-        assertTrue(text.contains("· ต้องกดภายใน 13:02:00 (อ่านได้ 2:00 ตอน 13:00:00) ทันพอดี (ห่าง 0:05)"), text)
+        assertTrue(text.contains("· ต้องกดภายใน 13:02:00 (อ่านได้ 2:00 ตอน 13:00:00) ทันพอดี (ห่าง 0:05 อยู่ในช่วงเผื่อคลาดเคลื่อน)"), text)
         assertTrue(text.contains("GF-191 ล่าช้า 3 นาที (เสร็จ 11:51) — อยู่ในแท็บ Ready ตั้งแต่ 10:40:00 · ไม่มีข้อมูลหน้ากำลังเตรียม"), text)
         assertTrue(text.contains("GF-500 ล่าช้า 5 นาที (เสร็จ 15:44) — อยู่ในแท็บ Ready ตั้งแต่ 15:20:00 · ต้องกดภายใน 15:02:00 " +
             "แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ระหว่าง 14:58:00–15:20:00)"), text)
@@ -461,6 +461,25 @@ class DataAndReportTest {
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.contains("2026-10-19,GF-204,completed,4,11:05:00,11:11:30,11:09:36,11:09:40,11:14:58,11:15:02,11:16:25,11:16:30,11:42"), times)
         assertEquals(7, r.orders.size)
+    }
+
+    @Test
+    fun theSlackIsOnlyForWhatThePhoneCouldNotSee() {
+        val deadline = 1_000_000L
+        val prep = PrepCheck(deadline - 60_000, "1:00", deadline, null)
+        // in the Ready tab before the time ran out
+        assertEquals(Verdict.IN_TIME, ReportBuilder.judge(deadline - 1_000, prep, deadline - 3_000))
+        // the whole Ready list was seen without it 7 s after the time ran out: late, slack or not
+        assertEquals(Verdict.LATE, ReportBuilder.judge(deadline + 8_000, prep, deadline + 7_000))
+        // last whole look before the time ran out, seen 8 s after: closer than the phone can tell
+        assertEquals(Verdict.IN_TIME, ReportBuilder.judge(deadline + 8_000, prep, deadline - 2_000))
+        // ... with the slack set to 0 it is left open, not called late
+        assertEquals(Verdict.UNCHECKED, ReportBuilder.judge(deadline + 8_000, prep, deadline - 2_000, slackMs = 0))
+        // red 0:00 seen: late whatever came after
+        assertEquals(Verdict.LATE, ReportBuilder.judge(deadline + 1_000, PrepCheck(deadline, "0:00", deadline, null), null))
+        // the setting is kept and limited to 0–60 s
+        assertEquals(0, ConfigCodec.decode(ConfigCodec.encode(Config(pressSlackSeconds = 0))).pressSlackSeconds)
+        assertEquals(60, Config(pressSlackSeconds = 300).sanitized().pressSlackSeconds)
     }
 
     @Test

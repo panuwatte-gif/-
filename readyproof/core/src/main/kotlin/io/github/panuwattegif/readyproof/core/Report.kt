@@ -246,11 +246,7 @@ object ReportBuilder {
     /** How long before a Ready photo an order must have been seen in the Ready tab to count as shown in it. */
     private const val SHOWN_LOOKBACK_MS = 90 * 60_000L
 
-    /**
-     * Reaching the Ready tab this soon after the countdown ran out still counts as in time: the app
-     * notices an order in the Ready tab a few seconds after the press when it was looking at the
-     * Preparing tab just then, and the countdown itself is read to the second.
-     */
+    /** Default for [Config.pressSlackSeconds]. */
     const val PRESS_TOLERANCE_MS = 10_000L
 
     /** History shows the finish to the minute: its events may run to the end of that minute. */
@@ -258,17 +254,19 @@ object ReportBuilder {
 
     /**
      * Pressed in time or not, from the Preparing tab: the last reading of the countdown before the
-     * order reached the Ready tab decides. In the Ready tab by the time it ran out: in time. Still
-     * red 0:00 on the Preparing tab, or a whole look at the Ready list without it after the time
-     * ran out: late. Otherwise (no reading, or nobody watching when it ran out) it is left open,
-     * never called late on a guess.
+     * order reached the Ready tab decides. What the phone saw for certain comes first: in the
+     * Ready tab before the time ran out = in time; still red 0:00 on the Preparing tab, or a whole
+     * look at the Ready list without it after the time ran out = late. Only when it could not see
+     * which came first does [slackMs] apply (it notices a press a few seconds late); beyond that
+     * it is left open, never called late on a guess.
      */
-    fun judge(readyAt: Long?, prep: PrepCheck?, readyAfter: Long? = null): Verdict = when {
+    fun judge(readyAt: Long?, prep: PrepCheck?, readyAfter: Long? = null, slackMs: Long = PRESS_TOLERANCE_MS): Verdict = when {
         readyAt == null -> Verdict.NO_EVIDENCE
         prep == null -> Verdict.UNCHECKED
         prep.ranOut -> Verdict.LATE
-        readyAt <= prep.deadline + PRESS_TOLERANCE_MS -> Verdict.IN_TIME
+        readyAt <= prep.deadline -> Verdict.IN_TIME
         readyAfter != null && readyAfter >= prep.deadline -> Verdict.LATE
+        readyAt <= prep.deadline + slackMs -> Verdict.IN_TIME
         else -> Verdict.UNCHECKED
     }
 
@@ -389,7 +387,7 @@ object ReportBuilder {
                 else timelineOf(sorted, a.gf, from, to + MINUTE_MS, readyAt, prep)
             DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps,
                 if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY",
-                judge(readyAt, prep, timeline.readyAfter), readyAt, prep, timeline)
+                judge(readyAt, prep, timeline.readyAfter, cfg.pressSlackSeconds * 1000L), readyAt, prep, timeline)
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
 
         fun gfsOf(rs: List<Record>, type: ObsType) =
@@ -601,7 +599,7 @@ object ReportText {
                 c.lateMs?.let { ms ->
                     when {
                         ms <= 0 -> append(" เหลือเวลา ").append(minSec(-ms))
-                        c.verdict == Verdict.IN_TIME -> append(" ทันพอดี (ห่าง ").append(minSec(ms)).append(')')
+                        c.verdict == Verdict.IN_TIME -> append(" ทันพอดี (ห่าง ").append(minSec(ms)).append(" อยู่ในช่วงเผื่อคลาดเคลื่อน)")
                         else -> append(" ช้าไป ").append(minSec(ms))
                     }
                 }
