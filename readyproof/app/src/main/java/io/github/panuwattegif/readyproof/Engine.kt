@@ -71,6 +71,8 @@ class Engine(private val service: ProofService) {
         private const val LAUNCH_GAP_MS = 5 * 60_000L
         /** After Grab could not be brought back: try again sooner. */
         private const val LAUNCH_RETRY_MS = 60_000L
+        /** The phone's own panel over Grab (no app on screen): closed after this long. */
+        private const val PANEL_GRACE_MS = 30_000L
         private const val BACK_GAP_MS = 10 * 60_000L
         private const val PROBLEM_NOTE_GAP_MS = 30 * 60_000L
         private const val BOX_TOLERANCE = 3
@@ -147,6 +149,7 @@ class Engine(private val service: ProofService) {
     private var lastLaunchAt = 0L
     /** Tries in a row that did not bring Grab back on screen. */
     private var launchFails = 0
+    private var lastPanelCloseAt = 0L
     private var lastBackAt = 0L
     private var lastBlankTapAt = 0L
     /** Since when Grab has been on a screen without its order tabs (0 = it is on them). */
@@ -1283,6 +1286,23 @@ class Engine(private val service: ProofService) {
                 return
             }
             if (!screenUsable()) return
+            // Only the phone's own windows on screen, no app at all (26 Oct 14:51–16:09, 75 minutes):
+            // close them after 30 s instead of waiting for the phone to be free, so Grab is not
+            // left hidden. A person pulling the panel down still has 30 s to read it.
+            if (!w.appOnScreen && now - lastGrabSeenAt > PANEL_GRACE_MS && now - lastPanelCloseAt > PANEL_GRACE_MS) {
+                lastPanelCloseAt = now
+                lastLaunchAt = now
+                val after = clearPhoneScreen(c, w)
+                if (after.grabVisible) {
+                    lastGrabSeenAt = SystemClock.uptimeMillis()
+                    launchFails = 0
+                } else {
+                    launchFails++
+                    Diagnostics.note(service, "guard: Grab did not come up (on screen: ${after.appsText()}), $launchFails in a row")
+                    problem("Grab ไม่ได้อยู่บนจอ และเปิดกลับเองไม่ได้ — กรุณาเปิด Grab ที่แท็บพร้อมจัดส่ง")
+                }
+                return
+            }
             val gap = if (launchFails > 0) LAUNCH_RETRY_MS else LAUNCH_GAP_MS
             if (now - lastGrabSeenAt > idleMs && now - lastLaunchAt > gap) {
                 lastLaunchAt = now
