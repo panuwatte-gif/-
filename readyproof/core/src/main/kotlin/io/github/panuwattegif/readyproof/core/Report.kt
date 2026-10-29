@@ -578,7 +578,7 @@ object ReportText {
     fun grabTimeline(c: DelayCase, zone: ZoneId): String = grabTimelineLines(c, zone).joinToString(" · ")
 
     /**
-     * One line of times for an order, in the owner's order (25 Oct): order in, ready, driver
+     * One line of times for an order, in the owner's order (29 Oct): order in, ready, driver
      * found, driver took it, delivered ("ออเดอร์เข้า ไม่เกิน 15:38:10 · ต้องพร้อมภายใน 15:47:00 · ...").
      */
     fun timelineText(t: Timeline, doneAt: LocalDateTime?, zone: ZoneId): String = listOfNotNull(
