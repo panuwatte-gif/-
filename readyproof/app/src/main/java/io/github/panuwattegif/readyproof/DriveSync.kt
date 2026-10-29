@@ -30,8 +30,9 @@ object DriveSync {
     private fun meta(ctx: Context, key: String) = File(root(ctx), "$key.json")
     private fun digest(bytes: ByteArray, algorithm: String) = MessageDigest.getInstance(algorithm)
         .digest(bytes).joinToString("") { "%02x".format(it) }
+    // PREPARING: the red 0:00 cards, so the shop can see on Drive which orders were really late.
     private fun validPhoto(r: Record) = r.uri != null && r.items.any {
-        it.type in listOf(ObsType.READY, ObsType.DELAY, ObsType.DONE, ObsType.CANCELLED)
+        it.type in listOf(ObsType.READY, ObsType.DELAY, ObsType.DONE, ObsType.CANCELLED, ObsType.PREPARING)
     }
 
     fun offerRecord(ctx: Context, r: Record) {
@@ -80,6 +81,7 @@ object DriveSync {
         text: String,
         manifest: String,
         diagnostics: String? = null,
+        times: String? = null,
     ) {
         val app = ctx.applicationContext
         runCatching { io.execute {
@@ -103,6 +105,10 @@ object DriveSync {
                 }
                 keys += stage(app, shopId, "summary-$day.txt", "text/plain", text.toByteArray())
                 keys += stage(app, shopId, "manifest-$day.json", "application/json", manifest.toByteArray())
+                // Every order's times (order in, ready, driver found, picked up, delivered): opens in Sheets.
+                times?.takeIf { it.isNotBlank() }?.let {
+                    keys += stage(app, shopId, "times-$day.csv", "text/csv", it.toByteArray())
+                }
                 // What the phone did that day, for remote troubleshooting (no photos inside).
                 diagnostics?.takeIf { it.isNotBlank() }?.let {
                     keys += stage(app, shopId, "diagnostics-$day.txt", "text/plain", it.toByteArray())

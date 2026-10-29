@@ -63,6 +63,10 @@ data class Config(
     val countdownAny: List<String> = listOf("Ready in", "พร้อมจัดส่งใน"),
     /** An order's line once its driver (or the customer, for pickup) is at the shop. */
     val arrivedAny: List<String> = listOf("มาถึงแล้ว", "has arrived", "arrived"),
+    /** An order's line while Grab is still looking for a driver. */
+    val searchingAny: List<String> = listOf("กำลังค้นหาคนขับ", "Finding a driver", "Finding driver"),
+    /** An order's line once a driver took the job (on the way, or already at the shop). */
+    val driverFoundAny: List<String> = listOf("คนขับจะมารับ", "คนขับของคุณมาถึง", "Driver arriving", "Your driver has arrived"),
     /** Labels of the totals at the top of History ("Completed 77", "Cancelled 0"). */
     val completedLabels: List<String> = listOf("Completed", "เสร็จสมบูรณ์"),
     val cancelledLabels: List<String> = listOf("Cancelled", "ยกเลิก"),
@@ -187,7 +191,7 @@ data class Config(
 
 object ConfigCodec {
     /** Bump when defaults change in a way saved settings must pick up (see [migrate]). */
-    const val VERSION = 9
+    const val VERSION = 10
 
     fun encode(c: Config): String = Json.write(
         linkedMapOf(
@@ -211,6 +215,8 @@ object ConfigCodec {
             "delayAny" to c.delayAny,
             "countdownAny" to c.countdownAny,
             "arrivedAny" to c.arrivedAny,
+            "searchingAny" to c.searchingAny,
+            "driverFoundAny" to c.driverFoundAny,
             "completedLabels" to c.completedLabels,
             "cancelledLabels" to c.cancelledLabels,
             "evidenceWindowHours" to c.evidenceWindowHours,
@@ -260,6 +266,8 @@ object ConfigCodec {
             delayAny = m.strList("delayAny") ?: d.delayAny,
             countdownAny = m.strList("countdownAny") ?: d.countdownAny,
             arrivedAny = m.strList("arrivedAny") ?: d.arrivedAny,
+            searchingAny = m.strList("searchingAny") ?: d.searchingAny,
+            driverFoundAny = m.strList("driverFoundAny") ?: d.driverFoundAny,
             completedLabels = m.strList("completedLabels") ?: d.completedLabels,
             cancelledLabels = m.strList("cancelledLabels") ?: d.cancelledLabels,
             evidenceWindowHours = m.int("evidenceWindowHours") ?: d.evidenceWindowHours,
@@ -293,7 +301,7 @@ object ConfigCodec {
      * next shot); v5 adds opening hours, switching off at night and shared photos for bursts;
      * v6 knows that a delivered order ("จัดส่งแล้ว", an order's detail page) is never waiting;
      * v7 knows self-pickup orders waiting for their customer; v8 reads the Preparing countdown;
-     * v9 notes when the driver is at the shop.
+     * v9 notes when the driver is at the shop; v10 when a driver was found.
      * Settings of the old "Ready button" feature are simply ignored.
      */
     fun migrate(c: Config, from: Int): Config {
@@ -309,6 +317,8 @@ object ConfigCodec {
             delayAny = merge(c.delayAny, d.delayAny),
             countdownAny = merge(c.countdownAny, d.countdownAny),
             arrivedAny = merge(c.arrivedAny, d.arrivedAny),
+            searchingAny = merge(c.searchingAny, d.searchingAny),
+            driverFoundAny = merge(c.driverFoundAny, d.driverFoundAny),
             showToast = if (from < 4) false else c.showToast,
         )
     }
@@ -346,6 +356,8 @@ fun Config.sanitized(): Config {
         delayAny = delayAny.cleanList(),
         countdownAny = countdownAny.cleanList(),
         arrivedAny = arrivedAny.cleanList(),
+        searchingAny = searchingAny.cleanList(),
+        driverFoundAny = driverFoundAny.cleanList(),
         completedLabels = completedLabels.cleanList(),
         cancelledLabels = cancelledLabels.cleanList(),
         closeTime = if (Config.parseTime(closeTime) != null) closeTime.trim() else d.closeTime,
