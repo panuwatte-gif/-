@@ -44,6 +44,13 @@ class Actor(private val service: AccessibilityService) {
 
     fun back(): Boolean = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
+    /** A button of the phone itself (back, home, close the notification panel). */
+    fun global(action: Int): Boolean = try {
+        service.performGlobalAction(action)
+    } catch (e: Exception) {
+        false
+    }
+
     fun launch(pkg: String): Boolean = try {
         val intent = service.packageManager.getLaunchIntentForPackage(pkg)
         if (intent == null) {

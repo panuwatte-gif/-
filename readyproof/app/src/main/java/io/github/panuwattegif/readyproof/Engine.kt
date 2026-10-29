@@ -1,7 +1,9 @@
 package io.github.panuwattegif.readyproof
 
+import android.accessibilityservice.AccessibilityService
 import android.app.KeyguardManager
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Gravity
@@ -67,6 +69,8 @@ class Engine(private val service: ProofService) {
         private const val MAX_PAGES = 60
         private const val MAX_HISTORY_PAGES = 150
         private const val LAUNCH_GAP_MS = 5 * 60_000L
+        /** After Grab could not be brought back: try again sooner. */
+        private const val LAUNCH_RETRY_MS = 60_000L
         private const val BACK_GAP_MS = 10 * 60_000L
         private const val PROBLEM_NOTE_GAP_MS = 30 * 60_000L
         private const val BOX_TOLERANCE = 3
@@ -141,6 +145,8 @@ class Engine(private val service: ProofService) {
     private var lastBusyEndAt = 0L
     private var lastGrabSeenAt = 0L
     private var lastLaunchAt = 0L
+    /** Tries in a row that did not bring Grab back on screen. */
+    private var launchFails = 0
     private var lastBackAt = 0L
     private var lastBlankTapAt = 0L
     /** Since when Grab has been on a screen without its order tabs (0 = it is on them). */
@@ -535,7 +541,8 @@ class Engine(private val service: ProofService) {
         val now = System.currentTimeMillis()
         val views = s.a.preparingViews()
         val items = views.flatMap { v -> v.items.filter { it.type == ObsType.PREPARING } }
-        noteDriver(views, now, readyTab = false)
+        // every card: an order of a shared pickup can show its driver here ("GF-654 คนขับจะมารับใน", 26 Oct)
+        noteDriver(s.a.views, now, readyTab = false)
         val known = prepTracker.known()
         // an order seen for the first time came in after the Preparing list was last known without it
         val fresh = prepTracker.read(items, now).map {
@@ -644,8 +651,8 @@ class Engine(private val service: ProofService) {
 
     /**
      * The first time an order's line says a driver took the job, and that the driver (or the
-     * customer) is at the shop, each with the last time it did not yet. Only Ready-tab cards
-     * show the driver: a Preparing card without that line says nothing about it.
+     * customer) is at the shop, each with the last time it did not yet. A Ready-tab card always
+     * has that line; a Preparing card says something about the driver only when it shows it.
      */
     private fun noteDriver(views: List<CardView>, now: Long, readyTab: Boolean) {
         val c = cfg
@@ -655,10 +662,9 @@ class Engine(private val service: ProofService) {
             val arrived = texts.any { TextNorm.containsAny(it, c.arrivedAny) }
             val found = texts.any { TextNorm.containsAny(it, c.driverFoundAny) }
             val status = v.status ?: texts.firstOrNull()
-            if (readyTab) {
-                if (!found && texts.any { TextNorm.containsAny(it, c.searchingAny) }) searchingAt[v.gf] = now
-                if (!arrived) notArrivedAt[v.gf] = now
-            }
+            val searching = !found && texts.any { TextNorm.containsAny(it, c.searchingAny) }
+            if (searching) searchingAt[v.gf] = now
+            if (!arrived && (readyTab || searching || found)) notArrivedAt[v.gf] = now
             if (found && v.gf !in foundAt) {
                 foundAt[v.gf] = now
                 items += Item(v.gf, ObsType.DRIVER_FOUND, status = status, prevAt = searchingAt[v.gf])
@@ -1249,7 +1255,12 @@ class Engine(private val service: ProofService) {
             return
         }
         val w = reader.windows(c)
-        if (w.grabVisible) lastGrabSeenAt = SystemClock.uptimeMillis() else setWhere("Grab ไม่ได้เปิดอยู่บนจอ")
+        if (w.grabVisible) {
+            lastGrabSeenAt = SystemClock.uptimeMillis()
+            launchFails = 0
+        } else {
+            setWhere("Grab ไม่ได้เปิดอยู่บนจอ")
+        }
         updateAwake(w.grabVisible)
         eodTick()
         guard(w)
@@ -1272,19 +1283,22 @@ class Engine(private val service: ProofService) {
                 return
             }
             if (!screenUsable()) return
-            if (now - lastGrabSeenAt > idleMs && now - lastLaunchAt > LAUNCH_GAP_MS) {
+            val gap = if (launchFails > 0) LAUNCH_RETRY_MS else LAUNCH_GAP_MS
+            if (now - lastGrabSeenAt > idleMs && now - lastLaunchAt > gap) {
                 lastLaunchAt = now
                 // 15 Oct 17:17–17:32 four launches did not keep Grab on screen: note what was there.
                 Diagnostics.note(service, "guard: Grab not on screen (on screen: ${w.appsText()}), opening it")
                 actor.launch(c.targetPackages.first())
-                var after = w
-                for (i in 1..10) {
-                    delay(1_000)
-                    after = reader.windows(c)
-                    if (after.grabVisible) break
-                }
-                if (!after.grabVisible) {
-                    Diagnostics.note(service, "guard: Grab did not come up (on screen: ${after.appsText()})")
+                var after = waitForGrab(c, 10)
+                // 26 Oct 14:51–16:09 only the phone's own windows were on screen (no app at all) and
+                // sixteen launches never showed Grab: clear them first.
+                if (!after.grabVisible && !after.appOnScreen) after = clearPhoneScreen(c, after)
+                if (after.grabVisible) {
+                    if (launchFails > 0) Diagnostics.note(service, "guard: Grab is back on screen")
+                    launchFails = 0
+                } else {
+                    launchFails++
+                    Diagnostics.note(service, "guard: Grab did not come up (on screen: ${after.appsText()}), $launchFails in a row")
                     problem("Grab ไม่ได้อยู่บนจอ และเปิดกลับเองไม่ได้ — กรุณาเปิด Grab ที่แท็บพร้อมจัดส่ง")
                 }
             }
@@ -1325,6 +1339,41 @@ class Engine(private val service: ProofService) {
                 scheduleObserve()
             }
         }
+    }
+
+    /** Looks for Grab on screen for up to [seconds]. */
+    private suspend fun waitForGrab(c: Config, seconds: Int): WindowsState {
+        var w = reader.windows(c)
+        for (i in 1..seconds) {
+            if (w.grabVisible) break
+            delay(1_000)
+            w = reader.windows(c)
+        }
+        return w
+    }
+
+    /**
+     * Only the phone's own windows on screen (notification panel, a system pop-up ...), no app at
+     * all: close the panel, go back once, go to the home screen, a step at a time, stopping as
+     * soon as Grab shows; then open Grab again.
+     */
+    private suspend fun clearPhoneScreen(c: Config, before: WindowsState): WindowsState {
+        Diagnostics.note(service, "guard: no app on screen (${before.appsText()}), closing the phone's own windows")
+        val steps = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add("close panel" to AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+            add("back" to AccessibilityService.GLOBAL_ACTION_BACK)
+            add("home" to AccessibilityService.GLOBAL_ACTION_HOME)
+        }
+        for ((name, action) in steps) {
+            actor.global(action)
+            val w = waitForGrab(c, 2)
+            if (w.grabVisible) {
+                Diagnostics.note(service, "guard: Grab showed after $name")
+                return w
+            }
+        }
+        actor.launch(c.targetPackages.first())
+        return waitForGrab(c, 10)
     }
 
     private fun screenUsable(): Boolean {
