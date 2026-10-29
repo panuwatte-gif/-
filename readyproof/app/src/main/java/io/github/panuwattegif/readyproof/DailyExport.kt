@@ -56,12 +56,16 @@ object DailyExport {
                 .map { Json.parseObject(RecordCodec.encode(it)) }
         ))
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_manifest-$day.json", manifest)
+        val times = ReportText.timelineCsv(report, zone)
         if (Shop.fromId(shopId) != null && NightlyUploads.canRelease(day, LocalDateTime.now(zone))) {
             // Durable immutable intent also recovers a process death before the outbox task starts.
+            // Everything goes in it: a batch rebuilt from a request without them has no diagnostics
+            // (27 and 28 Oct reached Drive without them).
             saveLocal(ctx, "${shopId}_batch-request-$day.json", Json.write(linkedMapOf(
-                "shopId" to shopId, "date" to day.toString(), "text" to text, "manifest" to manifest)))
+                "shopId" to shopId, "date" to day.toString(), "text" to text, "manifest" to manifest,
+                "times" to times, "diagnostics" to diagnostics)))
         }
-        DriveSync.offerDailyBatch(ctx, day, shopId, records, text, manifest, diagnostics)
+        DriveSync.offerDailyBatch(ctx, day, shopId, records, text, manifest, diagnostics, times)
         return report
     }
 
@@ -76,7 +80,7 @@ object DailyExport {
             val manifest = request.str("manifest") ?: return@runCatching
             val text = request.str("text") ?: return@runCatching
             val records = Json.parseObject(manifest).objList("records").mapNotNull { RecordCodec.decode(Json.write(it)) }
-            DriveSync.offerDailyBatch(ctx, day, shop.id, records, text, manifest)
+            DriveSync.offerDailyBatch(ctx, day, shop.id, records, text, manifest, request.str("diagnostics"), request.str("times"))
         } }
     }
 

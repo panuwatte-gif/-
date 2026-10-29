@@ -156,8 +156,16 @@ class Engine(private val service: ProofService) {
     /** Driver (or customer) at the shop: when it was first seen, and the last time it was not yet. */
     private val arrivedAt = HashMap<String, Long>()
     private val notArrivedAt = HashMap<String, Long>()
+    /** A driver took the job: when it was first seen, and the last time Grab was still looking for one. */
+    private val foundAt = HashMap<String, Long>()
+    private val searchingAt = HashMap<String, Long>()
     /** The Preparing tab's count at the last look: a higher count means a new order to read. */
     private var lastPrepCount = 0
+    /**
+     * Last time the whole Preparing list was known (read whole, or its tab counted 0): an order
+     * first seen there later came in after this.
+     */
+    private var lastPrepWholeAt = 0L
     private val problemAt = HashMap<String, Long>()
     private var historyDay: String? = null
     private var lastStats: String? = null
@@ -395,7 +403,7 @@ class Engine(private val service: ProofService) {
         // Grab shows a count on the tab whenever orders wait: an empty list without one is empty
         val whole = if (count != null) listed.size >= count else (s.a.views.isEmpty() && !loading(s)) || !mayOverflow(s)
         if (whole) completeReady(listed, now)
-        noteArrivals(s.a.readyViews(), now)
+        noteDriver(s.a.readyViews(), now, readyTab = true)
         if (s.dialog && tracker.pending().isNotEmpty()) problem("Grab มีหน้าต่างเด้งบังรายการ Ready อยู่ — แคปไม่ได้จนกว่าจะปิด")
         shootNew(s)
         warnUnphotographed()
@@ -432,6 +440,7 @@ class Engine(private val service: ProofService) {
         // null = the count could not be read: unknown, never taken for 0
         val count = s.a.preparingCount
         if (count != null && count < lastPrepCount) lastPrepCount = count
+        if (count == 0) lastPrepWholeAt = System.currentTimeMillis()
         if (!c.watchPreparing || !autoNavigation() || eod == Eod.RUNNING) return
         val up = SystemClock.uptimeMillis()
         val newOrder = count != null && count > lastPrepCount
@@ -475,6 +484,7 @@ class Engine(private val service: ProofService) {
         if (emptyByCount) {
             prepTracker.complete(emptyList())
             lastPrepCount = 0
+            lastPrepWholeAt = System.currentTimeMillis()
         }
         if (first != null && there) {
             var s: Screen = first
@@ -491,8 +501,13 @@ class Engine(private val service: ProofService) {
                 onPreparing(s, visit = true).forEach { read[it.gf] = it.countdown }
             }
             repeat(pages) { s = move(s, forward = false, drag = false) ?: return@repeat }
-            val whole = count != null && read.size >= count
-            if (whole) prepTracker.complete(read.keys)
+            // exactly as many as its tab counts (a tab that counts fewer than the list shows is lagging)
+            val whole = count != null && read.size == count
+            if (whole) {
+                val now = System.currentTimeMillis()
+                noteLeftPreparing(prepTracker.complete(read.keys), now)
+                lastPrepWholeAt = now
+            }
             // a red card still waiting for its photo keeps its second look unless the whole list was seen without it
             prepTracker.checked(System.currentTimeMillis(), if (whole) read.keys else null)
             if (count != null) lastPrepCount = count
@@ -520,8 +535,12 @@ class Engine(private val service: ProofService) {
         val now = System.currentTimeMillis()
         val views = s.a.preparingViews()
         val items = views.flatMap { v -> v.items.filter { it.type == ObsType.PREPARING } }
-        noteArrivals(views, now)
-        val fresh = prepTracker.read(items, now)
+        noteDriver(views, now, readyTab = false)
+        val known = prepTracker.known()
+        // an order seen for the first time came in after the Preparing list was last known without it
+        val fresh = prepTracker.read(items, now).map {
+            if (it.gf !in known && lastPrepWholeAt > 0) it.copy(prevAt = lastPrepWholeAt) else it
+        }
         if (fresh.isNotEmpty()) {
             RecordStore.append(
                 service,
@@ -593,6 +612,8 @@ class Engine(private val service: ProofService) {
         for (stay in gone) {
             arrivedAt.remove(stay.gf)
             notArrivedAt.remove(stay.gf)
+            foundAt.remove(stay.gf)
+            searchingAt.remove(stay.gf)
             val at = stay.missingSince ?: now
             RecordStore.append(
                 service,
@@ -605,27 +626,60 @@ class Engine(private val service: ProofService) {
         }
     }
 
-    /** The first time an order's line says its driver (or customer) is at the shop, with when it did not yet. */
-    private fun noteArrivals(views: List<CardView>, now: Long) {
-        val words = cfg.arrivedAny
+    /**
+     * Orders gone from a look at the whole Preparing list: pressed ready (or taken) by then. Each
+     * is written down with when it was last seen there and what its countdown said then.
+     */
+    private fun noteLeftPreparing(gone: List<PrepTracker.Gone>, now: Long) {
+        if (gone.isEmpty()) return
+        RecordStore.append(
+            service,
+            Record(
+                id = "$now-lp${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN,
+                items = gone.map { Item(it.gf, ObsType.LEFT_PREP, countdown = it.countdown, prevAt = it.lastSeen) },
+                note = "LEFT_PREP", shopId = shop(),
+            ),
+        )
+    }
+
+    /**
+     * The first time an order's line says a driver took the job, and that the driver (or the
+     * customer) is at the shop, each with the last time it did not yet. Only Ready-tab cards
+     * show the driver: a Preparing card without that line says nothing about it.
+     */
+    private fun noteDriver(views: List<CardView>, now: Long, readyTab: Boolean) {
+        val c = cfg
+        val items = ArrayList<Item>()
         for (v in views) {
-            if (v.gf in arrivedAt) continue
-            if (v.card.texts.none { TextNorm.containsAny(it, words) }) {
-                notArrivedAt[v.gf] = now
-                continue
+            val texts = v.card.texts
+            val arrived = texts.any { TextNorm.containsAny(it, c.arrivedAny) }
+            val found = texts.any { TextNorm.containsAny(it, c.driverFoundAny) }
+            val status = v.status ?: texts.firstOrNull()
+            if (readyTab) {
+                if (!found && texts.any { TextNorm.containsAny(it, c.searchingAny) }) searchingAt[v.gf] = now
+                if (!arrived) notArrivedAt[v.gf] = now
             }
-            arrivedAt[v.gf] = now
+            if (found && v.gf !in foundAt) {
+                foundAt[v.gf] = now
+                items += Item(v.gf, ObsType.DRIVER_FOUND, status = status, prevAt = searchingAt[v.gf])
+            }
+            if (arrived && v.gf !in arrivedAt) {
+                arrivedAt[v.gf] = now
+                items += Item(v.gf, ObsType.ARRIVED, status = status, prevAt = notArrivedAt[v.gf])
+            }
+        }
+        if (items.isNotEmpty()) {
             RecordStore.append(
                 service,
                 Record(
-                    id = "$now-a${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN,
-                    items = listOf(Item(v.gf, ObsType.ARRIVED, status = v.status ?: v.card.texts.firstOrNull(), prevAt = notArrivedAt[v.gf])),
-                    note = "ARRIVED", shopId = shop(),
+                    id = "$now-a${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN, items = items,
+                    note = "DRIVER", shopId = shop(),
                 ),
             )
         }
-        if (arrivedAt.size > 300) arrivedAt.entries.removeAll { now - it.value > 6 * 3600_000L }
-        if (notArrivedAt.size > 300) notArrivedAt.entries.removeAll { now - it.value > 6 * 3600_000L }
+        for (m in listOf(arrivedAt, notArrivedAt, foundAt, searchingAt)) {
+            if (m.size > 300) m.entries.removeAll { now - it.value > 6 * 3600_000L }
+        }
     }
 
     /**

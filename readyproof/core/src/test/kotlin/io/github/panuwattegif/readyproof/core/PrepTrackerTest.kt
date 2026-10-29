@@ -123,4 +123,23 @@ class PrepTrackerTest {
         assertFalse(t.needsOverdueShot("GF-6", whole = false))
         assertTrue(t.needsOverdueShot("GF-12"))
     }
+
+    @Test
+    fun anOrderGoneFromTheWholeListIsReportedWithItsLastSighting() {
+        val t = PrepTracker()
+        t.read(listOf(prep("GF-884", "13:35"), prep("GF-528", "7:46")), 0)
+        // the countdown moves by less than 30 s: not logged, but remembered as the last sighting
+        t.read(listOf(prep("GF-884", "0:34"), prep("GF-528", "0:20")), 783_000)
+        assertEquals(listOf(PrepTracker.Gone("GF-884", 783_000, "0:34")), t.complete(listOf("GF-528")))
+        assertEquals(setOf("GF-528"), t.known())
+        // nothing more left
+        assertTrue(t.complete(listOf("GF-528")).isEmpty())
+        // after a restart, an order noted as gone is not followed again
+        val u = PrepTracker()
+        u.seed(listOf(
+            Record("a", 0, RecordKind.SEEN, listOf(prep("GF-884", "13:35"))),
+            Record("b", 824_000, RecordKind.SEEN, listOf(Item("GF-884", ObsType.LEFT_PREP, countdown = "0:34", prevAt = 783_000))),
+        ))
+        assertTrue(u.known().isEmpty())
+    }
 }

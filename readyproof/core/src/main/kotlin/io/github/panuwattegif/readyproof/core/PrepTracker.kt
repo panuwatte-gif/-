@@ -21,6 +21,9 @@ class PrepTracker {
         var overdueMisses: Int = 0,
         /** Seen red at the last look but no photo saved: look again. */
         var retry: Boolean = false,
+        /** Last time it was on the Preparing tab, and what its countdown said then. */
+        var lastSeen: Long = checkedAt,
+        var lastCountdown: String? = null,
     ) {
         val hasOverduePhoto: Boolean get() = overdueShotAt != null || overdueBackupAt != null
     }
@@ -41,12 +44,15 @@ class PrepTracker {
             val deadline = now + due * 1000L
             val e = entries[item.gf]
             if (e == null) {
-                entries[item.gf] = Entry(deadline, deadline, due == 0, now, seenRedAt = if (due == 0) now else null)
+                entries[item.gf] = Entry(deadline, deadline, due == 0, now, seenRedAt = if (due == 0) now else null,
+                    lastCountdown = item.countdown)
                 keep += item
                 continue
             }
             e.deadline = if (due == 0) minOf(e.deadline, now) else deadline
             e.checkedAt = now
+            e.lastSeen = now
+            e.lastCountdown = item.countdown
             val ranOut = due == 0
             if (ranOut && e.seenRedAt == null) e.seenRedAt = now
             if ((ranOut && !e.recordedRanOut) || (!ranOut && kotlin.math.abs(deadline - e.lastRecorded) > MOVE_MS)) {
@@ -107,10 +113,16 @@ class PrepTracker {
         }
     }
 
-    /** The whole Preparing list was on screen: orders not on it have left the tab. */
+    /** An order gone from the Preparing tab: last seen there at [lastSeen], its countdown then. */
+    data class Gone(val gf: String, val lastSeen: Long, val countdown: String?)
+
+    /** The whole Preparing list was on screen: orders not on it have left the tab (returned). */
     @Synchronized
-    fun complete(listed: Collection<String>) {
-        entries.keys.retainAll(listed.toSet())
+    fun complete(listed: Collection<String>): List<Gone> {
+        val keep = listed.toSet()
+        val gone = entries.filterKeys { it !in keep }.map { (gf, e) -> Gone(gf, e.lastSeen, e.lastCountdown) }
+        entries.keys.retainAll(keep)
+        return gone
     }
 
     /** These orders reached the Ready tab. */
@@ -152,12 +164,14 @@ class PrepTracker {
                         e.lastRecorded = deadline
                         e.recordedRanOut = due == 0
                         e.checkedAt = maxOf(e.checkedAt, r.t)
+                        e.lastSeen = maxOf(e.lastSeen, r.t)
+                        e.lastCountdown = item.countdown
                         if (due == 0 && e.seenRedAt == null) e.seenRedAt = r.t
                         if (r.uri != null && due == 0) {
                             if (r.note == BACKUP_NOTE) e.overdueBackupAt = r.t else e.overdueShotAt = r.t
                         }
                     }
-                    ObsType.READY -> entries.remove(item.gf)
+                    ObsType.READY, ObsType.LEFT_PREP -> entries.remove(item.gf)
                     else -> {}
                 }
             }

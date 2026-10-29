@@ -24,8 +24,12 @@ enum class RecordKind(val label: String) {
  * PREPARING: still in the Preparing tab, [Item.countdown] = time left ("5:53", "0:00").
  * LEFT_READY: gone from the Ready tab (the driver took it), [Item.prevAt] = last seen there.
  * ARRIVED: first seen with "คนขับของคุณมาถึงแล้ว" (driver or customer at the shop).
+ * LEFT_PREP: gone from a look at the whole Preparing list (pressed ready by then), [Item.prevAt] =
+ *   last seen there, [Item.countdown] = what its countdown said then.
+ * DRIVER_FOUND: first seen with a driver on the way ("คนขับจะมารับใน"), [Item.prevAt] = last
+ *   seen still looking for one ("กำลังค้นหาคนขับ").
  */
-enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE, PREPARING, LEFT_READY, ARRIVED }
+enum class ObsType { PRESS, READY, DELAY, DONE, CANCELLED, VISIBLE, PREPARING, LEFT_READY, ARRIVED, LEFT_PREP, DRIVER_FOUND }
 
 data class Item(
     val gf: String,
@@ -43,8 +47,10 @@ data class Item(
     val historyDate: String? = null,
     /**
      * The moment before, when it was not so yet: for READY the last look at the whole Ready list
-     * without it, for LEFT_READY the last time it was still there, for ARRIVED the last time its
-     * line did not say so. What happened lies between this and the record's time.
+     * without it, for LEFT_READY / LEFT_PREP the last time it was still there, for ARRIVED /
+     * DRIVER_FOUND the last time its line did not say so, for the first PREPARING reading the last
+     * time the Preparing list was known without it. What happened lies between this and the
+     * record's time.
      */
     val prevAt: Long? = null,
 ) {

@@ -48,25 +48,45 @@ enum class Verdict(val label: String) {
  * "after" happened between the two: e.g. pressed after [readyAfter] and by [readyAt].
  */
 data class Timeline(
-    /** First seen in the Preparing tab (about when the order was accepted). */
+    /** 1. The order came in: first seen in the Preparing tab ... */
     val prepFirstAt: Long? = null,
-    /** When its countdown ran out (last reading before it reached the Ready tab). */
+    /** ... and after this (the Preparing list was last known without it). */
+    val prepFirstAfter: Long? = null,
+    /** When its countdown ran out (last reading before it was pressed) ... */
     val deadline: Long? = null,
+    /** ... and when that reading was made (still not pressed then). */
+    val prepLastAt: Long? = null,
     /** First seen in the Ready tab: "พร้อมจัดส่ง" was pressed by then ... */
     val readyAt: Long? = null,
     /** ... and after this (the last look at the whole Ready list without it). */
     val readyAfter: Long? = null,
+    /** Gone from a look at the whole Preparing list: pressed by then too ... */
+    val leftPrepAt: Long? = null,
+    /** ... and after this (last seen there). */
+    val leftPrepAfter: Long? = null,
     /** Its first Ready photo saved (the evidence; the sighting above does not need one). */
     val readyPhotoAt: Long? = null,
+    /** 3. A driver took the job: first seen on the way (or at the shop) ... */
+    val foundAt: Long? = null,
+    /** ... last seen still looking for one. */
+    val foundAfter: Long? = null,
     /** First seen with its driver (or customer) at the shop. */
     val arrivedAt: Long? = null,
     val arrivedAfter: Long? = null,
-    /** Noticed gone from the Ready tab (the driver took it) ... */
+    /** 4. Noticed gone from the Ready tab (the driver took it) ... */
     val leftAt: Long? = null,
     /** ... last seen there. */
     val leftAfter: Long? = null,
 ) {
-    val empty: Boolean get() = prepFirstAt == null && readyAt == null && arrivedAt == null && leftAt == null
+    val empty: Boolean get() = prepFirstAt == null && readyAt == null && leftPrepAt == null && foundAt == null &&
+        arrivedAt == null && leftAt == null
+
+    /** 2. Pressed ready ("ร้านทำเสร็จ") by then: seen in the Ready tab, or gone from the Preparing list. */
+    val pressedBy: Long? get() = listOfNotNull(readyAt, leftPrepAt).minOrNull()
+
+    /** ... and after this: the last moment it was seen not pressed yet (never after [pressedBy]). */
+    val pressedAfter: Long?
+        get() = pressedBy?.let { by -> listOfNotNull(readyAfter, leftPrepAfter, prepLastAt).filter { it <= by }.maxOrNull() }
 }
 
 /** What the Preparing tab showed for an order before it reached the Ready tab. */
@@ -106,8 +126,8 @@ data class DelayCase(
     val prep: PrepCheck? = null,
     val timeline: Timeline = Timeline(readyAt = readyAt, deadline = prep?.deadline),
 ) {
-    /** How long after its countdown ran out it reached the Ready tab (negative = time to spare). */
-    val lateMs: Long? get() = prep?.let { p -> readyAt?.let { it - p.deadline } }
+    /** How long after its countdown ran out it was pressed at the latest (negative = time to spare). */
+    val lateMs: Long? get() = prep?.let { p -> timeline.pressedBy?.let { it - p.deadline } }
 
     val hasEvidence: Boolean get() = evidence.isNotEmpty()
 
@@ -256,25 +276,36 @@ object ReportBuilder {
 
     /**
      * Pressed in time or not, from the Preparing tab: the last reading of the countdown before the
-     * order reached the Ready tab decides. What the phone saw for certain comes first: in the
-     * Ready tab before the time ran out = in time; still red 0:00 on the Preparing tab, or a whole
-     * look at the Ready list without it after the time ran out = late. Only when it could not see
+     * order was pressed decides. What the phone saw for certain comes first: in the Ready tab (or
+     * gone from the whole Preparing list) before the time ran out = in time; still red 0:00 on
+     * the Preparing tab, or a whole look at the Ready list without it after the time ran out = late. Only when it could not see
      * which came first does [slackMs] apply (it notices a press a few seconds late); beyond that
      * it is left open, never called late on a guess.
      */
-    fun judge(readyAt: Long?, prep: PrepCheck?, readyAfter: Long? = null, slackMs: Long = PRESS_TOLERANCE_MS): Verdict = when {
-        // never seen in the Ready tab: late only if its red 0:00 card was seen
-        readyAt == null -> if (prep?.ranOut == true) Verdict.LATE else Verdict.NO_EVIDENCE
+    fun judge(pressedBy: Long?, prep: PrepCheck?, pressedAfter: Long? = null, slackMs: Long = PRESS_TOLERANCE_MS): Verdict = when {
+        // never seen pressed: late only if its red 0:00 card was seen
+        pressedBy == null -> if (prep?.ranOut == true) Verdict.LATE else Verdict.NO_EVIDENCE
         prep == null -> Verdict.UNCHECKED
         prep.ranOut -> Verdict.LATE
-        readyAt <= prep.deadline -> Verdict.IN_TIME
-        readyAfter != null && readyAfter >= prep.deadline -> Verdict.LATE
-        readyAt <= prep.deadline + slackMs -> Verdict.IN_TIME
+        pressedBy <= prep.deadline -> Verdict.IN_TIME
+        pressedAfter != null && pressedAfter >= prep.deadline -> Verdict.LATE
+        pressedBy <= prep.deadline + slackMs -> Verdict.IN_TIME
         else -> Verdict.UNCHECKED
     }
 
-    /** Everything the log says happened to [gf] between [from] and [until] (see [Timeline]). */
-    fun timelineOf(sorted: List<Record>, gf: String, from: Long, until: Long, readyAt: Long?, prep: PrepCheck?): Timeline {
+    /**
+     * Everything the log says happened to [gf] between [from] and [until] (see [Timeline]), with
+     * the last reading of its countdown before it was pressed (readings up to [prepUntil] when it
+     * was never seen pressed).
+     */
+    fun timesOf(sorted: List<Record>, gf: String, from: Long, until: Long, readyAt: Long?, prepUntil: Long = until): Pair<Timeline, PrepCheck?> {
+        val t = timelineOf(sorted, gf, from, until, readyAt)
+        val prep = prepCheck(sorted, gf, from, t.pressedBy ?: prepUntil)
+        return t.copy(deadline = prep?.deadline, prepLastAt = prep?.readAt) to prep
+    }
+
+    /** Everything the log says happened to [gf] between [from] and [until] (see [Timeline]), but its deadline. */
+    fun timelineOf(sorted: List<Record>, gf: String, from: Long, until: Long, readyAt: Long?): Timeline {
         fun first(type: ObsType, after: Long = from): Pair<Record, Item>? {
             for (r in sorted) {
                 if (r.t < after || r.t > until) continue
@@ -284,16 +315,25 @@ object ReportBuilder {
         }
         val prepFirst = first(ObsType.PREPARING)
         val ready = first(ObsType.READY)
+        // a look at the whole list can miss a card: seen there again later, it had not left
+        val leftPrep = first(ObsType.LEFT_PREP)?.takeIf { (r, _) ->
+            sorted.none { o -> o.t > r.t && o.t <= until && o.items.any { it.gf == gf && it.type == ObsType.PREPARING } }
+        }
+        val found = first(ObsType.DRIVER_FOUND)
         val arrived = first(ObsType.ARRIVED)
         val left = first(ObsType.LEFT_READY, after = readyAt ?: from)
         val readyFirst = readyAt ?: ready?.first?.t
         return Timeline(
             prepFirstAt = prepFirst?.first?.t,
-            deadline = prep?.deadline,
+            prepFirstAfter = prepFirst?.second?.prevAt,
             readyAt = readyFirst,
             // the look at the whole list just before the first sighting bounds the press
             readyAfter = sorted.asSequence().filter { it.t == readyFirst }.flatMap { it.items.asSequence() }
                 .firstOrNull { it.gf == gf && it.type == ObsType.READY && it.prevAt != null }?.prevAt,
+            leftPrepAt = leftPrep?.first?.t,
+            leftPrepAfter = leftPrep?.second?.prevAt,
+            foundAt = found?.first?.t,
+            foundAfter = found?.second?.prevAt,
             arrivedAt = arrived?.first?.t,
             arrivedAfter = arrived?.second?.prevAt,
             leftAt = left?.first?.t,
@@ -301,20 +341,32 @@ object ReportBuilder {
         )
     }
 
-    /** What the Preparing tab said about [gf] between [from] and [until] (see [PrepCheck]). */
+    /**
+     * What the Preparing tab said about [gf] between [from] and [until] (see [PrepCheck]): its
+     * latest countdown reading, including the one noted when it was found gone from the tab.
+     */
     fun prepCheck(sorted: List<Record>, gf: String, from: Long, until: Long): PrepCheck? {
-        var last: Pair<Record, Item>? = null
+        var readAt = Long.MIN_VALUE
+        var last: Item? = null
         for (r in sorted) {
-            if (r.t < from || r.t > until) continue
-            val item = r.items.firstOrNull { it.gf == gf && it.type == ObsType.PREPARING && it.dueSeconds != null } ?: continue
-            last = r to item
+            for (item in r.items) {
+                if (item.gf != gf || item.dueSeconds == null) continue
+                val at = when (item.type) {
+                    ObsType.PREPARING -> r.t
+                    ObsType.LEFT_PREP -> item.prevAt ?: continue
+                    else -> continue
+                }
+                if (at < from || at > until || at < readAt) continue
+                readAt = at
+                last = item
+            }
         }
-        val (r, item) = last ?: return null
+        val item = last ?: return null
         val overdue = if (item.dueSeconds != 0) null else sorted.lastOrNull { o ->
             o.uri != null && o.t in from..until &&
                 o.items.any { it.gf == gf && it.type == ObsType.PREPARING && it.dueSeconds == 0 }
         }
-        return PrepCheck(r.t, item.countdown!!, r.t + item.dueSeconds!! * 1000L, overdue)
+        return PrepCheck(readAt, item.countdown!!, readAt + item.dueSeconds!! * 1000L, overdue)
     }
 
     /**
@@ -387,12 +439,12 @@ object ReportBuilder {
                 ev.firstOrNull()?.t,
                 readySeenRecords.firstOrNull { r -> r.t in from..to && r.items.any { it.gf == a.gf && it.type == ObsType.READY } }?.t,
             ).minOrNull()
-            val prep = if (ambiguous) null else prepCheck(sorted, a.gf, from, readyAt ?: to)
-            val timeline = if (ambiguous) Timeline()
-                else timelineOf(sorted, a.gf, from, to + MINUTE_MS, readyAt, prep).copy(readyPhotoAt = ev.firstOrNull()?.t)
+            val (times, prep) = if (ambiguous) Timeline() to null
+                else timesOf(sorted, a.gf, from, to + MINUTE_MS, readyAt, prepUntil = to)
+            val timeline = times.copy(readyPhotoAt = ev.firstOrNull()?.t)
             DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps,
                 if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY",
-                judge(readyAt, prep, timeline.readyAfter, cfg.pressSlackSeconds * 1000L), readyAt, prep, timeline)
+                judge(timeline.pressedBy, prep, timeline.pressedAfter, cfg.pressSlackSeconds * 1000L), readyAt, prep, timeline)
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
 
         fun gfsOf(rs: List<Record>, type: ObsType) =
@@ -440,9 +492,8 @@ object ReportBuilder {
             } else {
                 val from = maxOf(dayStart, doneMs - windowMs, previousEnd?.plus(MINUTE_MS + 1) ?: dayStart)
                 val readyAt = readySeenRecords.firstOrNull { r -> r.t in from..doneMs + MINUTE_MS && r.items.any { it.gf == a.gf && it.type == ObsType.READY } }?.t
-                val prep = prepCheck(sorted, a.gf, from, readyAt ?: (doneMs + MINUTE_MS))
                 val photo = readyShots.firstOrNull { r -> r.t in from..doneMs + MINUTE_MS && r.items.any { it.gf == a.gf && it.type == ObsType.READY } }?.t
-                timelineOf(sorted, a.gf, from, doneMs + MINUTE_MS, readyAt, prep).copy(readyPhotoAt = photo)
+                timesOf(sorted, a.gf, from, doneMs + MINUTE_MS, readyAt).first.copy(readyPhotoAt = photo)
             }
             OrderTimeline(a.gf, a.doneAt, a.cancelled, a.delayMin.takeIf { a.delayed }, timeline)
         }
@@ -500,33 +551,45 @@ object ReportText {
     }
 
     /** How to read the times, once per summary. */
-    const val TIMES_LEGEND = "เวลา ⏱: \"ระหว่าง A–B\" = เกิดในช่วงนั้น (B = เวลาที่แอปเห็น) · \"ไม่เกิน B\" = แอปเห็นตอน B " +
-        "ไม่รู้ว่าเกิดก่อนนานแค่ไหน · \"ภาพ\" = เวลาที่มีภาพยืนยัน · เสร็จ = ตามหน้าประวัติ (ระดับนาที)"
+    const val TIMES_LEGEND = "เวลา ⏱ (ตามที่จอ Grab ในเครื่องนี้แสดง): \"ระหว่าง A–B\" = เกิดในช่วงนั้น (B = เวลาที่แอปเห็น) · " +
+        "\"ไม่เกิน B\" = แอปเห็นตอน B ไม่รู้ว่าเกิดก่อนนานแค่ไหน · \"ภาพ\" = เวลาที่มีภาพยืนยัน · " +
+        "ส่งเสร็จ = ตามหน้าประวัติ (ระดับนาที)"
 
     /**
-     * The times printed for Grab on an evidence image: when it had to be ready, when it was
-     * pressed, when the driver came and took it, when it was delivered.
+     * The times printed for Grab on an evidence image, in two lines: the shop (when it had to be
+     * ready, when it was pressed) and the driver (found, at the shop, took it, delivered).
      */
-    fun grabTimeline(c: DelayCase, zone: ZoneId): String {
+    fun grabTimelineLines(c: DelayCase, zone: ZoneId): List<String> {
         val t = c.timeline
-        return listOfNotNull(
-            t.deadline?.takeIf { c.verdict == Verdict.IN_TIME }?.let { "ต้องพร้อมภายใน " + timeSec(it, zone) },
-            t.readyAt?.let { "กดพร้อมจัดส่ง " + when_(it, t.readyAfter, zone) },
-            t.arrivedAt?.let { "คนขับมาถึง " + when_(it, t.arrivedAfter, zone) },
-            t.leftAt?.let { "คนขับรับของ " + when_(it, t.leftAfter, zone) },
-            c.doneAt?.let { "ส่งเสร็จ " + Parsers.hhmm(it.toLocalTime()) },
-        ).joinToString(" · ")
+        return listOf(
+            listOfNotNull(
+                t.deadline?.takeIf { c.verdict == Verdict.IN_TIME }?.let { "ต้องพร้อมภายใน " + timeSec(it, zone) },
+                t.pressedBy?.let { "ร้านทำเสร็จ (กดพร้อมจัดส่ง) " + when_(it, t.pressedAfter, zone) },
+            ),
+            listOfNotNull(
+                t.foundAt?.let { "หาคนขับเจอ " + when_(it, t.foundAfter, zone) },
+                t.arrivedAt?.let { "คนขับมาถึงร้าน " + when_(it, t.arrivedAfter, zone) },
+                t.leftAt?.let { "คนขับรับไปส่ง " + when_(it, t.leftAfter, zone) },
+                c.doneAt?.let { "ส่งเสร็จ " + Parsers.hhmm(it.toLocalTime()) },
+            ),
+        ).map { it.joinToString(" · ") }.filter { it.isNotEmpty() }
     }
 
-    /** One line of times for an order: "เห็นในกำลังเตรียม 15:38:10 · หมดเวลา 15:47:00 · ...". */
+    fun grabTimeline(c: DelayCase, zone: ZoneId): String = grabTimelineLines(c, zone).joinToString(" · ")
+
+    /**
+     * One line of times for an order, in the owner's order (25 Oct): order in, ready, driver
+     * found, driver took it, delivered ("ออเดอร์เข้า ไม่เกิน 15:38:10 · ต้องพร้อมภายใน 15:47:00 · ...").
+     */
     fun timelineText(t: Timeline, doneAt: LocalDateTime?, zone: ZoneId): String = listOfNotNull(
-        t.prepFirstAt?.let { "เห็นในกำลังเตรียม " + timeSec(it, zone) },
-        t.deadline?.let { "หมดเวลา " + timeSec(it, zone) },
-        t.readyAt?.let { "กดพร้อมจัดส่ง " + when_(it, t.readyAfter, zone) },
-        if (t.readyAt != null) t.readyPhotoAt?.let { "ภาพ Ready " + timeSec(it, zone) } ?: "ไม่มีภาพ Ready" else null,
-        t.arrivedAt?.let { "คนขับมาถึง " + when_(it, t.arrivedAfter, zone) },
-        t.leftAt?.let { "คนขับรับของ " + when_(it, t.leftAfter, zone) },
-        doneAt?.let { "เสร็จ " + Parsers.hhmm(it.toLocalTime()) },
+        t.prepFirstAt?.let { "ออเดอร์เข้า " + when_(it, t.prepFirstAfter, zone) },
+        t.deadline?.let { "ต้องพร้อมภายใน " + timeSec(it, zone) },
+        t.pressedBy?.let { "ร้านทำเสร็จ " + when_(it, t.pressedAfter, zone) },
+        if (t.pressedBy != null) t.readyPhotoAt?.let { "ภาพ Ready " + timeSec(it, zone) } ?: "ไม่มีภาพ Ready" else null,
+        t.foundAt?.let { "หาคนขับเจอ " + when_(it, t.foundAfter, zone) },
+        t.arrivedAt?.let { "คนขับมาถึงร้าน " + when_(it, t.arrivedAfter, zone) },
+        t.leftAt?.let { "คนขับรับไปส่ง " + when_(it, t.leftAfter, zone) },
+        doneAt?.let { "ส่งเสร็จ " + Parsers.hhmm(it.toLocalTime()) },
     ).joinToString(" · ")
 
     fun pct(v: Double?): String = if (v == null) "-" else String.format(Locale.ROOT, "%.2f%%", v)
@@ -598,6 +661,9 @@ object ReportText {
             shot.status?.let { append(" \"").append(it).append('"') }
         } else if (c.readyAt != null) {
             append(" — เห็นในแท็บ Ready ตั้งแต่ ").append(timeSec(c.readyAt, zone)).append(" (ไม่มีภาพ ส่ง Grab ไม่ได้)")
+        } else if (c.timeline.leftPrepAt != null) {
+            append(" — ออกจากหน้ากำลังเตรียมแล้วตอน ").append(timeSec(c.timeline.leftPrepAt, zone))
+                .append(" แต่ไม่เห็นในแท็บ Ready (ไม่มีภาพ ส่ง Grab ไม่ได้)")
         }
         val p = c.prep
         when {
@@ -608,7 +674,7 @@ object ReportText {
             }
             c.verdict == Verdict.UNCHECKED -> append(" · ต้องกดภายใน ").append(timeSec(p.deadline, zone))
                 .append(" แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ")
-                .append(when_(c.readyAt ?: p.deadline, c.timeline.readyAfter, zone)).append(')')
+                .append(when_(c.timeline.pressedBy ?: p.deadline, c.timeline.pressedAfter, zone)).append(')')
             else -> {
                 append(" · ต้องกดภายใน ").append(timeSec(p.deadline, zone))
                     .append(" (อ่านได้ ").append(p.countdown).append(" ตอน ").append(timeSec(p.readAt, zone)).append(')')
@@ -661,22 +727,32 @@ object ReportText {
 
     /**
      * Every order of the day with its times, to compare with Grab's own (created, accepted,
-     * picked up, delivered). A time with an "_after" column happened between the two.
+     * picked up, delivered), in the owner's order. Each time the phone saw happen between two
+     * looks has two columns: "หลัง" (not yet then) and "ไม่เกิน" (seen by then).
      */
     fun timelineCsv(r: DailyReport, zone: ZoneId): String = buildString {
-        append('\uFEFF')
-        append("date,gf,status,delay_min,prep_first_seen,countdown_ran_out,ready_after,ready_at,ready_photo_at,driver_arrived_after,driver_arrived,picked_up_after,picked_up,done_at\n")
+        append('\uFEFF') // BOM so Excel shows Thai correctly; Google Sheets ignores it
+        append(TIMES_CSV_HEADER).append('\n')
         fun t(ms: Long?) = ms?.let { timeSec(it, zone) }.orEmpty()
         for (o in r.orders) {
             val tl = o.timeline
+            val verdict = r.cases.firstOrNull { it.gf == o.gf && it.doneAt == o.doneAt }?.verdict?.label.orEmpty()
             val row = listOf(
-                r.date.toString(), o.gf, if (o.cancelled) "cancelled" else "completed", o.delayMin?.toString().orEmpty(),
-                t(tl.prepFirstAt), t(tl.deadline), t(tl.readyAfter), t(tl.readyAt), t(tl.readyPhotoAt), t(tl.arrivedAfter), t(tl.arrivedAt),
-                t(tl.leftAfter), t(tl.leftAt), o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
+                r.date.toString(), o.gf, if (o.cancelled) "ยกเลิก" else "เสร็จ", o.delayMin?.toString().orEmpty(), verdict,
+                t(tl.prepFirstAfter), t(tl.prepFirstAt), t(tl.deadline),
+                t(tl.pressedAfter), t(tl.pressedBy), t(tl.readyPhotoAt),
+                t(tl.foundAfter), t(tl.foundAt), t(tl.arrivedAfter), t(tl.arrivedAt), t(tl.leftAfter), t(tl.leftAt),
+                o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }
     }
+
+    const val TIMES_CSV_HEADER = "วันที่,ออเดอร์,สถานะ,Grab ว่าล่าช้า (นาที),ผลตรวจ," +
+        "1 ออเดอร์เข้า (หลัง),1 ออเดอร์เข้า (ไม่เกิน),ต้องพร้อมภายใน," +
+        "2 ร้านทำเสร็จ (หลัง),2 ร้านทำเสร็จ (ไม่เกิน),ภาพ Ready," +
+        "3 หาคนขับเจอ (หลัง),3 หาคนขับเจอ (ไม่เกิน),คนขับมาถึงร้าน (หลัง),คนขับมาถึงร้าน (ไม่เกิน)," +
+        "4 คนขับรับไปส่ง (หลัง),4 คนขับรับไปส่ง (ไม่เกิน),5 ส่งเสร็จ (นาที)"
 
     private fun cell(s: String): String =
         if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
