@@ -32,6 +32,8 @@ class WindowsState(
     val ownAppVisible: Boolean,
     /** What is on screen, top first: app names, or the kind of system window. For the diagnostics only. */
     val apps: List<String> = emptyList(),
+    /** Any app at all on screen (Grab, another app, the home screen), not only the phone's own windows. */
+    val appOnScreen: Boolean = true,
 ) {
     val grabVisible: Boolean get() = grabRoots.isNotEmpty()
 
@@ -89,7 +91,8 @@ class ScreenReader(private val service: AccessibilityService) {
         val apps = all.sortedByDescending { it.info.layer }.map { w ->
             w.pkg ?: when (w.info.type) {
                 AccessibilityWindowInfo.TYPE_APPLICATION -> "app"
-                AccessibilityWindowInfo.TYPE_SYSTEM -> "system"
+                // its window name only ("NotificationShade" ...), to tell what covered the screen
+                AccessibilityWindowInfo.TYPE_SYSTEM -> "system" + (w.info.title?.toString()?.take(40)?.let { ":$it" } ?: "")
                 AccessibilityWindowInfo.TYPE_INPUT_METHOD -> "keyboard"
                 AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> "overlay"
                 else -> "window${w.info.type}"
@@ -103,7 +106,7 @@ class ScreenReader(private val service: AccessibilityService) {
                 return WindowsState(listOf(active), emptyList(), false, false)
             }
         }
-        return WindowsState(roots, occluders, dialog, own, apps)
+        return WindowsState(roots, occluders, dialog, own, apps, all.any { it.info.type == AccessibilityWindowInfo.TYPE_APPLICATION })
     }
 
     /** Reads and analyses the Grab screen; null when Grab is not on screen. */
