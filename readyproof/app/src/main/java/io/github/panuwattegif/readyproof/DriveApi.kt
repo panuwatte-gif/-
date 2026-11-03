@@ -11,6 +11,10 @@ import java.security.MessageDigest
 class DriveApi(private val token: String,
     private val openConnection: (String) -> HttpURLConnection = { URL(it).openConnection() as HttpURLConnection }) {
     class HttpError(val code: Int) : Exception("Drive HTTP $code")
+    companion object {
+        const val XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        const val SPREADSHEET = "application/vnd.google-apps.spreadsheet"
+    }
     private val base = "https://www.googleapis.com/drive/v3"
     private fun connection(url: String): HttpURLConnection = openConnection(url).apply {
         require(url.startsWith("https://www.googleapis.com/"))
@@ -34,6 +38,32 @@ class DriveApi(private val token: String,
     }
     fun generateId(): String = ((json("$base/files/generateIds?count=1&space=drive&type=files")["ids"] as? List<*>)
         ?.firstOrNull() as? String)?.also { require(it.matches(Regex("[A-Za-z0-9_-]+"))) } ?: error("Drive ID missing")
+
+    /**
+     * Replaces the content of the shop's own Google Sheet (only a sheet named in [Shop]) with an
+     * .xlsx: Drive turns it into the sheet's tabs; the sheet's link, owner and sharing stay as they are.
+     */
+    fun replaceSpreadsheet(fileId: String, xlsx: ByteArray) {
+        require(Shop.entries.any { it.sheetId == fileId })
+        require(xlsx.isNotEmpty())
+        val c = connection("https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=media&supportsAllDrives=true&fields=id,mimeType,trashed")
+        try {
+            try {
+                c.requestMethod = "PATCH"
+            } catch (e: java.net.ProtocolException) {
+                // Google's own way round a connection that cannot send PATCH.
+                c.requestMethod = "POST"
+                c.setRequestProperty("X-HTTP-Method-Override", "PATCH")
+            }
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", XLSX)
+            c.setFixedLengthStreamingMode(xlsx.size)
+            c.outputStream.use { it.write(xlsx) }
+            if (c.responseCode !in 200..299) throw HttpError(c.responseCode)
+            val m = Json.parseObject(c.inputStream.bufferedReader().use { it.readText() })
+            require(m["id"] == fileId && m["mimeType"] == SPREADSHEET && m["trashed"] != true) { "ตรวจยืนยัน Google Sheet ไม่ผ่าน" }
+        } finally { c.disconnect() }
+    }
 
     fun upload(e: UploadEntry, file: File, folder: String) {
         require(Shop.fromId(e.shopId)?.folderId == folder)

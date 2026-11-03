@@ -29,7 +29,9 @@ class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) 
         DriveSync.recover(ctx)
         val shop = ShopStore.get(ctx) ?: return Result.success()
         val pending = DriveSync.releasedEntries(ctx, shop.id).filter { it.state != "UPLOADED" }
-        if (pending.isEmpty()) return Result.success() // No Google auth/API calls for daytime staging.
+        // The shop's Google Sheet: a workbook is waiting only after the nightly History read.
+        val sheetDue = SheetSync.hasPending(ctx)
+        if (pending.isEmpty() && !sheetDue) return Result.success() // No Google auth/API calls for daytime staging.
         val account = prefs.getString("drive_account", null) ?: run {
             DriveSync.status(ctx, "ต้องเชื่อมบัญชี Google — แคปและแชร์เองยังทำงาน")
             return Result.success()
@@ -73,6 +75,8 @@ class DriveWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) 
                     failed = true
                 }
             }
+            // After the files: a sheet problem never holds back the evidence.
+            if (sheetDue && !isStopped && !SheetSync.upload(ctx, api)) failed = true
             DriveSync.status(ctx, if (failed) "บางไฟล์ยังส่งไม่ได้ — จะลองใหม่ / แชร์เองได้" else "ส่งไฟล์ที่มีครบแล้ว (ความครบของหลักฐานดูในรายงาน)")
             return if (failed) Result.retry() else Result.success()
         } catch (e: Exception) {

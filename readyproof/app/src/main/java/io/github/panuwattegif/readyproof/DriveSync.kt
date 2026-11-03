@@ -207,7 +207,8 @@ object DriveSync {
         val es = entries(ctx).filter { it.shopId == shop?.id }
         val released = shop?.let { releasedEntries(ctx, it.id) } ?: emptyList()
         return "Drive: ส่งแล้ว ${es.count { it.state == "UPLOADED" }} / คิวหลังปิดร้าน ${released.count { it.state != "UPLOADED" }} / เก็บรอในเครื่อง ${es.count { it.state != "UPLOADED" && it.key !in released.map { r -> r.key } }}\n" +
-            ConfigStore.prefs(ctx).getString("drive_status", "ยังไม่เชื่อม Google")
+            ConfigStore.prefs(ctx).getString("drive_status", "ยังไม่เชื่อม Google") +
+            (if (shop?.sheetId != null) "\nGoogle Sheet: " + SheetSync.statusText(ctx) else "")
     }
 
     fun shareUri(ctx: Context, e: UploadEntry): Uri = FileProvider.getUriForFile(ctx,

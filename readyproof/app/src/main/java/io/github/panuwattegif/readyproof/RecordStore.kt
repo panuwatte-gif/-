@@ -52,6 +52,12 @@ object RecordStore {
         return out
     }
 
+    /** Every day with a log, oldest first. */
+    fun dates(ctx: Context): List<LocalDate> = synchronized(lock) {
+        dir(ctx).listFiles()?.mapNotNull { runCatching { LocalDate.parse(it.name.removeSuffix(".jsonl")) }.getOrNull() }?.sorted()
+            ?: emptyList()
+    }
+
     fun deleteBefore(ctx: Context, date: LocalDate): Int = synchronized(lock) {
         var n = 0
         dir(ctx).listFiles()?.forEach { f ->
