@@ -175,6 +175,11 @@ class Engine(private val service: ProofService) {
      * first seen there later came in after this.
      */
     private var lastPrepWholeAt = 0L
+    /** Last time the Preparing tab's count was read without a rise, and what it said then. */
+    private var prepSteadyAt = 0L
+    private var prepSteadyCount = 0
+    /** During a look at the Preparing tab: its new-order lines, written at the end of the look. */
+    private var pendingPrep: MutableList<Record>? = null
     private val problemAt = HashMap<String, Long>()
     private var historyDay: String? = null
     private var lastStats: String? = null
@@ -450,6 +455,11 @@ class Engine(private val service: ProofService) {
         val count = s.a.preparingCount
         if (count != null && count < lastPrepCount) lastPrepCount = count
         if (count == 0) lastPrepWholeAt = System.currentTimeMillis()
+        // no rise yet: an order counted later came in after this reading
+        if (count != null && count <= lastPrepCount) {
+            prepSteadyAt = System.currentTimeMillis()
+            prepSteadyCount = count
+        }
         if (!c.watchPreparing || !autoNavigation() || eod == Eod.RUNNING) return
         val up = SystemClock.uptimeMillis()
         val newOrder = count != null && count > lastPrepCount
@@ -474,6 +484,43 @@ class Engine(private val service: ProofService) {
     }
 
     private suspend fun visitPreparing(why: String): Unit = automate {
+        // the count before it rose, and the orders already followed: when the order came in
+        val steadyAt = prepSteadyAt
+        val steadyCount = prepSteadyCount
+        val knownBefore = prepTracker.known()
+        var cameInAfter: Pair<Set<String>, Long>? = null
+        pendingPrep = ArrayList()
+        try {
+            lookAtPreparing(why, steadyAt, steadyCount, knownBefore) { cameInAfter = it }
+        } finally {
+            writePendingPrep(cameInAfter)
+        }
+    }
+
+    /**
+     * The new-order lines of a look at the Preparing tab. 3 Nov: the owner needs how long each
+     * order took to make, so when it came in matters: the orders found by a look that followed a
+     * rise of the tab's count came in after the last reading before the rise ([cameInAfter]),
+     * when the count rose by at least as many (see [PrepTracker.cameInAfterLastCount]).
+     */
+    private fun writePendingPrep(cameInAfter: Pair<Set<String>, Long>?) {
+        val list = pendingPrep ?: return
+        pendingPrep = null
+        for (r in list) {
+            val items = if (cameInAfter == null) r.items else r.items.map {
+                if (it.gf in cameInAfter.first) it.copy(prevAt = maxOf(it.prevAt ?: 0L, cameInAfter.second)) else it
+            }
+            RecordStore.append(service, r.copy(items = items))
+        }
+    }
+
+    private suspend fun lookAtPreparing(
+        why: String,
+        steadyAt: Long,
+        steadyCount: Int,
+        knownBefore: Set<String>,
+        cameIn: (Pair<Set<String>, Long>) -> Unit,
+    ) {
         val c = cfg
         lastPrepVisitAt = SystemClock.uptimeMillis()
         setWhere("กำลังดูแท็บกำลังเตรียม แล้วจะกลับแท็บ Ready")
@@ -513,6 +560,10 @@ class Engine(private val service: ProofService) {
             // exactly as many as its tab counts (a tab that counts fewer than the list shows is lagging)
             val whole = count != null && read.size == count
             if (whole) {
+                val fresh = read.keys - knownBefore
+                if (why == "new order" && steadyAt > lastPrepWholeAt && PrepTracker.cameInAfterLastCount(fresh.size, steadyCount, count!!)) {
+                    cameIn(fresh to steadyAt)
+                }
                 val now = System.currentTimeMillis()
                 noteLeftPreparing(prepTracker.complete(read.keys), now)
                 lastPrepWholeAt = now
@@ -552,13 +603,12 @@ class Engine(private val service: ProofService) {
             if (it.gf !in known && lastPrepWholeAt > 0) it.copy(prevAt = lastPrepWholeAt) else it
         }
         if (fresh.isNotEmpty()) {
-            RecordStore.append(
-                service,
-                Record(
-                    id = "$now-p${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN, items = fresh,
-                    visible = s.a.visible, note = "PREPARING", shopId = shop(),
-                ),
+            val r = Record(
+                id = "$now-p${seq.incrementAndGet()}", t = now, kind = RecordKind.SEEN, items = fresh,
+                visible = s.a.visible, note = "PREPARING", shopId = shop(),
             )
+            // during a look of the app's own: written at its end (see [writePendingPrep])
+            pendingPrep?.add(r) ?: RecordStore.append(service, r)
         }
         val red = views.filter { v ->
             v.items.any { it.type == ObsType.PREPARING && it.dueSeconds == 0 } && prepTracker.needsOverdueShot(v.gf, v.full)

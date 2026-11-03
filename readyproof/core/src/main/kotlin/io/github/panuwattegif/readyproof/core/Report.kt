@@ -87,6 +87,17 @@ data class Timeline(
     /** ... and after this: the last moment it was seen not pressed yet (never after [pressedBy]). */
     val pressedAfter: Long?
         get() = pressedBy?.let { by -> listOfNotNull(readyAfter, leftPrepAfter, prepLastAt).filter { it <= by }.maxOrNull() }
+
+    /**
+     * How long the shop took to make it (order in → pressed ready), whatever time the shop set
+     * for it (owner, 3 Nov): the shortest and the longest it can have been.
+     */
+    val prepShortest: Long? get() = pressedAfter?.let { a -> prepFirstAt?.let { maxOf(0L, a - it) } }
+    val prepLongest: Long? get() = pressedBy?.let { b -> prepFirstAfter?.let { b - it } }
+
+    /** How long the driver was at the shop (arrived → took the food): the shortest and the longest. */
+    val waitShortest: Long? get() = leftAfter?.let { a -> arrivedAt?.let { maxOf(0L, a - it) } }
+    val waitLongest: Long? get() = leftAt?.let { b -> arrivedAfter?.let { b - it } }
 }
 
 /** What the Preparing tab showed for an order before it reached the Ready tab. */
@@ -540,6 +551,18 @@ object ReportText {
     fun minSec(ms: Long): String = (ms / 1000).let { "${it / 60}:" + Parsers.pad2((it % 60).toInt()) }
 
     /**
+     * A duration known between two bounds, in minutes: "7:10–8:05 นาที", "7:10 นาที", "อย่างน้อย
+     * 7:10 นาที" (no upper bound), "ไม่เกิน 8:05 นาที" (no lower bound).
+     */
+    fun span(shortest: Long?, longest: Long?): String? = when {
+        shortest == null && longest == null -> null
+        longest == null -> "อย่างน้อย " + minSec(shortest!!) + " นาที"
+        shortest == null -> "ไม่เกิน " + minSec(longest) + " นาที"
+        minSec(shortest) == minSec(longest) -> minSec(shortest) + " นาที"
+        else -> minSec(shortest) + "–" + minSec(longest) + " นาที"
+    }
+
+    /**
      * When something happened, as known: "ระหว่าง 17:34:10–17:34:25" (between the last look before
      * and the moment the phone saw it), "ไม่เกิน 17:34:25" (seen then, nothing before bounds it),
      * or one time only when both fall in the same second. Never a range shown as one time.
@@ -553,23 +576,26 @@ object ReportText {
     /** How to read the times, once per summary. */
     const val TIMES_LEGEND = "เวลา ⏱ (ตามที่จอ Grab ในเครื่องนี้แสดง): \"ระหว่าง A–B\" = เกิดในช่วงนั้น (B = เวลาที่แอปเห็น) · " +
         "\"ไม่เกิน B\" = แอปเห็นตอน B ไม่รู้ว่าเกิดก่อนนานแค่ไหน · \"ภาพ\" = เวลาที่มีภาพยืนยัน · " +
+        "เตรียม = ออเดอร์เข้า → ร้านกดเสร็จ · คนขับรอ = คนขับมาถึงร้าน → รับอาหาร (สั้นสุด–นานสุดที่เป็นไปได้) · " +
         "ส่งเสร็จ = ตามหน้าประวัติ (ระดับนาที)"
 
     /**
-     * The times printed for Grab on an evidence image, in two lines: the shop (when it had to be
-     * ready, when it was pressed) and the driver (found, at the shop, took it, delivered).
+     * The times printed for Grab on an evidence image, in two lines: the shop (order in, pressed
+     * ready, how long it took) and the driver (at the shop, took the food, how long the driver
+     * waited, delivered). The countdown the shop set is left out: the shop sets it itself (3 Nov).
      */
     fun grabTimelineLines(c: DelayCase, zone: ZoneId): List<String> {
         val t = c.timeline
         return listOf(
             listOfNotNull(
-                t.deadline?.takeIf { c.verdict == Verdict.IN_TIME }?.let { "ต้องพร้อมภายใน " + timeSec(it, zone) },
+                t.prepFirstAt?.let { "ออเดอร์เข้า " + when_(it, t.prepFirstAfter, zone) },
                 t.pressedBy?.let { "ร้านทำเสร็จ (กดพร้อมจัดส่ง) " + when_(it, t.pressedAfter, zone) },
+                span(t.prepShortest, t.prepLongest)?.let { "เตรียมอาหาร $it" },
             ),
             listOfNotNull(
-                t.foundAt?.let { "หาคนขับเจอ " + when_(it, t.foundAfter, zone) },
                 t.arrivedAt?.let { "คนขับมาถึงร้าน " + when_(it, t.arrivedAfter, zone) },
-                t.leftAt?.let { "คนขับรับไปส่ง " + when_(it, t.leftAfter, zone) },
+                t.leftAt?.let { "คนขับรับอาหาร " + when_(it, t.leftAfter, zone) },
+                span(t.waitShortest, t.waitLongest)?.let { "คนขับรอ $it" },
                 c.doneAt?.let { "ส่งเสร็จ " + Parsers.hhmm(it.toLocalTime()) },
             ),
         ).map { it.joinToString(" · ") }.filter { it.isNotEmpty() }
@@ -578,17 +604,19 @@ object ReportText {
     fun grabTimeline(c: DelayCase, zone: ZoneId): String = grabTimelineLines(c, zone).joinToString(" · ")
 
     /**
-     * One line of times for an order, in the owner's order (29 Oct): order in, ready, driver
-     * found, driver took it, delivered ("ออเดอร์เข้า ไม่เกิน 15:38:10 · ต้องพร้อมภายใน 15:47:00 · ...").
+     * One line of times for an order, in the owner's order (29 Oct, 3 Nov): order in, ready (and
+     * how long it took), driver found, driver at the shop, took the food (and how long the driver
+     * waited), delivered ("ออเดอร์เข้า ไม่เกิน 15:38:10 · ร้านทำเสร็จ ... · เตรียม 7:10–8:05 นาที · ...").
      */
     fun timelineText(t: Timeline, doneAt: LocalDateTime?, zone: ZoneId): String = listOfNotNull(
         t.prepFirstAt?.let { "ออเดอร์เข้า " + when_(it, t.prepFirstAfter, zone) },
-        t.deadline?.let { "ต้องพร้อมภายใน " + timeSec(it, zone) },
         t.pressedBy?.let { "ร้านทำเสร็จ " + when_(it, t.pressedAfter, zone) },
+        span(t.prepShortest, t.prepLongest)?.let { "เตรียม $it" },
         if (t.pressedBy != null) t.readyPhotoAt?.let { "ภาพ Ready " + timeSec(it, zone) } ?: "ไม่มีภาพ Ready" else null,
         t.foundAt?.let { "หาคนขับเจอ " + when_(it, t.foundAfter, zone) },
         t.arrivedAt?.let { "คนขับมาถึงร้าน " + when_(it, t.arrivedAfter, zone) },
-        t.leftAt?.let { "คนขับรับไปส่ง " + when_(it, t.leftAfter, zone) },
+        t.leftAt?.let { "คนขับรับอาหาร " + when_(it, t.leftAfter, zone) },
+        span(t.waitShortest, t.waitLongest)?.let { "คนขับรอ $it" },
         doneAt?.let { "ส่งเสร็จ " + Parsers.hhmm(it.toLocalTime()) },
     ).joinToString(" · ")
 
@@ -739,20 +767,20 @@ object ReportText {
             val verdict = r.cases.firstOrNull { it.gf == o.gf && it.doneAt == o.doneAt }?.verdict?.label.orEmpty()
             val row = listOf(
                 r.date.toString(), o.gf, if (o.cancelled) "ยกเลิก" else "เสร็จ", o.delayMin?.toString().orEmpty(), verdict,
-                t(tl.prepFirstAfter), t(tl.prepFirstAt), t(tl.deadline),
-                t(tl.pressedAfter), t(tl.pressedBy), t(tl.readyPhotoAt),
+                t(tl.prepFirstAfter), t(tl.prepFirstAt), t(tl.pressedAfter), t(tl.pressedBy),
+                span(tl.prepShortest, tl.prepLongest).orEmpty(), t(tl.readyPhotoAt),
                 t(tl.foundAfter), t(tl.foundAt), t(tl.arrivedAfter), t(tl.arrivedAt), t(tl.leftAfter), t(tl.leftAt),
-                o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
+                span(tl.waitShortest, tl.waitLongest).orEmpty(), o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }
     }
 
     const val TIMES_CSV_HEADER = "วันที่,ออเดอร์,สถานะ,Grab ว่าล่าช้า (นาที),ผลตรวจ," +
-        "1 ออเดอร์เข้า (หลัง),1 ออเดอร์เข้า (ไม่เกิน),ต้องพร้อมภายใน," +
-        "2 ร้านทำเสร็จ (หลัง),2 ร้านทำเสร็จ (ไม่เกิน),ภาพ Ready," +
+        "1 ออเดอร์เข้า (หลัง),1 ออเดอร์เข้า (ไม่เกิน),2 ร้านทำเสร็จ (หลัง),2 ร้านทำเสร็จ (ไม่เกิน)," +
+        "เวลาเตรียมอาหาร (เข้า→เสร็จ),ภาพ Ready," +
         "3 หาคนขับเจอ (หลัง),3 หาคนขับเจอ (ไม่เกิน),คนขับมาถึงร้าน (หลัง),คนขับมาถึงร้าน (ไม่เกิน)," +
-        "4 คนขับรับไปส่ง (หลัง),4 คนขับรับไปส่ง (ไม่เกิน),5 ส่งเสร็จ (นาที)"
+        "4 คนขับรับอาหาร (หลัง),4 คนขับรับอาหาร (ไม่เกิน),คนขับรอที่ร้าน (ถึง→รับอาหาร),5 ส่งเสร็จ (นาที)"
 
     private fun cell(s: String): String =
         if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
