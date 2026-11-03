@@ -98,6 +98,23 @@ data class Timeline(
     /** How long the driver was at the shop (arrived → took the food): the shortest and the longest. */
     val waitShortest: Long? get() = leftAfter?.let { a -> arrivedAt?.let { maxOf(0L, a - it) } }
     val waitLongest: Long? get() = leftAt?.let { b -> arrivedAfter?.let { b - it } }
+
+    /**
+     * The driver was at the shop before the food was ready (true: the shop made the driver wait),
+     * only after it (false), or the phone cannot tell (null). The shop's part ends when it closes
+     * the order, with the photo in Grab's app or its button (owner, 3 Nov); a driver who comes
+     * later waits for something else. Seen in the Ready tab without its driver there: ready first.
+     */
+    val driverCameFirst: Boolean?
+        get() {
+            val by = pressedBy ?: return null
+            val arrived = arrivedAt ?: return if (readyAt != null) false else null
+            val after = pressedAfter
+            if (after != null && after >= arrived) return true
+            val notYet = arrivedAfter
+            if (notYet != null && by <= notYet) return false
+            return null
+        }
 }
 
 /** What the Preparing tab showed for an order before it reached the Ready tab. */
@@ -222,6 +239,13 @@ data class DailyReport(
 
     /** Delay rate the shop should get: orders proven done in time are not late. */
     val realPct: Double? get() = pctOfBase(actualDelayed)
+
+    /** Orders whose driver was at the shop before the food was ready (see [Timeline.driverCameFirst]). */
+    val driverWaitedForFood: List<OrderTimeline> get() = orders.filter { !it.cancelled && it.timeline.driverCameFirst == true }
+    val driverWaitUnknown: List<OrderTimeline> get() = orders.filter { !it.cancelled && it.timeline.driverCameFirst == null }
+
+    /** Delay rate counting only the orders the shop made the driver wait for (owner, 3 Nov). */
+    val fairPct: Double? get() = pctOfBase(driverWaitedForFood.size)
     val pendingReadyProof: Int get() = maxOf(pendingReadyGfs.size, readySeenOrders - readyOrders, 0)
     val missingDelayProof: Int get() = cases.count { it.delayShot == null }
     val complete: Boolean get() = sweepReachedEnd && historyDateVerified &&
@@ -378,6 +402,42 @@ object ReportBuilder {
                 o.items.any { it.gf == gf && it.type == ObsType.PREPARING && it.dueSeconds == 0 }
         }
         return PrepCheck(readAt, item.countdown!!, readAt + item.dueSeconds!! * 1000L, overdue)
+    }
+
+    /**
+     * The orders of [date] as the phone saw them so far, before History is read (owner, 3 Nov: the
+     * report showed no times during the day). One per order number, and a new one when the number
+     * shows up again after its driver took it. No delivery time yet.
+     */
+    fun liveOrders(records: List<Record>, date: LocalDate, zone: ZoneId, shopId: String? = null): List<OrderTimeline> {
+        val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
+        val dayEnd = TimeResolve.toMillis(date.plusDays(1).atStartOfDay(), zone)
+        val sorted = records.filter { it.shopId == shopId }.sortedBy { it.t }
+        val kinds = setOf(ObsType.PREPARING, ObsType.READY, ObsType.LEFT_PREP, ObsType.DRIVER_FOUND, ObsType.ARRIVED, ObsType.LEFT_READY)
+        class Span(val gf: String, val from: Long, var until: Long, var taken: Boolean = false)
+        val open = HashMap<String, Span>()
+        val spans = ArrayList<Span>()
+        for (r in sorted) {
+            if (r.t < dayStart || r.t >= dayEnd) continue
+            for (i in r.items) {
+                if (i.type !in kinds) continue
+                var sp = open[i.gf]
+                if (sp == null || (sp.taken && i.type != ObsType.LEFT_READY)) {
+                    sp = Span(i.gf, r.t, r.t)
+                    open[i.gf] = sp
+                    spans += sp
+                }
+                sp.until = r.t
+                if (i.type == ObsType.LEFT_READY) sp.taken = true
+            }
+        }
+        fun firstReady(sp: Span, photo: Boolean) = sorted.firstOrNull { r ->
+            (!photo || r.uri != null) && r.t in sp.from..sp.until && r.items.any { it.gf == sp.gf && it.type == ObsType.READY }
+        }?.t
+        return spans.map { sp ->
+            val t = timesOf(sorted, sp.gf, sp.from, sp.until, firstReady(sp, photo = false)).first
+            OrderTimeline(sp.gf, null, false, null, t.copy(readyPhotoAt = firstReady(sp, photo = true)))
+        }
     }
 
     /**
@@ -622,7 +682,37 @@ object ReportText {
 
     fun pct(v: Double?): String = if (v == null) "-" else String.format(Locale.ROOT, "%.2f%%", v)
 
-    fun summary(r: DailyReport, zone: ZoneId): String = buildString {
+    /**
+     * The delay rate three ways, on the same base (owner, 3 Nov): as Grab counts it; without the
+     * orders the shop finished before the time it set itself; and counting only the orders whose
+     * driver was at the shop before the food was ready.
+     */
+    fun percentages(r: DailyReport): List<String> = listOf(
+        "% ล่าช้า เทียบ 3 แบบ (ฐาน ${r.base} ออเดอร์)",
+        "1) แบบ Grab: ${r.delayed} ออเดอร์ = ${pct(r.grabPct)}",
+        "2) ตัดออเดอร์ที่ร้านเสร็จก่อนเวลาที่ตั้งเอง: (${r.delayed} − ${r.inTime.size}) = ${r.actualDelayed} ออเดอร์ = ${pct(r.realPct)}",
+        "3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ): ${r.driverWaitedForFood.size} ออเดอร์ = ${pct(r.fairPct)}" +
+            r.driverWaitedForFood.joinToString(", ") { it.gf }.let { if (it.isEmpty()) "" else " — $it" } +
+            (if (r.driverWaitUnknown.isNotEmpty()) " · บอกไม่ได้ ${r.driverWaitUnknown.size} ออเดอร์" else ""),
+    )
+
+    /** One order of the day: number, delivered, Grab's delay, who was first, then its times. */
+    fun orderLines(o: OrderTimeline, zone: ZoneId): List<String> = listOf(
+        listOfNotNull(
+            o.gf,
+            if (o.cancelled) "ยกเลิก" else null,
+            o.delayMin?.let { "Grab ว่าล่าช้า $it นาที" },
+            when (o.timeline.driverCameFirst) {
+                true -> "⚠ คนขับมาถึงก่อนอาหารเสร็จ"
+                false -> "อาหารเสร็จก่อนคนขับมาถึง"
+                null -> null
+            },
+        ).joinToString(" · "),
+        "   ⏱ " + timelineText(o.timeline, o.doneAt, zone).ifEmpty { "ไม่มีเวลาที่จับได้" },
+    )
+
+    /** [allOrders]: every order of the day with its times at the end (the file on Drive; too long for LINE). */
+    fun summary(r: DailyReport, zone: ZoneId, allOrders: Boolean = false): String = buildString {
         append("สรุปออเดอร์ล่าช้า วันที่ ").append(date(r.date)).append('\n')
         append("ร้าน: ").append(Shop.fromId(r.shopId)?.label ?: "UNKNOWN (ข้อมูลเดิม/ยังไม่เลือกร้าน)").append('\n')
         append("ความครบ: ").append(if (r.complete) "COMPLETE" else "INCOMPLETE / PROVISIONAL").append('\n')
@@ -658,15 +748,19 @@ object ReportText {
         append("• ").append(Verdict.LATE.label).append(": ").append(r.late.size).append('\n')
         append("• ").append(Verdict.UNCHECKED.label).append(": ").append(r.unchecked.size).append('\n')
         append("• ").append(Verdict.NO_EVIDENCE.label).append(": ").append(r.noEvidence.size).append('\n')
-        append("% ล่าช้าที่ร้านควรได้ (ตัดออเดอร์ที่มีหลักฐานกดทันออก) = (").append(r.delayed).append(" − ")
-            .append(r.inTime.size).append(") / ").append(r.base).append(" = ").append(pct(r.realPct)).append('\n')
+        append('\n')
+        percentages(r).forEach { append(it).append('\n') }
         append("ตัวเลขเป็นออเดอร์ที่สแกนพบ ไม่ใช่จำนวนภาพ; ถ้ายังไม่ครบ Total ทั้งวัน = UNKNOWN\n")
-        append("% ที่ร้านควรได้ เป็นการคำนวณจากหลักฐาน ไม่ยืนยันว่า Grab ปรับยอดแล้ว\n")
+        append("% แบบ 2) และ 3) คำนวณจากหลักฐานในเครื่อง ไม่ยืนยันว่า Grab ปรับยอดแล้ว\n")
         if (r.cases.any { !it.timeline.empty }) append('\n').append(TIMES_LEGEND).append('\n')
         section(this, "✅ " + Verdict.IN_TIME.label + " — ส่ง Grab ได้ (ที่มีภาพ Ready)", r.inTime, zone)
         section(this, "❌ " + Verdict.LATE.label + " — ห้ามส่ง Grab", r.late, zone)
         section(this, "⚠️ " + Verdict.UNCHECKED.label + " — ตรวจเองก่อนส่ง", r.unchecked, zone)
         section(this, "❓ " + Verdict.NO_EVIDENCE.label + " (ไม่ได้แปลว่าช้าจริง)", r.noEvidence, zone)
+        if (allOrders && r.orders.isNotEmpty()) {
+            append("\n🕒 เวลาทุกออเดอร์ (").append(r.orders.size).append(")\n")
+            r.orders.forEach { o -> orderLines(o, zone).forEach { append(it).append('\n') } }
+        }
     }
 
     private fun section(sb: StringBuilder, title: String, cases: List<DelayCase>, zone: ZoneId) {
@@ -770,7 +864,9 @@ object ReportText {
                 t(tl.prepFirstAfter), t(tl.prepFirstAt), t(tl.pressedAfter), t(tl.pressedBy),
                 span(tl.prepShortest, tl.prepLongest).orEmpty(), t(tl.readyPhotoAt),
                 t(tl.foundAfter), t(tl.foundAt), t(tl.arrivedAfter), t(tl.arrivedAt), t(tl.leftAfter), t(tl.leftAt),
-                span(tl.waitShortest, tl.waitLongest).orEmpty(), o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
+                span(tl.waitShortest, tl.waitLongest).orEmpty(),
+                when (tl.driverCameFirst) { true -> "ไม่ (คนขับรออาหาร)"; false -> "ใช่"; null -> "บอกไม่ได้" },
+                o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }
@@ -780,7 +876,7 @@ object ReportText {
         "1 ออเดอร์เข้า (หลัง),1 ออเดอร์เข้า (ไม่เกิน),2 ร้านทำเสร็จ (หลัง),2 ร้านทำเสร็จ (ไม่เกิน)," +
         "เวลาเตรียมอาหาร (เข้า→เสร็จ),ภาพ Ready," +
         "3 หาคนขับเจอ (หลัง),3 หาคนขับเจอ (ไม่เกิน),คนขับมาถึงร้าน (หลัง),คนขับมาถึงร้าน (ไม่เกิน)," +
-        "4 คนขับรับอาหาร (หลัง),4 คนขับรับอาหาร (ไม่เกิน),คนขับรอที่ร้าน (ถึง→รับอาหาร),5 ส่งเสร็จ (นาที)"
+        "4 คนขับรับอาหาร (หลัง),4 คนขับรับอาหาร (ไม่เกิน),คนขับรอที่ร้าน (ถึง→รับอาหาร),อาหารเสร็จก่อนคนขับมาถึง,5 ส่งเสร็จ (นาที)"
 
     private fun cell(s: String): String =
         if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
