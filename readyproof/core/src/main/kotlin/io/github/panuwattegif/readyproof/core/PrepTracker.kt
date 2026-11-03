@@ -185,5 +185,12 @@ class PrepTracker {
         const val MAX_MISSES = 3
         /** Note on a red-card photo whose screen moved while it was taken. */
         const val BACKUP_NOTE = "PREP_BACKUP รอตรวจสอบ"
+
+        /**
+         * The [found] orders first seen by a look at the whole Preparing list all came in after the
+         * tab last counted [before] (with no rise), when its count [now] rose by at least as many.
+         * Otherwise one of them may have been there unseen (another order left at the same time).
+         */
+        fun cameInAfterLastCount(found: Int, before: Int, now: Int): Boolean = found in 1..(now - before)
     }
 }

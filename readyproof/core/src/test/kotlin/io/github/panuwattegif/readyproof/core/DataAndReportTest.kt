@@ -470,19 +470,22 @@ class DataAndReportTest {
             "แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ระหว่าง 15:00:00–15:20:00)"), text)
         // the times of each order, to compare with Grab's own (accepted, picked up, delivered)
         // a time known only between two looks is shown as that range, never as one time
-        assertTrue(text.contains("\n   ⏱ ออเดอร์เข้า ไม่เกิน 11:05:00 · ต้องพร้อมภายใน 11:11:30 · ร้านทำเสร็จ ระหว่าง 11:09:36–11:09:40 · " +
-            "ภาพ Ready 11:09:41 · คนขับมาถึงร้าน ระหว่าง 11:14:58–11:15:02 · คนขับรับไปส่ง ระหว่าง 11:16:25–11:16:30 · ส่งเสร็จ 11:42\n"), text)
+        // how long it took to make (order in → pressed) and how long the driver waited at the shop
+        // (arrived → took it), not the time the shop set itself (owner, 3 Nov)
+        assertTrue(text.contains("\n   ⏱ ออเดอร์เข้า ไม่เกิน 11:05:00 · ร้านทำเสร็จ ระหว่าง 11:09:36–11:09:40 · เตรียม อย่างน้อย 4:36 นาที · " +
+            "ภาพ Ready 11:09:41 · คนขับมาถึงร้าน ระหว่าง 11:14:58–11:15:02 · คนขับรับอาหาร ระหว่าง 11:16:25–11:16:30 · " +
+            "คนขับรอ 1:23–1:32 นาที · ส่งเสร็จ 11:42\n"), text)
         assertTrue(text.contains(ReportText.TIMES_LEGEND))
-        assertEquals(listOf("ต้องพร้อมภายใน 11:11:30 · ร้านทำเสร็จ (กดพร้อมจัดส่ง) ระหว่าง 11:09:36–11:09:40",
-            "คนขับมาถึงร้าน ระหว่าง 11:14:58–11:15:02 · คนขับรับไปส่ง ระหว่าง 11:16:25–11:16:30 · ส่งเสร็จ 11:42"),
+        assertEquals(listOf("ออเดอร์เข้า ไม่เกิน 11:05:00 · ร้านทำเสร็จ (กดพร้อมจัดส่ง) ระหว่าง 11:09:36–11:09:40 · เตรียมอาหาร อย่างน้อย 4:36 นาที",
+            "คนขับมาถึงร้าน ระหว่าง 11:14:58–11:15:02 · คนขับรับอาหาร ระหว่าง 11:16:25–11:16:30 · คนขับรอ 1:23–1:32 นาที · ส่งเสร็จ 11:42"),
             ReportText.grabTimelineLines(r.cases.first { it.gf == "GF-204" }, zone))
         val c204 = r.cases.first { it.gf == "GF-204" }.timeline
         assertEquals(ms(2026, 10, 19, 11, 9, 36), c204.readyAfter)
         assertEquals(ms(2026, 10, 19, 11, 16, 25), c204.leftAfter)
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.startsWith("\uFEFF" + ReportText.TIMES_CSV_HEADER + "\n"), times)
-        assertTrue(times.contains("2026-10-19,GF-204,เสร็จ,4,กดทัน (เข้า Ready ก่อนหมดเวลา),,11:05:00,11:11:30," +
-            "11:09:36,11:09:40,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,11:42\n"), times)
+        assertTrue(times.contains("2026-10-19,GF-204,เสร็จ,4,กดทัน (เข้า Ready ก่อนหมดเวลา),,11:05:00," +
+            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,11:42\n"), times)
         assertEquals(ReportText.TIMES_CSV_HEADER.split(',').size, times.lines()[1].split(',').size)
         assertEquals(7, r.orders.size)
     }
@@ -573,13 +576,13 @@ class DataAndReportTest {
         assertEquals(ms(2026, 10, 26, 16, 0, 2), t760.prepFirstAfter)
         assertEquals(ms(2026, 10, 26, 16, 13, 12), t760.foundAfter)
         assertEquals(ms(2026, 10, 26, 16, 13, 20), t760.foundAt)
-        assertEquals("ออเดอร์เข้า ระหว่าง 16:00:02–16:00:10 · ต้องพร้อมภายใน 16:12:10 · ร้านทำเสร็จ ระหว่าง 16:10:00–16:10:05 · " +
+        assertEquals("ออเดอร์เข้า ระหว่าง 16:00:02–16:00:10 · ร้านทำเสร็จ ระหว่าง 16:10:00–16:10:05 · เตรียม 9:50–10:03 นาที · " +
             "ภาพ Ready 16:10:06 · หาคนขับเจอ ระหว่าง 16:13:12–16:13:20 · คนขับมาถึงร้าน ระหว่าง 16:18:31–16:18:40 · " +
-            "คนขับรับไปส่ง ระหว่าง 16:20:09–16:20:15 · ส่งเสร็จ 16:41",
+            "คนขับรับอาหาร ระหว่าง 16:20:09–16:20:15 · คนขับรอ 1:29–1:44 นาที · ส่งเสร็จ 16:41",
             ReportText.timelineText(t760, LocalDateTime.of(2026, 10, 26, 16, 41), zone))
         val times = ReportText.timelineCsv(r, zone)
-        assertTrue(times.contains("2026-10-26,GF-760,เสร็จ,,,16:00:02,16:00:10,16:12:10,16:10:00,16:10:05,16:10:06," +
-            "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,16:41\n"), times)
+        assertTrue(times.contains("2026-10-26,GF-760,เสร็จ,,,16:00:02,16:00:10,16:10:00,16:10:05,9:50–10:03 นาที,16:10:06," +
+            "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,1:29–1:44 นาที,16:41\n"), times)
 
         // gone from the Preparing list before the Ready list showed it: pressed by 11:09:24, 7 s after
         // its time (11:09:17), within the slack; the later look at the Ready list proves nothing
@@ -591,11 +594,38 @@ class DataAndReportTest {
         val text = ReportText.summary(r, zone)
         assertTrue(text.contains("GF-884 ล่าช้า 4 นาที (เสร็จ 11:31) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:51 · ต้องกดภายใน 11:09:17 " +
             "(อ่านได้ 0:34 ตอน 11:08:43) ทันพอดี (ห่าง 0:07 อยู่ในช่วงเผื่อคลาดเคลื่อน)"), text)
-        assertTrue(text.contains("ร้านทำเสร็จ ระหว่าง 11:08:43–11:09:24 · ภาพ Ready 11:09:51"), text)
+        assertTrue(text.contains("ร้านทำเสร็จ ระหว่าง 11:08:43–11:09:24 · เตรียม อย่างน้อย 13:02 นาที · ภาพ Ready 11:09:51"), text)
         // the missed card does not count as pressed: the whole Ready list without it after its time ran out
         val c901 = r.cases.first { it.gf == "GF-901" }
         assertNull(c901.timeline.leftPrepAt)
         assertEquals(Verdict.LATE, c901.verdict)
+    }
+
+    @Test
+    fun durationsAreShownAsWhatTheyCanHaveBeen() {
+        assertEquals("7:10–8:05 นาที", ReportText.span(430_000, 485_000))
+        assertEquals("7:10 นาที", ReportText.span(430_000, 430_900))
+        assertEquals("อย่างน้อย 7:10 นาที", ReportText.span(430_000, null))
+        assertEquals("ไม่เกิน 8:05 นาที", ReportText.span(null, 485_000))
+        assertNull(ReportText.span(null, null))
+        // order in after 10:00:00 and by 10:01:00; pressed after 10:08:00 and by 10:08:30
+        val t = Timeline(prepFirstAt = 601_000_000, prepFirstAfter = 600_940_000, readyAt = 601_450_000, readyAfter = 601_420_000)
+        assertEquals(420_000, t.prepShortest)
+        assertEquals(510_000, t.prepLongest)
+        // the driver: seen at the shop only once it was already there (no "not yet" before)
+        val w = Timeline(arrivedAt = 1_000_000, leftAt = 1_400_000, leftAfter = 1_390_000)
+        assertEquals(390_000, w.waitShortest)
+        assertNull(w.waitLongest)
+    }
+
+    @Test
+    fun anOrderCameInAfterTheCountRoseOnlyWhenTheRiseAccountsForIt() {
+        // the tab counted 2, then 3: the one order not seen before came in after the count said 2
+        assertTrue(PrepTracker.cameInAfterLastCount(found = 1, before = 2, now = 3))
+        // two new orders but the count rose by one: one of them was there already (another left)
+        assertFalse(PrepTracker.cameInAfterLastCount(found = 2, before = 2, now = 3))
+        assertFalse(PrepTracker.cameInAfterLastCount(found = 0, before = 2, now = 3))
+        assertTrue(PrepTracker.cameInAfterLastCount(found = 2, before = 0, now = 2))
     }
 
     @Test
