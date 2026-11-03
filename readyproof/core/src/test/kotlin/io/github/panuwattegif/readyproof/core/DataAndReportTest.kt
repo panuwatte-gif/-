@@ -232,7 +232,8 @@ class DataAndReportTest {
         assertTrue(text.contains("วันที่ 28/09/2026"))
         assertTrue(text.contains("ยอดจาก Grab (หัวหน้าประวัติ): เสร็จสมบูรณ์ 8 · ยกเลิก 0 — ⚠ อ่านรายการได้ไม่ครบ"))
         assertTrue(text.contains("Grab ระบุล่าช้า 5 ออเดอร์ = 62.50%"))
-        assertTrue(text.contains("= (5 − 2) / 8 = 37.50%"))
+        assertTrue(text.contains("% ล่าช้า เทียบ 3 แบบ (ฐาน 8 ออเดอร์)\n1) แบบ Grab: 5 ออเดอร์ = 62.50%\n" +
+            "2) ตัดออเดอร์ที่ร้านเสร็จก่อนเวลาที่ตั้งเอง: (5 − 2) = 3 ออเดอร์ = 37.50%\n"), text)
         assertFalse(text.contains("ช้าจริง:"))
         assertTrue(text.contains("GF-613 ล่าช้า 4 นาที (เสร็จ 11:20) — อยู่ในแท็บ Ready ตั้งแต่ 11:01:00 \"Finding a driver...\" · ต้องกดภายใน 11:03:00 (อ่านได้ 8:00 ตอน 10:55:00) เหลือเวลา 2:00"))
         assertTrue(text.contains("❌ กดช้า (หมดเวลาก่อนกด) — ห้ามส่ง Grab\nGF-533 ล่าช้า 7 นาที (เสร็จ 12:35) — อยู่ในแท็บ Ready ตั้งแต่ 12:20:00 \"โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง\" · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 12:15:00 มีภาพ\n"))
@@ -485,7 +486,7 @@ class DataAndReportTest {
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.startsWith("\uFEFF" + ReportText.TIMES_CSV_HEADER + "\n"), times)
         assertTrue(times.contains("2026-10-19,GF-204,เสร็จ,4,กดทัน (เข้า Ready ก่อนหมดเวลา),,11:05:00," +
-            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,11:42\n"), times)
+            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,ใช่,11:42\n"), times)
         assertEquals(ReportText.TIMES_CSV_HEADER.split(',').size, times.lines()[1].split(',').size)
         assertEquals(7, r.orders.size)
     }
@@ -582,7 +583,7 @@ class DataAndReportTest {
             ReportText.timelineText(t760, LocalDateTime.of(2026, 10, 26, 16, 41), zone))
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.contains("2026-10-26,GF-760,เสร็จ,,,16:00:02,16:00:10,16:10:00,16:10:05,9:50–10:03 นาที,16:10:06," +
-            "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,1:29–1:44 นาที,16:41\n"), times)
+            "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,1:29–1:44 นาที,ใช่,16:41\n"), times)
 
         // gone from the Preparing list before the Ready list showed it: pressed by 11:09:24, 7 s after
         // its time (11:09:17), within the slack; the later look at the Ready list proves nothing
@@ -626,6 +627,76 @@ class DataAndReportTest {
         assertFalse(PrepTracker.cameInAfterLastCount(found = 2, before = 2, now = 3))
         assertFalse(PrepTracker.cameInAfterLastCount(found = 0, before = 2, now = 3))
         assertTrue(PrepTracker.cameInAfterLastCount(found = 2, before = 0, now = 2))
+    }
+
+    @Test
+    fun theShopsPartEndsWhenItClosesTheOrder() {
+        // ready 10:23 (photo in Grab's app or the button), driver at the shop from 10:40: ready first
+        assertEquals(false, Timeline(readyAt = 1_000_000, readyAfter = 990_000, arrivedAt = 2_000_000, arrivedAfter = 1_990_000).driverCameFirst)
+        // the driver was there (10:13) before it was pressed (seen not ready at 10:15): the driver waited for the food
+        assertEquals(true, Timeline(readyAt = 1_200_000, readyAfter = 1_150_000, arrivedAt = 1_100_000).driverCameFirst)
+        // in the Ready tab and never seen with its driver there: ready first
+        assertEquals(false, Timeline(readyAt = 1_000_000, leftAt = 1_500_000).driverCameFirst)
+        // the driver already showed as there the first time it was seen ready: cannot tell
+        assertNull(Timeline(readyAt = 1_000_000, readyAfter = 990_000, arrivedAt = 1_000_000).driverCameFirst)
+        assertNull(Timeline().driverCameFirst)
+    }
+
+    @Test
+    fun theReportShowsEveryOrderAndTheRateThreeWays() {
+        val day = LocalDate.of(2026, 11, 2)
+        val records = listOf(
+            // GF-033: ready 10:23:05, the driver came 10:40:12, Grab says 4 minutes late
+            rec(ms(2026, 11, 2, 10, 21, 16), RecordKind.SEEN, Item("GF-033", ObsType.PREPARING, countdown = "7:00", prevAt = ms(2026, 11, 2, 10, 19, 37)), uri = null),
+            rec(ms(2026, 11, 2, 10, 23, 5), RecordKind.READY, Item("GF-033", ObsType.READY, prevAt = ms(2026, 11, 2, 10, 22, 50))),
+            rec(ms(2026, 11, 2, 10, 40, 12), RecordKind.SEEN, Item("GF-033", ObsType.ARRIVED, prevAt = ms(2026, 11, 2, 10, 40, 12)), uri = null),
+            rec(ms(2026, 11, 2, 10, 44, 9), RecordKind.SEEN, Item("GF-033", ObsType.LEFT_READY, prevAt = ms(2026, 11, 2, 10, 43, 44)), uri = null),
+            // GF-864F: the driver was at the shop (09:13:03) before it was ready (09:15:16–09:16:21), not late for Grab
+            rec(ms(2026, 11, 2, 9, 10), RecordKind.SEEN, Item("GF-864F", ObsType.PREPARING, countdown = "8:00"), uri = null),
+            rec(ms(2026, 11, 2, 9, 13, 3), RecordKind.SEEN, Item("GF-864F", ObsType.ARRIVED, prevAt = ms(2026, 11, 2, 9, 9, 48)), uri = null),
+            rec(ms(2026, 11, 2, 9, 15, 16), RecordKind.SEEN, Item("GF-864F", ObsType.PREPARING, countdown = "2:30"), uri = null),
+            rec(ms(2026, 11, 2, 9, 16, 21), RecordKind.READY, Item("GF-864F", ObsType.READY, prevAt = ms(2026, 11, 2, 9, 15, 16))),
+            rec(ms(2026, 11, 2, 9, 19, 40), RecordKind.SEEN, Item("GF-864F", ObsType.LEFT_READY, prevAt = ms(2026, 11, 2, 9, 18, 59)), uri = null),
+            rec(ms(2026, 11, 2, 19, 5), RecordKind.DELAY,
+                Item("GF-033", ObsType.DELAY, delayMin = 4, doneAt = "10:59"),
+                Item("GF-864F", ObsType.DONE, doneAt = "09:41")).copy(historyDate = "2026-11-02"),
+        )
+        val r = ReportBuilder.build(records, day, zone, cfg)
+        assertEquals(listOf("GF-864F"), r.driverWaitedForFood.map { it.gf })
+        assertEquals(listOf(
+            "% ล่าช้า เทียบ 3 แบบ (ฐาน 2 ออเดอร์)",
+            "1) แบบ Grab: 1 ออเดอร์ = 50.00%",
+            "2) ตัดออเดอร์ที่ร้านเสร็จก่อนเวลาที่ตั้งเอง: (1 − 1) = 0 ออเดอร์ = 0.00%",
+            "3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ): 1 ออเดอร์ = 50.00% — GF-864F",
+        ), ReportText.percentages(r))
+        val text = ReportText.summary(r, zone, allOrders = true)
+        assertTrue(text.contains("\n🕒 เวลาทุกออเดอร์ (2)\nGF-864F · ⚠ คนขับมาถึงก่อนอาหารเสร็จ\n   ⏱ ออเดอร์เข้า ไม่เกิน 09:10:00 · "), text)
+        assertTrue(text.contains("GF-033 · Grab ว่าล่าช้า 4 นาที · อาหารเสร็จก่อนคนขับมาถึง\n   ⏱ ออเดอร์เข้า ระหว่าง 10:19:37–10:21:16 · " +
+            "ร้านทำเสร็จ ระหว่าง 10:22:50–10:23:05 · เตรียม 1:34–3:28 นาที · ภาพ Ready 10:23:05 · คนขับมาถึงร้าน 10:40:12 · " +
+            "คนขับรับอาหาร ระหว่าง 10:43:44–10:44:09 · คนขับรอ 3:32–3:57 นาที · ส่งเสร็จ 10:59\n"), text)
+        // too long for LINE: only in the file
+        assertFalse(ReportText.summary(r, zone).contains("เวลาทุกออเดอร์"))
+    }
+
+    @Test
+    fun ordersOfTheDayAreShownBeforeHistoryIsRead() {
+        val day = LocalDate.of(2026, 11, 3)
+        val records = listOf(
+            rec(ms(2026, 11, 3, 9, 5, 51), RecordKind.SEEN, Item("GF-420", ObsType.PREPARING, countdown = "9:27", prevAt = ms(2026, 11, 3, 9, 5, 31)), uri = null),
+            rec(ms(2026, 11, 3, 9, 20, 2), RecordKind.READY, Item("GF-420", ObsType.READY, prevAt = ms(2026, 11, 3, 9, 19, 40))),
+            rec(ms(2026, 11, 3, 9, 24, 14), RecordKind.SEEN, Item("GF-420", ObsType.LEFT_READY, prevAt = ms(2026, 11, 3, 9, 23, 52)), uri = null),
+            // the same number again later in the day: another order
+            rec(ms(2026, 11, 3, 15, 0), RecordKind.SEEN, Item("GF-420", ObsType.PREPARING, countdown = "10:00"), uri = null),
+            // still being prepared
+            rec(ms(2026, 11, 3, 15, 2), RecordKind.SEEN, Item("GF-151", ObsType.PREPARING, countdown = "6:00"), uri = null),
+        )
+        val live = ReportBuilder.liveOrders(records, day, zone)
+        assertEquals(listOf("GF-420", "GF-420", "GF-151"), live.map { it.gf })
+        assertEquals("ออเดอร์เข้า ระหว่าง 09:05:31–09:05:51 · ร้านทำเสร็จ ระหว่าง 09:19:40–09:20:02 · เตรียม 13:49–14:31 นาที · " +
+            "ภาพ Ready 09:20:02 · คนขับรับอาหาร ระหว่าง 09:23:52–09:24:14",
+            ReportText.timelineText(live[0].timeline, null, zone))
+        assertNull(live[1].timeline.pressedBy)
+        assertEquals(ms(2026, 11, 3, 15, 0), live[1].timeline.prepFirstAt)
     }
 
     @Test

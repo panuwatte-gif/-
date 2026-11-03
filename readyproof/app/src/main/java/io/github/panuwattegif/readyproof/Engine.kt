@@ -1633,11 +1633,12 @@ class Engine(private val service: ProofService) {
             " ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
             "กดทัน ${report.inTime.size} · กดช้า ${report.late.size} · บอกไม่ได้ ${report.unchecked.size} · " +
             "ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
-            "% ที่ร้านควรได้ ${ReportText.pct(report.realPct)}" +
+            "% ล่าช้า: Grab ${ReportText.pct(report.grabPct)} · ตัดที่เสร็จก่อนเวลาที่ตั้ง ${ReportText.pct(report.realPct)} · " +
+            "ที่ถูกต้อง ${ReportText.pct(report.fairPct)}" +
             (if (incomplete) "\n⚠ ยังไม่ครบ: ดูรายละเอียดในรายงาน" else "")
         setEodStatus(
             "สรุปวันที่ ${ReportText.date(date)} เสร็จ ${ReportText.time(System.currentTimeMillis(), zone)} · " +
-                "ล่าช้าตาม Grab ${ReportText.pct(report.grabPct)} → ที่ควรได้ ${ReportText.pct(report.realPct)}",
+                "ล่าช้าตาม Grab ${ReportText.pct(report.grabPct)} → ที่ถูกต้อง ${ReportText.pct(report.fairPct)}",
         )
         Notifier.cancel(service, Notifier.ID_STATUS)
         Notifier.report(service, "สรุปสิ้นวัน ${ReportText.date(date)} พร้อมแล้ว", text)

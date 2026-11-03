@@ -25,7 +25,7 @@ object DailyExport {
         val zone = ZoneId.of("Asia/Bangkok")
         val records = RecordStore.loadRange(ctx, day.minusDays(1), day.plusDays(1))
         val report = ReportBuilder.build(records, day, zone, ConfigStore.get(ctx), shopId, reachedEnd)
-        val text = ReportText.summary(report, zone) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
+        val text = ReportText.summary(report, zone, allOrders = true) + (failureReason?.let { "\nปัญหาการตรวจ History: $it\n" } ?: "")
         saveLocal(ctx, "${shopId ?: "UNKNOWN"}_summary-$day.txt", text)
         // Content-addressed outbox keeps each report revision; no stale report can overwrite a newer one.
         val manifest = Json.write(linkedMapOf(

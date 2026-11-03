@@ -114,6 +114,37 @@ class ReportActivity : Activity() {
                 cases.forEach { caseCard(col, it, sets[it], report, zone) }
             }
         }
+        ordersCard(col, report, records, shopId, zone)
+    }
+
+    /**
+     * Every order of the day with its times (owner, 3 Nov: the report showed none). Before History
+     * is read, the orders seen so far, without their delivery time.
+     */
+    private fun ordersCard(col: LinearLayout, r: DailyReport, records: List<Record>, shopId: String?, zone: ZoneId) {
+        val live = r.orders.isEmpty()
+        val orders = if (live) ReportBuilder.liveOrders(records, date, zone, shopId) else r.orders
+        Ui.text(col, "🕒 เวลาทุกออเดอร์ (${orders.size})", 17f, bold = true, topDp = 10)
+        Ui.text(
+            col,
+            (if (live) "ระหว่างวัน: เวลาส่งเสร็จและ Grab ว่าล่าช้า จะขึ้นหลังแอปอ่านหน้าประวัติตอนปิดร้าน\n" else "") +
+                "เตรียม = ออเดอร์เข้า → ร้านกดเสร็จ · คนขับรอ = คนขับมาถึงร้าน → รับอาหาร · \"ระหว่าง A–B\" = เกิดในช่วงนั้น",
+            13f, Ui.MUTED,
+        )
+        if (orders.isEmpty()) {
+            Ui.text(col, "ยังไม่มีออเดอร์ที่แอปเห็นในวันนี้", 14f, Ui.MUTED)
+            return
+        }
+        val card = Ui.card(col)
+        orders.forEach { o ->
+            val (head, times) = ReportText.orderLines(o, zone)
+            val color = when (o.timeline.driverCameFirst) {
+                true -> Ui.RED
+                else -> if (o.delayMin != null) Ui.AMBER else Ui.TEXT
+            }
+            Ui.text(card, head, 15f, color, bold = true, topDp = 6)
+            Ui.text(card, times.trim(), 13f, Ui.MUTED)
+        }
     }
 
     private fun groupTitle(v: Verdict): String = when (v) {
@@ -179,12 +210,11 @@ class ReportActivity : Activity() {
         Ui.text(s, "❌ ${Verdict.LATE.label}: ${r.late.size}", 15f, Ui.RED)
         Ui.text(s, "⚠️ ${Verdict.UNCHECKED.label}: ${r.unchecked.size}", 15f, Ui.AMBER)
         Ui.text(s, "❓ ${Verdict.NO_EVIDENCE.label}: ${r.noEvidence.size}", 15f, Ui.MUTED)
-        Ui.text(s, "% ล่าช้าแบบ Grab = ${r.delayed} / ${r.base} = ${ReportText.pct(r.grabPct)}", 15f, topDp = 4)
-        Ui.text(
-            s,
-            "% ที่ร้านควรได้ = (${r.delayed} − ${r.inTime.size}) / ${r.base} = ${ReportText.pct(r.realPct)}",
-            16f, bold = true,
-        )
+        // the same base three ways (owner, 3 Nov): as Grab counts it, without the orders finished
+        // before the time the shop set, and only the orders whose driver came before the food was ready
+        ReportText.percentages(r).forEachIndexed { i, line ->
+            Ui.text(s, line, if (i == 3) 16f else 15f, if (i == 3) Ui.GREEN else Ui.TEXT, bold = i == 0 || i == 3, topDp = if (i == 0) 6 else 0)
+        }
         if (r.historyOrders == 0) {
             Ui.text(
                 s,
@@ -374,7 +404,7 @@ class ReportActivity : Activity() {
             val shop = r.shopId ?: "UNKNOWN"
             val uris = ArrayList<Uri>()
             uris += MediaSaver.saveDownload(this, "${shop}_summary-${r.date}.txt", "text/plain",
-                ReportText.summary(r, zone).toByteArray(Charsets.UTF_8))
+                ReportText.summary(r, zone, allOrders = true).toByteArray(Charsets.UTF_8))
             // Written by the closing History pass; missing until the first pass of that day.
             val manifest = java.io.File(java.io.File(filesDir, "reports"), "${shop}_manifest-${r.date}.json")
             if (manifest.exists()) {
