@@ -175,6 +175,8 @@ data class OrderTimeline(
     val cancelled: Boolean,
     val delayMin: Int?,
     val timeline: Timeline,
+    /** Finished within the time the shop set itself, or not (see [ReportBuilder.judge]). */
+    val setTime: Verdict? = null,
 )
 
 /** The files handed to Grab for one order, named the way the shop already files them. */
@@ -409,7 +411,8 @@ object ReportBuilder {
      * report showed no times during the day). One per order number, and a new one when the number
      * shows up again after its driver took it. No delivery time yet.
      */
-    fun liveOrders(records: List<Record>, date: LocalDate, zone: ZoneId, shopId: String? = null): List<OrderTimeline> {
+    fun liveOrders(records: List<Record>, date: LocalDate, zone: ZoneId, shopId: String? = null,
+                   slackMs: Long = PRESS_TOLERANCE_MS): List<OrderTimeline> {
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
         val dayEnd = TimeResolve.toMillis(date.plusDays(1).atStartOfDay(), zone)
         val sorted = records.filter { it.shopId == shopId }.sortedBy { it.t }
@@ -435,8 +438,9 @@ object ReportBuilder {
             (!photo || r.uri != null) && r.t in sp.from..sp.until && r.items.any { it.gf == sp.gf && it.type == ObsType.READY }
         }?.t
         return spans.map { sp ->
-            val t = timesOf(sorted, sp.gf, sp.from, sp.until, firstReady(sp, photo = false)).first
-            OrderTimeline(sp.gf, null, false, null, t.copy(readyPhotoAt = firstReady(sp, photo = true)))
+            val (t, prep) = timesOf(sorted, sp.gf, sp.from, sp.until, firstReady(sp, photo = false))
+            OrderTimeline(sp.gf, null, false, null, t.copy(readyPhotoAt = firstReady(sp, photo = true)),
+                judge(t.pressedBy, prep, t.pressedAfter, slackMs))
         }
     }
 
@@ -558,15 +562,16 @@ object ReportBuilder {
             val doneMs = a.doneAt?.let { TimeResolve.toMillis(it, zone) }
             val previousEnd = onDate.filter { it.gf == a.gf && it.doneAt != null && a.doneAt != null && it.doneAt < a.doneAt }
                 .maxOfOrNull { TimeResolve.toMillis(it.doneAt!!, zone) }
-            val timeline = if (doneMs == null || onDate.any { it.gf == a.gf && it.doneAt == null }) {
-                Timeline()
+            val (timeline, prep) = if (doneMs == null || onDate.any { it.gf == a.gf && it.doneAt == null }) {
+                Timeline() to null
             } else {
                 val from = maxOf(dayStart, doneMs - windowMs, previousEnd?.plus(MINUTE_MS + 1) ?: dayStart)
                 val readyAt = readySeenRecords.firstOrNull { r -> r.t in from..doneMs + MINUTE_MS && r.items.any { it.gf == a.gf && it.type == ObsType.READY } }?.t
                 val photo = readyShots.firstOrNull { r -> r.t in from..doneMs + MINUTE_MS && r.items.any { it.gf == a.gf && it.type == ObsType.READY } }?.t
-                timesOf(sorted, a.gf, from, doneMs + MINUTE_MS, readyAt).first.copy(readyPhotoAt = photo)
+                timesOf(sorted, a.gf, from, doneMs + MINUTE_MS, readyAt).let { (t, p) -> t.copy(readyPhotoAt = photo) to p }
             }
-            OrderTimeline(a.gf, a.doneAt, a.cancelled, a.delayMin.takeIf { a.delayed }, timeline)
+            OrderTimeline(a.gf, a.doneAt, a.cancelled, a.delayMin.takeIf { a.delayed }, timeline,
+                judge(timeline.pressedBy, prep, timeline.pressedAfter, cfg.pressSlackSeconds * 1000L))
         }
         return DailyReport(
             date = date,
@@ -651,6 +656,7 @@ object ReportText {
                 t.prepFirstAt?.let { "ออเดอร์เข้า " + when_(it, t.prepFirstAfter, zone) },
                 t.pressedBy?.let { "ร้านทำเสร็จ (กดพร้อมจัดส่ง) " + when_(it, t.pressedAfter, zone) },
                 span(t.prepShortest, t.prepLongest)?.let { "เตรียมอาหาร $it" },
+                setTimeText(c.verdict),
             ),
             listOfNotNull(
                 t.arrivedAt?.let { "คนขับมาถึงร้าน " + when_(it, t.arrivedAfter, zone) },
@@ -683,6 +689,17 @@ object ReportText {
     fun pct(v: Double?): String = if (v == null) "-" else String.format(Locale.ROOT, "%.2f%%", v)
 
     /**
+     * Within the time the shop set itself, or over it: all that time is for (owner, 3 Nov). The
+     * set time and how much was left are not shown.
+     */
+    fun setTimeText(v: Verdict?): String? = when (v) {
+        Verdict.IN_TIME -> "ทันเวลาที่ตั้ง"
+        Verdict.LATE -> "เกินเวลาที่ตั้ง"
+        Verdict.UNCHECKED -> "บอกไม่ได้ว่าทันเวลาที่ตั้ง"
+        Verdict.NO_EVIDENCE, null -> null
+    }
+
+    /**
      * The delay rate three ways, on the same base (owner, 3 Nov): as Grab counts it; without the
      * orders the shop finished before the time it set itself; and counting only the orders whose
      * driver was at the shop before the food was ready.
@@ -690,7 +707,7 @@ object ReportText {
     fun percentages(r: DailyReport): List<String> = listOf(
         "% ล่าช้า เทียบ 3 แบบ (ฐาน ${r.base} ออเดอร์)",
         "1) แบบ Grab: ${r.delayed} ออเดอร์ = ${pct(r.grabPct)}",
-        "2) ตัดออเดอร์ที่ร้านเสร็จก่อนเวลาที่ตั้งเอง: (${r.delayed} − ${r.inTime.size}) = ${r.actualDelayed} ออเดอร์ = ${pct(r.realPct)}",
+        "2) ตัดออเดอร์ที่ร้านเสร็จทันเวลาที่ตั้ง: (${r.delayed} − ${r.inTime.size}) = ${r.actualDelayed} ออเดอร์ = ${pct(r.realPct)}",
         "3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ): ${r.driverWaitedForFood.size} ออเดอร์ = ${pct(r.fairPct)}" +
             r.driverWaitedForFood.joinToString(", ") { it.gf }.let { if (it.isEmpty()) "" else " — $it" } +
             (if (r.driverWaitUnknown.isNotEmpty()) " · บอกไม่ได้ ${r.driverWaitUnknown.size} ออเดอร์" else ""),
@@ -702,6 +719,7 @@ object ReportText {
             o.gf,
             if (o.cancelled) "ยกเลิก" else null,
             o.delayMin?.let { "Grab ว่าล่าช้า $it นาที" },
+            setTimeText(o.setTime),
             when (o.timeline.driverCameFirst) {
                 true -> "⚠ คนขับมาถึงก่อนอาหารเสร็จ"
                 false -> "อาหารเสร็จก่อนคนขับมาถึง"
@@ -787,27 +805,16 @@ object ReportText {
             append(" — ออกจากหน้ากำลังเตรียมแล้วตอน ").append(timeSec(c.timeline.leftPrepAt, zone))
                 .append(" แต่ไม่เห็นในแท็บ Ready (ไม่มีภาพ ส่ง Grab ไม่ได้)")
         }
+        // the time the shop set only says within or over it (owner, 3 Nov)
         val p = c.prep
         when {
             p == null -> if (c.readyAt != null) append(" · ไม่มีข้อมูลหน้ากำลังเตรียม")
             p.ranOut -> {
-                append(" · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน ").append(timeSec(p.readAt, zone))
-                append(if (p.overdueShot != null) " มีภาพ" else " (ไม่มีภาพ)")
+                append(" · เกินเวลาที่ตั้ง (หน้ากำลังเตรียมขึ้น 0:00 ตอน ").append(timeSec(p.readAt, zone))
+                append(if (p.overdueShot != null) " มีภาพ)" else " ไม่มีภาพ)")
             }
-            c.verdict == Verdict.UNCHECKED -> append(" · ต้องกดภายใน ").append(timeSec(p.deadline, zone))
-                .append(" แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ")
-                .append(when_(c.timeline.pressedBy ?: p.deadline, c.timeline.pressedAfter, zone)).append(')')
-            else -> {
-                append(" · ต้องกดภายใน ").append(timeSec(p.deadline, zone))
-                    .append(" (อ่านได้ ").append(p.countdown).append(" ตอน ").append(timeSec(p.readAt, zone)).append(')')
-                c.lateMs?.let { ms ->
-                    when {
-                        ms <= 0 -> append(" เหลือเวลา ").append(minSec(-ms))
-                        c.verdict == Verdict.IN_TIME -> append(" ทันพอดี (ห่าง ").append(minSec(ms)).append(" อยู่ในช่วงเผื่อคลาดเคลื่อน)")
-                        else -> append(" ช้าไป ").append(minSec(ms))
-                    }
-                }
-            }
+            c.verdict == Verdict.UNCHECKED -> append(" · บอกไม่ได้ว่าทันเวลาที่ตั้ง (ตอนหมดเวลาแอปไม่ได้ดูอยู่)")
+            else -> setTimeText(c.verdict)?.let { append(" · ").append(it) }
         }
     }
 
@@ -862,7 +869,7 @@ object ReportText {
             val row = listOf(
                 r.date.toString(), o.gf, if (o.cancelled) "ยกเลิก" else "เสร็จ", o.delayMin?.toString().orEmpty(), verdict,
                 t(tl.prepFirstAfter), t(tl.prepFirstAt), t(tl.pressedAfter), t(tl.pressedBy),
-                span(tl.prepShortest, tl.prepLongest).orEmpty(), t(tl.readyPhotoAt),
+                span(tl.prepShortest, tl.prepLongest).orEmpty(), setTimeText(o.setTime).orEmpty(), t(tl.readyPhotoAt),
                 t(tl.foundAfter), t(tl.foundAt), t(tl.arrivedAfter), t(tl.arrivedAt), t(tl.leftAfter), t(tl.leftAt),
                 span(tl.waitShortest, tl.waitLongest).orEmpty(),
                 when (tl.driverCameFirst) { true -> "ไม่ (คนขับรออาหาร)"; false -> "ใช่"; null -> "บอกไม่ได้" },
@@ -874,7 +881,7 @@ object ReportText {
 
     const val TIMES_CSV_HEADER = "วันที่,ออเดอร์,สถานะ,Grab ว่าล่าช้า (นาที),ผลตรวจ," +
         "1 ออเดอร์เข้า (หลัง),1 ออเดอร์เข้า (ไม่เกิน),2 ร้านทำเสร็จ (หลัง),2 ร้านทำเสร็จ (ไม่เกิน)," +
-        "เวลาเตรียมอาหาร (เข้า→เสร็จ),ภาพ Ready," +
+        "เวลาเตรียมอาหาร (เข้า→เสร็จ),เวลาที่ร้านตั้ง,ภาพ Ready," +
         "3 หาคนขับเจอ (หลัง),3 หาคนขับเจอ (ไม่เกิน),คนขับมาถึงร้าน (หลัง),คนขับมาถึงร้าน (ไม่เกิน)," +
         "4 คนขับรับอาหาร (หลัง),4 คนขับรับอาหาร (ไม่เกิน),คนขับรอที่ร้าน (ถึง→รับอาหาร),อาหารเสร็จก่อนคนขับมาถึง,5 ส่งเสร็จ (นาที)"
 

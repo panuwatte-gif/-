@@ -233,10 +233,10 @@ class DataAndReportTest {
         assertTrue(text.contains("ยอดจาก Grab (หัวหน้าประวัติ): เสร็จสมบูรณ์ 8 · ยกเลิก 0 — ⚠ อ่านรายการได้ไม่ครบ"))
         assertTrue(text.contains("Grab ระบุล่าช้า 5 ออเดอร์ = 62.50%"))
         assertTrue(text.contains("% ล่าช้า เทียบ 3 แบบ (ฐาน 8 ออเดอร์)\n1) แบบ Grab: 5 ออเดอร์ = 62.50%\n" +
-            "2) ตัดออเดอร์ที่ร้านเสร็จก่อนเวลาที่ตั้งเอง: (5 − 2) = 3 ออเดอร์ = 37.50%\n"), text)
+            "2) ตัดออเดอร์ที่ร้านเสร็จทันเวลาที่ตั้ง: (5 − 2) = 3 ออเดอร์ = 37.50%\n"), text)
         assertFalse(text.contains("ช้าจริง:"))
-        assertTrue(text.contains("GF-613 ล่าช้า 4 นาที (เสร็จ 11:20) — อยู่ในแท็บ Ready ตั้งแต่ 11:01:00 \"Finding a driver...\" · ต้องกดภายใน 11:03:00 (อ่านได้ 8:00 ตอน 10:55:00) เหลือเวลา 2:00"))
-        assertTrue(text.contains("❌ กดช้า (หมดเวลาก่อนกด) — ห้ามส่ง Grab\nGF-533 ล่าช้า 7 นาที (เสร็จ 12:35) — อยู่ในแท็บ Ready ตั้งแต่ 12:20:00 \"โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง\" · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 12:15:00 มีภาพ\n"))
+        assertTrue(text.contains("GF-613 ล่าช้า 4 นาที (เสร็จ 11:20) — อยู่ในแท็บ Ready ตั้งแต่ 11:01:00 \"Finding a driver...\" · ทันเวลาที่ตั้ง"))
+        assertTrue(text.contains("❌ กดช้า (หมดเวลาก่อนกด) — ห้ามส่ง Grab\nGF-533 ล่าช้า 7 นาที (เสร็จ 12:35) — อยู่ในแท็บ Ready ตั้งแต่ 12:20:00 \"โปรดเตรียมคำสั่งซื้อนี้ให้พร้อมจัดส่ง\" · เกินเวลาที่ตั้ง (หน้ากำลังเตรียมขึ้น 0:00 ตอน 12:15:00 มีภาพ)\n"))
         assertTrue(text.contains("❓ ไม่มีหลักฐาน / ระบบจับไม่ได้ (ไม่ได้แปลว่าช้าจริง)\nGF-888 ล่าช้า 2 นาที (เสร็จ 12:10)\nGF-156 ล่าช้า 6 นาที (เสร็จ 12:40)\n"))
 
         val csv = ReportText.csv(r, zone)
@@ -461,14 +461,15 @@ class DataAndReportTest {
         assertEquals(listOf("GF-204", "GF-674", "GF-234"), r.sets(Verdict.IN_TIME).map { it.case.gf })
         assertEquals(57.14, Math.round(r.realPct!! * 100) / 100.0) // (7 − 3) / 7
         val text = ReportText.summary(r, zone)
-        assertTrue(text.contains("GF-022 ล่าช้า 6 นาที (เสร็จ 16:27) — อยู่ในแท็บ Ready ตั้งแต่ 15:49:33 \"GF-022 คนขับของคุณมาถึงแล้ว 1 รายการ\" · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 15:47:05 มีภาพ"), text)
-        assertTrue(text.contains("GF-328 ล่าช้า 5 นาที (เสร็จ 12:22) — อยู่ในแท็บ Ready ตั้งแต่ 12:02:25 \"GF-328 กำลังค้นหาคนขับ... 1 รายการ\" · ต้องกดภายใน 12:01:40 (อ่านได้ 1:40 ตอน 12:00:00) ช้าไป 0:45"), text)
-        assertTrue(text.contains("GF-204 ล่าช้า 4 นาที (เสร็จ 11:42) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:40 \"GF-204 กำลังค้นหาคนขับ... 2 รายการ\" · ต้องกดภายใน 11:11:30 (อ่านได้ 6:30 ตอน 11:05:00) เหลือเวลา 1:50"), text)
-        assertTrue(text.contains("· ต้องกดภายใน 13:02:00 (อ่านได้ 2:00 ตอน 13:00:00) ทันพอดี (ห่าง 0:05 อยู่ในช่วงเผื่อคลาดเคลื่อน)"), text)
+        assertTrue(text.contains("GF-022 ล่าช้า 6 นาที (เสร็จ 16:27) — อยู่ในแท็บ Ready ตั้งแต่ 15:49:33 \"GF-022 คนขับของคุณมาถึงแล้ว 1 รายการ\" · เกินเวลาที่ตั้ง (หน้ากำลังเตรียมขึ้น 0:00 ตอน 15:47:05 มีภาพ)"), text)
+        assertTrue(text.contains("GF-328 ล่าช้า 5 นาที (เสร็จ 12:22) — อยู่ในแท็บ Ready ตั้งแต่ 12:02:25 \"GF-328 กำลังค้นหาคนขับ... 1 รายการ\" · เกินเวลาที่ตั้ง"), text)
+        assertTrue(text.contains("GF-204 ล่าช้า 4 นาที (เสร็จ 11:42) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:40 \"GF-204 กำลังค้นหาคนขับ... 2 รายการ\" · ทันเวลาที่ตั้ง"), text)
+        // 5 s after: within the slack, shown only as within the time the shop set (owner, 3 Nov)
+        assertTrue(text.contains("GF-674 ล่าช้า 7 นาที (เสร็จ 13:17) — อยู่ในแท็บ Ready ตั้งแต่ 13:02:05 · ทันเวลาที่ตั้ง\n"), text)
         assertTrue(text.contains("GF-191 ล่าช้า 3 นาที (เสร็จ 11:51) — อยู่ในแท็บ Ready ตั้งแต่ 10:40:00 · ไม่มีข้อมูลหน้ากำลังเตรียม"), text)
         // still 2:00 left at 15:00 (not pressed then), seen in Ready at 15:20
-        assertTrue(text.contains("GF-500 ล่าช้า 5 นาที (เสร็จ 15:44) — อยู่ในแท็บ Ready ตั้งแต่ 15:20:00 · ต้องกดภายใน 15:02:00 " +
-            "แต่ตอนหมดเวลาแอปไม่ได้ดูอยู่ (กดพร้อมจัดส่ง ระหว่าง 15:00:00–15:20:00)"), text)
+        assertTrue(text.contains("GF-500 ล่าช้า 5 นาที (เสร็จ 15:44) — อยู่ในแท็บ Ready ตั้งแต่ 15:20:00 · " +
+            "บอกไม่ได้ว่าทันเวลาที่ตั้ง (ตอนหมดเวลาแอปไม่ได้ดูอยู่)"), text)
         // the times of each order, to compare with Grab's own (accepted, picked up, delivered)
         // a time known only between two looks is shown as that range, never as one time
         // how long it took to make (order in → pressed) and how long the driver waited at the shop
@@ -477,7 +478,7 @@ class DataAndReportTest {
             "ภาพ Ready 11:09:41 · คนขับมาถึงร้าน ระหว่าง 11:14:58–11:15:02 · คนขับรับอาหาร ระหว่าง 11:16:25–11:16:30 · " +
             "คนขับรอ 1:23–1:32 นาที · ส่งเสร็จ 11:42\n"), text)
         assertTrue(text.contains(ReportText.TIMES_LEGEND))
-        assertEquals(listOf("ออเดอร์เข้า ไม่เกิน 11:05:00 · ร้านทำเสร็จ (กดพร้อมจัดส่ง) ระหว่าง 11:09:36–11:09:40 · เตรียมอาหาร อย่างน้อย 4:36 นาที",
+        assertEquals(listOf("ออเดอร์เข้า ไม่เกิน 11:05:00 · ร้านทำเสร็จ (กดพร้อมจัดส่ง) ระหว่าง 11:09:36–11:09:40 · เตรียมอาหาร อย่างน้อย 4:36 นาที · ทันเวลาที่ตั้ง",
             "คนขับมาถึงร้าน ระหว่าง 11:14:58–11:15:02 · คนขับรับอาหาร ระหว่าง 11:16:25–11:16:30 · คนขับรอ 1:23–1:32 นาที · ส่งเสร็จ 11:42"),
             ReportText.grabTimelineLines(r.cases.first { it.gf == "GF-204" }, zone))
         val c204 = r.cases.first { it.gf == "GF-204" }.timeline
@@ -486,7 +487,7 @@ class DataAndReportTest {
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.startsWith("\uFEFF" + ReportText.TIMES_CSV_HEADER + "\n"), times)
         assertTrue(times.contains("2026-10-19,GF-204,เสร็จ,4,กดทัน (เข้า Ready ก่อนหมดเวลา),,11:05:00," +
-            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,ใช่,11:42\n"), times)
+            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,ทันเวลาที่ตั้ง,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,ใช่,11:42\n"), times)
         assertEquals(ReportText.TIMES_CSV_HEADER.split(',').size, times.lines()[1].split(',').size)
         assertEquals(7, r.orders.size)
     }
@@ -535,7 +536,7 @@ class DataAndReportTest {
         assertEquals(Verdict.IN_TIME, case("GF-105", "17:40").verdict)
         val text = ReportText.summary(r, zone)
         assertTrue(text.contains("GF-101 ล่าช้า 3 นาที (เสร็จ 11:30) — เห็นในแท็บ Ready ตั้งแต่ 11:03:00 (ไม่มีภาพ ส่ง Grab ไม่ได้)"), text)
-        assertTrue(text.contains("GF-103 ล่าช้า 4 นาที (เสร็จ 13:40) · หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน 13:00:00 (ไม่มีภาพ)"), text)
+        assertTrue(text.contains("GF-103 ล่าช้า 4 นาที (เสร็จ 13:40) · เกินเวลาที่ตั้ง (หน้ากำลังเตรียมขึ้น 0:00 ตอน 13:00:00 ไม่มีภาพ)"), text)
         assertTrue(text.contains("กดทัน (เข้า Ready ก่อนหมดเวลา): 2 (มีภาพ Ready ส่ง Grab ได้ 1)"), text)
     }
 
@@ -582,7 +583,7 @@ class DataAndReportTest {
             "คนขับรับอาหาร ระหว่าง 16:20:09–16:20:15 · คนขับรอ 1:29–1:44 นาที · ส่งเสร็จ 16:41",
             ReportText.timelineText(t760, LocalDateTime.of(2026, 10, 26, 16, 41), zone))
         val times = ReportText.timelineCsv(r, zone)
-        assertTrue(times.contains("2026-10-26,GF-760,เสร็จ,,,16:00:02,16:00:10,16:10:00,16:10:05,9:50–10:03 นาที,16:10:06," +
+        assertTrue(times.contains("2026-10-26,GF-760,เสร็จ,,,16:00:02,16:00:10,16:10:00,16:10:05,9:50–10:03 นาที,ทันเวลาที่ตั้ง,16:10:06," +
             "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,1:29–1:44 นาที,ใช่,16:41\n"), times)
 
         // gone from the Preparing list before the Ready list showed it: pressed by 11:09:24, 7 s after
@@ -593,8 +594,7 @@ class DataAndReportTest {
         assertEquals(ms(2026, 10, 26, 11, 9, 17), c884.prep?.deadline)
         assertEquals(Verdict.IN_TIME, c884.verdict)
         val text = ReportText.summary(r, zone)
-        assertTrue(text.contains("GF-884 ล่าช้า 4 นาที (เสร็จ 11:31) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:51 · ต้องกดภายใน 11:09:17 " +
-            "(อ่านได้ 0:34 ตอน 11:08:43) ทันพอดี (ห่าง 0:07 อยู่ในช่วงเผื่อคลาดเคลื่อน)"), text)
+        assertTrue(text.contains("GF-884 ล่าช้า 4 นาที (เสร็จ 11:31) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:51 · ทันเวลาที่ตั้ง"), text)
         assertTrue(text.contains("ร้านทำเสร็จ ระหว่าง 11:08:43–11:09:24 · เตรียม อย่างน้อย 13:02 นาที · ภาพ Ready 11:09:51"), text)
         // the missed card does not count as pressed: the whole Ready list without it after its time ran out
         val c901 = r.cases.first { it.gf == "GF-901" }
@@ -666,12 +666,12 @@ class DataAndReportTest {
         assertEquals(listOf(
             "% ล่าช้า เทียบ 3 แบบ (ฐาน 2 ออเดอร์)",
             "1) แบบ Grab: 1 ออเดอร์ = 50.00%",
-            "2) ตัดออเดอร์ที่ร้านเสร็จก่อนเวลาที่ตั้งเอง: (1 − 1) = 0 ออเดอร์ = 0.00%",
+            "2) ตัดออเดอร์ที่ร้านเสร็จทันเวลาที่ตั้ง: (1 − 1) = 0 ออเดอร์ = 0.00%",
             "3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ): 1 ออเดอร์ = 50.00% — GF-864F",
         ), ReportText.percentages(r))
         val text = ReportText.summary(r, zone, allOrders = true)
-        assertTrue(text.contains("\n🕒 เวลาทุกออเดอร์ (2)\nGF-864F · ⚠ คนขับมาถึงก่อนอาหารเสร็จ\n   ⏱ ออเดอร์เข้า ไม่เกิน 09:10:00 · "), text)
-        assertTrue(text.contains("GF-033 · Grab ว่าล่าช้า 4 นาที · อาหารเสร็จก่อนคนขับมาถึง\n   ⏱ ออเดอร์เข้า ระหว่าง 10:19:37–10:21:16 · " +
+        assertTrue(text.contains("\n🕒 เวลาทุกออเดอร์ (2)\nGF-864F · ทันเวลาที่ตั้ง · ⚠ คนขับมาถึงก่อนอาหารเสร็จ\n   ⏱ ออเดอร์เข้า ไม่เกิน 09:10:00 · "), text)
+        assertTrue(text.contains("GF-033 · Grab ว่าล่าช้า 4 นาที · ทันเวลาที่ตั้ง · อาหารเสร็จก่อนคนขับมาถึง\n   ⏱ ออเดอร์เข้า ระหว่าง 10:19:37–10:21:16 · " +
             "ร้านทำเสร็จ ระหว่าง 10:22:50–10:23:05 · เตรียม 1:34–3:28 นาที · ภาพ Ready 10:23:05 · คนขับมาถึงร้าน 10:40:12 · " +
             "คนขับรับอาหาร ระหว่าง 10:43:44–10:44:09 · คนขับรอ 3:32–3:57 นาที · ส่งเสร็จ 10:59\n"), text)
         // too long for LINE: only in the file
