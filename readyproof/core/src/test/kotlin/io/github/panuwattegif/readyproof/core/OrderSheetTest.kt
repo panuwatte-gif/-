@@ -24,14 +24,16 @@ class OrderSheetTest {
     private fun day2(): DailyReport {
         val records = listOf(
             rec(ms(2, 10, 21, 16), RecordKind.SEEN, Item("GF-033", ObsType.PREPARING, countdown = "7:00", prevAt = ms(2, 10, 19, 37))),
-            rec(ms(2, 10, 23, 5), RecordKind.READY, Item("GF-033", ObsType.READY, prevAt = ms(2, 10, 22, 50)), uri = "content://a"),
+            rec(ms(2, 10, 23, 5), RecordKind.READY, Item("GF-033", ObsType.READY, status = "GF-033 กำลังค้นหาคนขับ... 1 รายการ",
+                prevAt = ms(2, 10, 22, 50)), uri = "content://a"),
             rec(ms(2, 10, 28, 45), RecordKind.SEEN, Item("GF-033", ObsType.DRIVER_FOUND, prevAt = ms(2, 10, 28, 20))),
             rec(ms(2, 10, 40, 12), RecordKind.SEEN, Item("GF-033", ObsType.ARRIVED, prevAt = ms(2, 10, 40, 12))),
             rec(ms(2, 10, 44, 9), RecordKind.SEEN, Item("GF-033", ObsType.LEFT_READY, prevAt = ms(2, 10, 43, 44))),
             rec(ms(2, 9, 10), RecordKind.SEEN, Item("GF-864F", ObsType.PREPARING, countdown = "8:00")),
             rec(ms(2, 9, 13, 3), RecordKind.SEEN, Item("GF-864F", ObsType.ARRIVED, prevAt = ms(2, 9, 9, 48))),
             rec(ms(2, 9, 15, 16), RecordKind.SEEN, Item("GF-864F", ObsType.PREPARING, countdown = "2:30")),
-            rec(ms(2, 9, 16, 21), RecordKind.READY, Item("GF-864F", ObsType.READY, prevAt = ms(2, 9, 15, 16)), uri = "content://b"),
+            rec(ms(2, 9, 16, 21), RecordKind.READY, Item("GF-864F", ObsType.READY, status = "GF-864F คนขับของคุณมาถึงแล้ว 1 รายการ",
+                prevAt = ms(2, 9, 15, 16)), uri = "content://b"),
             rec(ms(2, 9, 19, 40), RecordKind.SEEN, Item("GF-864F", ObsType.LEFT_READY, prevAt = ms(2, 9, 18, 59))),
             rec(ms(2, 19, 5), RecordKind.DELAY,
                 Item("GF-033", ObsType.DELAY, delayMin = 4, doneAt = "10:59"),
@@ -58,13 +60,20 @@ class OrderSheetTest {
         assertEquals(listOf(
             "02/11/2026", "GF-033", "เสร็จ", "4", "ทันเวลาที่ตั้ง", "10:21:16", "10:23:05 (1:49)", "10:28:45 (7:29)",
             "10:40:12 (11:27)", "10:44:09 (3:57)", "10:59 (14:51)", "37:44", "ใช่ (อาหารรอคนขับ 17:07)",
+            "ยังไม่มีคนขับ", "35:55",
         ), OrderRows.cells(r, zone))
+        // closed with no driver yet: Grab found one 5:40 after the photo; delivered 35:55 after it
+        assertEquals(AtClose.NO_DRIVER, r.atClose)
+        assertEquals(340_000, r.closeToFoundMs)
+        assertEquals(2_155_000, r.closeToDeliveredMs)
         // the driver was at the shop before the food was ready; a "by then" alone gives no minutes
         val f = day.rows.first { it.gf == "GF-864F" }
         assertEquals(false, f.readyBeforeDriver)
         assertNull(f.prepMs) // order in only "by 09:10:00"
         assertEquals("ไม่เกิน 09:10:00", OrderRows.cells(f, zone)[5])
-        assertEquals("ไม่ — คนขับมาถึงก่อน", OrderRows.cells(f, zone).last())
+        assertEquals("ไม่ — คนขับมาถึงก่อน", OrderRows.cells(f, zone)[12])
+        assertEquals(AtClose.WAITING, f.atClose)
+        assertNull(f.closeToFoundMs) // a driver was already there
         assertEquals(1, day.driverFirst)
         // kept on the phone and read back the same
         assertEquals(day, OrderDayCodec.decode(OrderDayCodec.encode(day)))
@@ -82,6 +91,8 @@ class OrderSheetTest {
         assertTrue(summary.contains(listOf("ออเดอร์ทั้งหมดตาม Grab", "เสร็จ 2 · ยกเลิก 0")), summary.toString())
         assertTrue(summary.contains(listOf("1) Grab ว่าล่าช้า", "1 ออเดอร์ = 50.00%")), summary.toString())
         assertTrue(summary.contains(listOf("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)", "1 ออเดอร์ = 50.00%")), summary.toString())
+        assertTrue(summary.contains(listOf("ร้านปิดงานตอนยังไม่มีคนขับ", "1 จาก 2 ออเดอร์ = 50%")), summary.toString())
+        assertTrue(summary.any { it.firstOrNull() == "ร้านปิดงาน → เจอคนขับ (เฉพาะที่ปิดงานตอนยังไม่มีคนขับ)" && it[1] == "5:40" }, summary.toString())
         // 7 days: only 2 Nov (1 of 2); all: 3 of 12
         assertTrue(summary.contains(listOf("1) แบบ Grab", "50.00%", "50.00%", "25.00%", "25.00%", "25.00%", "25.00%")), summary.toString())
         // the drivers waited 3:57 (GF-033) and 6:37 (GF-864F)
@@ -89,7 +100,7 @@ class OrderSheetTest {
         // Grab's delayed orders only; every order with numbers to compute with
         assertEquals(listOf("GF-033"), texts(sheets[1]).drop(1).map { it[1] })
         assertEquals(2, texts(sheets[2]).size - 1)
-        assertEquals("1.82", sheets[2].rows[2][13]?.number?.toString()?.take(4)) // GF-033 (made after GF-864F): 1:49 = 1.82 min
+        assertEquals("1.82", sheets[2].rows[2][15]?.number?.toString()?.take(4)) // GF-033 (made after GF-864F): 1:49 = 1.82 min
 
         val xlsx = Xlsx.write(sheets)
         val entries = HashMap<String, ByteArray>()
@@ -129,6 +140,16 @@ class OrderSheetTest {
         assertEquals(listOf("ไม่เกิน", "09:10:00"), GrabTable.split("ไม่เกิน 09:10:00"))
         assertEquals(listOf("-"), GrabTable.split(""))
         assertEquals("ออเดอร์ที่ Grab ระบุล่าช้า · 02/11/2026 · 20 ออเดอร์ (หน้า 1/2)", GrabTable.title(r.date, 20, 1, 2))
+    }
+
+    @Test
+    fun theDriverWhenTheShopClosedItFromTheCardsLine() {
+        assertEquals(AtClose.NO_DRIVER, AtClose.of("GF-033 กำลังค้นหาคนขับ... 1 รายการ"))
+        assertEquals(AtClose.COMING, AtClose.of("GF-820 คนขับจะมารับใน 3 นาที 2 รายการ"))
+        assertEquals(AtClose.WAITING, AtClose.of("GF-137 คนขับของคุณมาถึงแล้ว 1 รายการ"))
+        assertEquals(AtClose.NO_DRIVER, AtClose.of("Finding a driver..."))
+        assertNull(AtClose.of(null))
+        assertNull(AtClose.of("GF-1 อื่นๆ"))
     }
 
     @Test

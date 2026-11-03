@@ -77,6 +77,11 @@ data class Timeline(
     val leftAt: Long? = null,
     /** ... last seen there. */
     val leftAfter: Long? = null,
+    /**
+     * The card's line when it was first seen in the Ready tab, i.e. right after the shop closed it
+     * ("กำลังค้นหาคนขับ...", "คนขับจะมารับใน 3 นาที"): kept for every order since the first day.
+     */
+    val readyStatus: String? = null,
 ) {
     val empty: Boolean get() = prepFirstAt == null && readyAt == null && leftPrepAt == null && foundAt == null &&
         arrivedAt == null && leftAt == null
@@ -379,6 +384,10 @@ object ReportBuilder {
             arrivedAfter = arrived?.second?.prevAt,
             leftAt = left?.first?.t,
             leftAfter = left?.second?.prevAt,
+            readyStatus = readyFirst?.let { at ->
+                sorted.asSequence().filter { it.t in at..at + MINUTE_MS }.flatMap { it.items.asSequence() }
+                    .firstOrNull { it.gf == gf && it.type == ObsType.READY && !it.status.isNullOrBlank() }?.status
+            },
         )
     }
 

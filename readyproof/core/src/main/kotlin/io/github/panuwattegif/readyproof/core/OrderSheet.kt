@@ -8,6 +8,26 @@ import java.util.Locale
 /** A moment as the phone saw it; [exact]: known between two looks, not only "by then". */
 data class Seen(val at: Long, val exact: Boolean)
 
+/** Where the driver was when the shop closed the order (its card's line on reaching the Ready tab). */
+enum class AtClose(val label: String) {
+    NO_DRIVER("ยังไม่มีคนขับ"),
+    COMING("มีคนขับแล้ว กำลังมา"),
+    WAITING("คนขับรออยู่ที่ร้านแล้ว");
+
+    companion object {
+        fun of(status: String?, cfg: Config = Config.DEFAULT): AtClose? {
+            val s = status?.takeIf { it.isNotBlank() } ?: return null
+            fun any(words: List<String>) = words.any { s.contains(it, ignoreCase = true) }
+            return when {
+                any(cfg.arrivedAny) -> WAITING
+                any(cfg.searchingAny) -> NO_DRIVER
+                any(cfg.driverFoundAny) -> COMING
+                else -> null
+            }
+        }
+    }
+}
+
 /**
  * One order with the owner's times (3 Nov): when each step happened and how long it took from the
  * step before. Times are those the phone saw ([Timeline]); a duration is only given when both of
@@ -29,6 +49,8 @@ data class OrderRow(
     val deliveredAt: Long? = null,
     /** The food was ready before the driver came (see [Timeline.driverCameFirst]). */
     val readyBeforeDriver: Boolean? = null,
+    /** Driver or not when the shop closed it (known since the first day, unlike the driver-found time). */
+    val atClose: AtClose? = null,
 ) {
     private fun between(a: Seen?, b: Seen?): Long? = if (a != null && b != null && a.exact && b.exact) b.at - a.at else null
 
@@ -46,6 +68,13 @@ data class OrderRow(
     val rideMs: Long? get() = pickedUp?.takeIf { it.exact }?.let { p -> deliveredAt?.let { maxOf(0L, it - p.at) } }
     /** Order in → delivered. */
     val totalMs: Long? get() = orderIn?.takeIf { it.exact }?.let { o -> deliveredAt?.let { maxOf(0L, it - o.at) } }
+    /** Closed without a driver → a driver took the job (Grab's search after the shop's photo). */
+    val closeToFoundMs: Long? get() = if (atClose == AtClose.NO_DRIVER) between(ready, found) else null
+    /**
+     * Closed → delivered: the first sighting in the Ready tab (seconds after the shop closed it,
+     * the app watches that tab) to History's minute. Known for every day since the first.
+     */
+    val closeToDeliveredMs: Long? get() = ready?.let { r -> deliveredAt?.let { maxOf(0L, it - r.at) } }
 }
 
 /** One day: Grab's own totals, the delay rate three ways, and every order. */
@@ -71,15 +100,15 @@ data class OrderDay(
 }
 
 object OrderRows {
-    fun of(date: LocalDate, o: OrderTimeline, zone: ZoneId): OrderRow =
-        row(date, o.gf, o.cancelled, o.delayMin, o.setTime, o.timeline, o.doneAt, zone)
+    fun of(date: LocalDate, o: OrderTimeline, zone: ZoneId, cfg: Config = Config.DEFAULT): OrderRow =
+        row(date, o.gf, o.cancelled, o.delayMin, o.setTime, o.timeline, o.doneAt, zone, cfg)
 
     /** A delayed order as the report judged it (for the table sent to Grab). */
-    fun of(date: LocalDate, c: DelayCase, zone: ZoneId): OrderRow =
-        row(date, c.gf, false, c.delayMin, c.verdict, c.timeline, c.doneAt, zone)
+    fun of(date: LocalDate, c: DelayCase, zone: ZoneId, cfg: Config = Config.DEFAULT): OrderRow =
+        row(date, c.gf, false, c.delayMin, c.verdict, c.timeline, c.doneAt, zone, cfg)
 
     private fun row(date: LocalDate, gf: String, cancelled: Boolean, delayMin: Int?, setTime: Verdict?,
-                    t: Timeline, doneAt: LocalDateTime?, zone: ZoneId) = OrderRow(
+                    t: Timeline, doneAt: LocalDateTime?, zone: ZoneId, cfg: Config) = OrderRow(
         date = date, gf = gf, cancelled = cancelled, grabDelayMin = delayMin,
         setTime = setTime?.takeIf { it != Verdict.NO_EVIDENCE },
         orderIn = t.prepFirstAt?.let { Seen(it, t.prepFirstAfter != null) },
@@ -89,13 +118,14 @@ object OrderRows {
         pickedUp = t.leftAt?.let { Seen(it, t.leftAfter != null) },
         deliveredAt = doneAt?.let { TimeResolve.toMillis(it, zone) },
         readyBeforeDriver = t.driverCameFirst?.not(),
+        atClose = AtClose.of(t.readyStatus, cfg),
     )
 
-    fun day(r: DailyReport, zone: ZoneId): OrderDay = OrderDay(
+    fun day(r: DailyReport, zone: ZoneId, cfg: Config = Config.DEFAULT): OrderDay = OrderDay(
         date = r.date, shopId = r.shopId, grabCompleted = r.grabCompleted, grabCancelled = r.grabCancelled,
         completedSeen = r.completedSeen, cancelledSeen = r.cancelledSeen, base = r.base, delayed = r.delayed,
         inTime = r.inTime.size, driverFirst = r.driverWaitedForFood.size, driverUnknown = r.driverWaitUnknown.size,
-        historyComplete = r.complete, rows = r.orders.map { of(r.date, it, zone) },
+        historyComplete = r.complete, rows = r.orders.map { of(r.date, it, zone, cfg) },
     )
 
     /** "2:33", "-1:05" for a duration. */
@@ -116,7 +146,7 @@ object OrderRows {
         "วันที่", "ออเดอร์", "สถานะ", "Grab ว่าล่าช้า (นาที)", "เวลาที่ร้านตั้ง", "ออเดอร์เข้า",
         "ร้านทำเสร็จ (เตรียมกี่นาที)", "เจอคนขับ (นาทีนับจากออเดอร์เข้า)", "คนขับมาถึงร้าน (นาทีนับจากเจอคนขับ)",
         "คนขับรับอาหาร (คนขับรอกี่นาที)", "ลูกค้าได้รับ (นาทีนับจากรับอาหาร)", "รวมทั้งหมด (นาทีนับจากออเดอร์เข้า)",
-        "อาหารเสร็จก่อนคนขับมาถึง",
+        "อาหารเสร็จก่อนคนขับมาถึง", "ตอนร้านปิดงาน", "ร้านปิดงาน → ลูกค้าได้รับ (นาที)",
     )
 
     /** One order as the owner reads it: each step "time (minutes)" (see [HEADER]). */
@@ -139,18 +169,23 @@ object OrderRows {
             false -> "ไม่ — คนขับมาถึงก่อน"
             null -> "บอกไม่ได้"
         },
+        r.atClose?.label ?: "บอกไม่ได้",
+        r.closeToDeliveredMs?.let { minSec(it) }.orEmpty(),
     )
 }
 
 /** Day files kept on the phone (one per shop and day): never deleted, so averages can go back years. */
 object OrderDayCodec {
+    /** Raised when a day file gains something the old ones lack: every day is built again once. */
+    const val VERSION = 2
+
     private fun seen(s: Seen?): Map<String, Any?>? = s?.let { linkedMapOf("at" to it.at, "x" to it.exact) }
 
     @Suppress("UNCHECKED_CAST")
     private fun seen(m: Any?): Seen? = (m as? Map<String, Any?>)?.let { v -> v.long("at")?.let { Seen(it, v.bool("x") == true) } }
 
     fun encode(d: OrderDay): String = Json.write(linkedMapOf(
-        "v" to 1, "date" to d.date.toString(), "shopId" to d.shopId,
+        "v" to VERSION, "date" to d.date.toString(), "shopId" to d.shopId,
         "grabCompleted" to d.grabCompleted, "grabCancelled" to d.grabCancelled,
         "completedSeen" to d.completedSeen, "cancelledSeen" to d.cancelledSeen, "base" to d.base,
         "delayed" to d.delayed, "inTime" to d.inTime, "driverFirst" to d.driverFirst, "driverUnknown" to d.driverUnknown,
@@ -159,6 +194,7 @@ object OrderDayCodec {
             "gf" to r.gf, "cancelled" to r.cancelled, "delayMin" to r.grabDelayMin, "setTime" to r.setTime?.name,
             "in" to seen(r.orderIn), "ready" to seen(r.ready), "found" to seen(r.found), "arrived" to seen(r.arrived),
             "picked" to seen(r.pickedUp), "delivered" to r.deliveredAt, "readyFirst" to r.readyBeforeDriver,
+            "atClose" to r.atClose?.name,
         ) },
     ))
 
@@ -177,6 +213,7 @@ object OrderDayCodec {
                     grabDelayMin = r.int("delayMin"), setTime = r.str("setTime")?.let { s -> Verdict.entries.firstOrNull { it.name == s } },
                     orderIn = seen(r["in"]), ready = seen(r["ready"]), found = seen(r["found"]), arrived = seen(r["arrived"]),
                     pickedUp = seen(r["picked"]), deliveredAt = r.long("delivered"), readyBeforeDriver = r.bool("readyFirst"),
+                    atClose = r.str("atClose")?.let { a -> AtClose.entries.firstOrNull { it.name == a } },
                 )
             },
         )
@@ -245,6 +282,10 @@ object ShopWorkbook {
         out += listOf(t("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง"), t("${latest.actualDelayed} ออเดอร์ = ${pct(latest.actualDelayed, latest.base)}"))
         out += listOf(t("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)"), t("${latest.driverFirst} ออเดอร์ = ${pct(latest.driverFirst, latest.base)}" +
             if (latest.driverUnknown > 0) " · บอกไม่ได้ ${latest.driverUnknown}" else ""))
+        val closed = latest.rows.filter { !it.cancelled && it.atClose != null }
+        out += listOf(t("ร้านปิดงานตอนยังไม่มีคนขับ"), t(if (closed.isEmpty()) "-" else
+            "${closed.count { it.atClose == AtClose.NO_DRIVER }} จาก ${closed.size} ออเดอร์ = " +
+                share(closed.count { it.atClose == AtClose.NO_DRIVER }, closed.size)))
         out += listOf(t("อ่านหน้าประวัติครบ"), t(if (latest.historyComplete) "ครบ" else "ไม่ครบ — ตัวเลขยังไม่ยืนยัน"))
         out += emptyList<Xlsx.Cell?>()
 
@@ -271,6 +312,11 @@ object ShopWorkbook {
         metric("คนขับมาถึงร้าน → รับอาหาร (คนขับรอ)") { it.driverWaitMs }
         metric("รับอาหาร → ลูกค้าได้รับ") { it.rideMs }
         metric("รวมทั้งหมด (ออเดอร์เข้า → ลูกค้าได้รับ)") { it.totalMs }
+        metric("ร้านปิดงาน → เจอคนขับ (เฉพาะที่ปิดงานตอนยังไม่มีคนขับ)") { it.closeToFoundMs }
+        metric("ร้านปิดงาน → ลูกค้าได้รับ") { it.closeToDeliveredMs }
+        out += listOf(t("% ร้านปิดงานตอนยังไม่มีคนขับ")) + periods.map { p ->
+            orders(p).let { o -> t(share(o.count { it.atClose == AtClose.NO_DRIVER }, o.count { it.atClose != null })) }
+        }
         out += listOf(t("% ร้านทำเสร็จทันเวลาที่ตั้ง")) + periods.map { p ->
             orders(p).let { o -> t(share(o.count { it.setTime == Verdict.IN_TIME }, o.count { it.setTime == Verdict.IN_TIME || it.setTime == Verdict.LATE })) }
         }
@@ -285,7 +331,7 @@ object ShopWorkbook {
 
     private val NUMBER_HEADER = listOf(
         "เตรียม (นาที)", "เข้า→เจอคนขับ (นาที)", "เจอคนขับ→ถึงร้าน (นาที)", "อาหารรอคนขับ (นาที)",
-        "คนขับรอ (นาที)", "รับอาหาร→ส่งถึง (นาที)", "รวม (นาที)",
+        "คนขับรอ (นาที)", "รับอาหาร→ส่งถึง (นาที)", "รวม (นาที)", "ปิดงาน→เจอคนขับ (นาที)", "ปิดงาน→ส่งถึง (นาที)",
     )
 
     private fun orders(name: String, rows: List<OrderRow>, zone: ZoneId, numbers: Boolean): Xlsx.Sheet {
@@ -299,10 +345,11 @@ object ShopWorkbook {
                 return OrderRows.cells(r, zone).map { t(it) } + if (numbers) listOf(
                     minutes(r.prepMs), minutes(r.toFoundMs), minutes(r.toArriveMs), minutes(r.foodWaitMs),
                     minutes(r.driverWaitMs), minutes(r.rideMs), minutes(r.totalMs),
+                    minutes(r.closeToFoundMs), minutes(r.closeToDeliveredMs),
                 ) else emptyList()
             }
         }
-        val widths = listOf(11.0, 10.0, 7.0, 10.0, 16.0, 18.0, 22.0, 22.0, 22.0, 22.0, 16.0, 12.0, 26.0) +
+        val widths = listOf(11.0, 10.0, 7.0, 10.0, 16.0, 18.0, 22.0, 22.0, 22.0, 22.0, 16.0, 12.0, 26.0, 20.0, 14.0) +
             if (numbers) List(NUMBER_HEADER.size) { 12.0 } else emptyList()
         return Xlsx.Sheet(name, out, widths, frozenRows = 1)
     }
@@ -311,7 +358,8 @@ object ShopWorkbook {
         val out = ArrayList<List<Xlsx.Cell?>>()
         out += listOf(
             "วันที่", "เสร็จ (Grab)", "ยกเลิก (Grab)", "Grab ว่าล่าช้า", "% แบบ Grab", "หลังตัดที่ทันเวลาที่ตั้ง", "%",
-            "ที่ถูกต้อง", "%", "บอกไม่ได้", "เตรียมเฉลี่ย", "คนขับรอเฉลี่ย", "รวมเฉลี่ย", "อ่านประวัติครบ",
+            "ที่ถูกต้อง", "%", "บอกไม่ได้", "เตรียมเฉลี่ย", "คนขับรอเฉลี่ย", "รวมเฉลี่ย",
+            "ปิดงานตอนยังไม่มีคนขับ", "%", "ปิดงาน→เจอคนขับ เฉลี่ย", "ปิดงาน→ลูกค้าได้รับ เฉลี่ย", "อ่านประวัติครบ",
         ).map { bold(it) }
         for (d in days) {
             val o = d.rows.filter { !it.cancelled }
@@ -324,10 +372,13 @@ object ShopWorkbook {
                 Xlsx.number(d.driverFirst.toDouble()), t(pct(d.driverFirst, d.base)),
                 Xlsx.number(d.driverUnknown.toDouble()),
                 t(avg(o.mapNotNull { it.prepMs })), t(avg(o.mapNotNull { it.driverWaitMs })), t(avg(o.mapNotNull { it.totalMs })),
+                Xlsx.number(o.count { it.atClose == AtClose.NO_DRIVER }.toDouble()),
+                t(share(o.count { it.atClose == AtClose.NO_DRIVER }, o.count { it.atClose != null })),
+                t(avg(o.mapNotNull { it.closeToFoundMs })), t(avg(o.mapNotNull { it.closeToDeliveredMs })),
                 t(if (d.historyComplete) "ครบ" else "ไม่ครบ"),
             )
         }
-        return Xlsx.Sheet(DAILY, out, listOf(11.0, 10.0, 10.0, 11.0, 10.0, 14.0, 9.0, 10.0, 9.0, 9.0, 11.0, 12.0, 10.0, 12.0), frozenRows = 1)
+        return Xlsx.Sheet(DAILY, out, listOf(11.0, 10.0, 10.0, 11.0, 10.0, 14.0, 9.0, 10.0, 9.0, 9.0, 11.0, 12.0, 10.0, 14.0, 7.0, 14.0, 16.0, 12.0), frozenRows = 1)
     }
 
     private fun help(): Xlsx.Sheet = Xlsx.Sheet(HELP, listOf(
@@ -339,6 +390,9 @@ object ShopWorkbook {
         "• คนขับมาถึงร้าน = การ์ด Grab ขึ้น \"คนขับของคุณมาถึงแล้ว\" · คนขับรับอาหาร = ออเดอร์หายจากหน้าพร้อมจัดส่ง",
         "• เวลาที่ร้านตั้ง: บอกแค่ร้านทำเสร็จทันเวลาที่ตั้งไว้หรือเกิน (การ์ดแดง 0:00 = เกิน)",
         "• อาหารเสร็จก่อนคนขับมาถึง: ใช่ = ร้านปิดงานก่อนคนขับถึงร้าน เวลาหลังจากนั้นไม่ใช่เวลาที่ร้านทำให้ช้า",
+        "• ตอนร้านปิดงาน = ข้อความบนการ์ดตอนออเดอร์เข้าหน้าพร้อมจัดส่ง (ยังไม่มีคนขับ = \"กำลังค้นหาคนขับ\") มีทุกวันตั้งแต่ 7 ต.ค. 2026",
+        "• ร้านปิดงาน → เจอคนขับ: เฉพาะออเดอร์ที่ร้านปิดงานตอนยังไม่มีคนขับ มีตั้งแต่ 29 ต.ค. 2026 (ก่อนหน้านั้นแอปยังไม่ได้จดเวลาเจอคนขับ)",
+        "• ร้านปิดงาน → ลูกค้าได้รับ: นับจากที่แอปเห็นออเดอร์ในหน้าพร้อมจัดส่ง ถึงเวลาส่งเสร็จในหน้าประวัติ (ระดับนาที) มีทุกวัน",
         "• % ล่าช้า 3 แบบ ใช้ฐานเดียวกัน (ออเดอร์ทั้งหมดตามยอดของ Grab): 1) แบบ Grab 2) ตัดออเดอร์ที่ร้านเสร็จทันเวลาที่ตั้ง " +
             "3) ที่ถูกต้อง = นับเฉพาะออเดอร์ที่คนขับมาถึงร้านแล้วอาหารยังไม่เสร็จ",
         "• ค่าเฉลี่ยคิดเฉพาะออเดอร์ที่มีเวลาครบทั้งสองฝั่ง · ช่วงเวลานับย้อนจากวันล่าสุดที่มีข้อมูล",
