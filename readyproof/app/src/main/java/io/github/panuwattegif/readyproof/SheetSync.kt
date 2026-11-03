@@ -21,7 +21,9 @@ import java.time.ZoneId
 /** Each day's orders and their times, kept on the phone for good: one small file per shop and day. */
 object OrderStore {
     private val lock = Any()
-    private fun dir(ctx: Context, shopId: String) = File(ctx.applicationContext.filesDir, "orders/$shopId").apply { mkdirs() }
+    // a new [OrderDayCodec.VERSION] starts a fresh folder: every day is built again from its records
+    private fun dir(ctx: Context, shopId: String) =
+        File(ctx.applicationContext.filesDir, "orders-v${OrderDayCodec.VERSION}/$shopId").apply { mkdirs() }
     private fun file(ctx: Context, shopId: String, date: LocalDate) = File(dir(ctx, shopId), "$date.json")
     /** A past day whose records hold no History: not looked at again. */
     private fun none(ctx: Context, shopId: String, date: LocalDate) = File(dir(ctx, shopId), "$date.none")
@@ -75,7 +77,7 @@ object SheetSync {
     fun offer(ctx: Context, report: DailyReport, zone: ZoneId) {
         val shop = Shop.fromId(report.shopId) ?: return
         try {
-            if (report.orders.isNotEmpty()) OrderStore.save(ctx, OrderRows.day(report, zone))
+            if (report.orders.isNotEmpty()) OrderStore.save(ctx, OrderRows.day(report, zone, ConfigStore.get(ctx)))
             backfill(ctx, shop, zone)
             if (shop.sheetId == null || !NightlyUploads.canRelease(report.date, LocalDateTime.now(zone))) return
             val days = OrderStore.all(ctx, shop.id)
@@ -116,7 +118,7 @@ object SheetSync {
             if (!date.isBefore(today) || OrderStore.known(ctx, shop.id, date)) continue
             val records = RecordStore.loadRange(ctx, date.minusDays(1), date.plusDays(1))
             val r = ReportBuilder.build(records, date, zone, cfg, shop.id, DailyExport.reachedEnd(ctx, date, shop.id))
-            if (r.orders.isEmpty()) OrderStore.markNone(ctx, shop.id, date) else OrderStore.save(ctx, OrderRows.day(r, zone))
+            if (r.orders.isEmpty()) OrderStore.markNone(ctx, shop.id, date) else OrderStore.save(ctx, OrderRows.day(r, zone, cfg))
         }
     }
 
