@@ -123,7 +123,11 @@ class ReportActivity : Activity() {
      */
     private fun ordersCard(col: LinearLayout, r: DailyReport, records: List<Record>, shopId: String?, zone: ZoneId) {
         val live = r.orders.isEmpty()
-        val orders = if (live) ReportBuilder.liveOrders(records, date, zone, shopId) else r.orders
+        val orders = if (live) {
+            ReportBuilder.liveOrders(records, date, zone, shopId, ConfigStore.get(this).pressSlackSeconds * 1000L)
+        } else {
+            r.orders
+        }
         Ui.text(col, "🕒 เวลาทุกออเดอร์ (${orders.size})", 17f, bold = true, topDp = 10)
         Ui.text(
             col,
@@ -323,14 +327,10 @@ class ReportActivity : Activity() {
         val p = c.prep
         when {
             p == null -> if (c.readyAt != null) Ui.text(card, "ไม่มีข้อมูลหน้ากำลังเตรียมของออเดอร์นี้", 13f, Ui.AMBER)
-            p.ranOut -> Ui.text(card, "หน้ากำลังเตรียมขึ้น 0:00 (หมดเวลา) ตอน " + ReportText.timeSec(p.readAt, zone) +
-                " — ยังไม่ได้กด" + if (p.overdueShot == null) " (ไม่มีภาพ)" else "", 14f, Ui.RED)
-            else -> Ui.text(
-                card,
-                "ต้องกดภายใน " + ReportText.timeSec(p.deadline, zone) + " (หน้ากำลังเตรียมเหลือ " + p.countdown + " ตอน " +
-                    ReportText.timeSec(p.readAt, zone) + ")",
-                14f, colorOf(c.verdict),
-            )
+            p.ranOut -> Ui.text(card, "เกินเวลาที่ตั้ง — หน้ากำลังเตรียมขึ้น 0:00 ตอน " + ReportText.timeSec(p.readAt, zone) +
+                if (p.overdueShot == null) " (ไม่มีภาพ)" else " (มีภาพ)", 14f, Ui.RED)
+            // the time the shop set only says within or over it (owner, 3 Nov)
+            else -> ReportText.setTimeText(c.verdict)?.let { Ui.text(card, it, 14f, colorOf(c.verdict)) }
         }
         c.pressedAt?.let { Ui.text(card, "กด Ready เวลา " + ReportText.time(it, zone), 13f, Ui.MUTED) }
         if (!c.timeline.empty) Ui.text(card, "⏱ " + ReportText.timelineText(c.timeline, c.doneAt, zone), 13f, Ui.MUTED, topDp = 2)
