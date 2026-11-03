@@ -2,6 +2,7 @@ package io.github.panuwattegif.readyproof.ui
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -21,6 +22,7 @@ import io.github.panuwattegif.readyproof.GrabPack
 import io.github.panuwattegif.readyproof.MediaSaver
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
+import io.github.panuwattegif.readyproof.SheetSync
 import io.github.panuwattegif.readyproof.core.DailyReport
 import io.github.panuwattegif.readyproof.core.DelayCase
 import io.github.panuwattegif.readyproof.core.EvidenceSet
@@ -241,9 +243,10 @@ class ReportActivity : Activity() {
         val sets = r.sets()
         val delayOnly = r.withoutEvidence.filter { it.delayShot != null }
         Ui.button(s, "แชร์ทุกเคสล่าช้า ${r.cases.size} เคส (รวมเคสไม่มีหลักฐาน)", filled = false) {
-            sendToGrab(r, sets, delayOnly, "ส่งหลักฐาน ${r.cases.size} เคส")
+            sendToGrab(r, sets, delayOnly, "ส่งหลักฐาน ${r.cases.size} เคส", tableCases = r.cases)
         }
-        Ui.text(s, "ภาพละ 1 ออเดอร์ (หน้าพร้อมจัดส่งคู่กับหน้าประวัติ) ไม่เกิน 250 KB · ส่งครั้งละไม่เกิน 15 ภาพ / 3 MB", 12f, Ui.MUTED, topDp = 2)
+        Ui.text(s, "ภาพแรก = ตารางเวลาของทุกออเดอร์ในชุด · ต่อจากนั้นภาพละ 1 ออเดอร์ (หน้าพร้อมจัดส่งคู่กับหน้าประวัติ) " +
+            "ไม่เกิน 250 KB · ส่งครั้งละไม่เกิน 15 ภาพ / 3 MB", 12f, Ui.MUTED, topDp = 2)
 
         if (r.withoutEvidence.any { it.delayShot != null }) {
             Ui.text(
@@ -256,6 +259,16 @@ class ReportActivity : Activity() {
             Ui.text(s, "⚠ บางเคสยังไม่มีภาพ DELAY ที่ใช้ได้ — ระบบจะกวาด History ซ้ำอัตโนมัติ", 13f, Ui.AMBER, topDp = 4)
         }
         Ui.button(s, "📋 คัดลอกสรุป (ไว้วางใน LINE)", filled = false) { Share.copy(this, ReportText.summary(r, zone)) }
+        ShopStore.get(this)?.let { SheetSync.url(it) }?.let { url ->
+            Ui.button(s, "📈 เปิด Google Sheet (ทุกออเดอร์ + ค่าเฉลี่ยทุกช่วงเวลา)", filled = false) {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (e: Exception) {
+                    Share.copy(this, url)
+                }
+            }
+            Ui.text(s, "Google Sheet: " + SheetSync.statusText(this) + " · แอปเขียนทับใหม่ทุกคืนหลังอ่านประวัติ", 12f, Ui.MUTED, topDp = 2)
+        }
         Ui.button(s, "📊 ส่งออกตาราง CSV", filled = false) { exportCsv(r, zone) }
         Ui.button(s, "🕒 ส่งออกเวลาทุกออเดอร์ (CSV)", filled = false) { exportTimes(r, zone) }
         Ui.button(s, "📄 แชร์ไฟล์สรุป + ไฟล์รายละเอียดของวัน (4 ไฟล์)", filled = false) { shareDayFiles(r, zone) }
@@ -269,9 +282,12 @@ class ReportActivity : Activity() {
      * Grab-ready images ([GrabPack]) shared in sends that fit what Grab accepted ([GrabLimits]);
      * more than one send: the owner picks them one after another.
      */
-    private fun sendToGrab(report: DailyReport, sets: List<EvidenceSet>, delayOnly: List<DelayCase>, title: String) {
+    private fun sendToGrab(
+        report: DailyReport, sets: List<EvidenceSet>, delayOnly: List<DelayCase>, title: String,
+        tableCases: List<DelayCase> = sets.map { it.case } + delayOnly,
+    ) {
         val files = try {
-            GrabPack.build(this, report.date, sets, delayOnly, ZoneId.systemDefault())
+            GrabPack.build(this, report.date, sets, delayOnly, ZoneId.systemDefault(), tableCases)
         } catch (e: Exception) {
             Ui.alert(this, "ทำภาพสำหรับส่ง Grab ไม่สำเร็จ", e.message ?: "")
             return

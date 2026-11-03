@@ -12,6 +12,7 @@ import android.net.Uri
 import io.github.panuwattegif.readyproof.core.DelayCase
 import io.github.panuwattegif.readyproof.core.EvidenceSet
 import io.github.panuwattegif.readyproof.core.GrabLimits
+import io.github.panuwattegif.readyproof.core.GrabTable
 import io.github.panuwattegif.readyproof.core.Naming
 import io.github.panuwattegif.readyproof.core.Parsers
 import io.github.panuwattegif.readyproof.core.Record
@@ -32,13 +33,25 @@ object GrabPack {
     private const val TITLE_H = 190
     private const val CAPTION_H = 120
 
-    /** Builds the images (oldest order first); orders whose photos cannot be read are left out. */
-    fun build(ctx: Context, day: LocalDate, sets: List<EvidenceSet>, delayOnly: List<DelayCase>, zone: ZoneId): List<File> {
+    /**
+     * Builds the images: first the table of every order in [tableCases] (owner, 3 Nov: the times
+     * Grab should read first), then one image per order (oldest first); orders whose photos cannot
+     * be read are left out of the photos, never out of the table.
+     */
+    fun build(
+        ctx: Context, day: LocalDate, sets: List<EvidenceSet>, delayOnly: List<DelayCase>, zone: ZoneId,
+        tableCases: List<DelayCase> = sets.map { it.case } + delayOnly,
+    ): List<File> {
         // Earlier days' images go; this day's are rewritten in place (a send may still be reading them).
         val root = File(ctx.cacheDir, "grab")
         root.listFiles()?.filter { it.name != day.toString() }?.forEach { it.deleteRecursively() }
         val dir = File(root, day.toString()).apply { mkdirs() }
         val out = ArrayList<File>()
+        try {
+            out += table(dir, day, tableCases.distinct(), zone)
+        } catch (e: Exception) {
+            Diagnostics.error(ctx, "grabTable", e) // the photos still go
+        }
         for (set in sets) {
             val c = set.case
             val ready = set.ready
@@ -60,6 +73,96 @@ object GrabPack {
     }
 
     private class Panel(val record: Record, val line1: String, val line2: String?)
+
+    private const val CELL_PAD = 12
+    private const val LINE_H = 36
+    private const val TABLE_TOP = 120
+    private const val NOTE_H = 38
+
+    /** The delayed orders as a table, split into images that each stay readable at Grab's size limit. */
+    private fun table(dir: File, day: LocalDate, cases: List<DelayCase>, zone: ZoneId): List<File> {
+        if (cases.isEmpty()) return emptyList()
+        val rows = GrabTable.rows(cases, day, zone)
+        val head = paint(24f, Color.rgb(20, 20, 20), bold = true)
+        val body = paint(26f, Color.rgb(20, 20, 20), bold = false)
+        val widths = GrabTable.HEADER.indices.map { i ->
+            val texts = GrabTable.HEADER[i].map { head.measureText(it) } + rows.flatMap { r -> r[i].lines.map { body.measureText(it) } }
+            texts.maxOrNull()!!.toInt() + 2 * CELL_PAD
+        }
+        val width = widths.sum() + 2 * MARGIN
+        val headH = GrabTable.HEADER.maxOf { it.size } * LINE_H + 2 * CELL_PAD
+        fun rowH(r: List<GrabTable.Cell>) = r.maxOf { it.lines.size } * LINE_H + 2 * CELL_PAD
+        val notesH = GrabTable.NOTES.size * NOTE_H + MARGIN
+        // Taller than wide would be shrunk further than the width needs: keep each image within both.
+        val maxH = maxOf(width, GrabLimits.MAX_LONG_SIDE_PX)
+        val pages = ArrayList<List<List<GrabTable.Cell>>>()
+        var page = ArrayList<List<GrabTable.Cell>>()
+        var used = TABLE_TOP + headH + notesH
+        for (r in rows) {
+            if (page.isNotEmpty() && used + rowH(r) > maxH) {
+                pages += page
+                page = ArrayList()
+                used = TABLE_TOP + headH + notesH
+            }
+            page += r
+            used += rowH(r)
+        }
+        pages += page
+        return pages.mapIndexed { p, pageRows ->
+            val height = TABLE_TOP + headH + pageRows.sumOf { rowH(it) } + notesH
+            val sheet = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(sheet)
+            canvas.drawColor(Color.WHITE)
+            val inner = (width - 2 * MARGIN).toFloat()
+            drawFit(canvas, GrabTable.title(day, rows.size, p + 1, pages.size), MARGIN.toFloat(), 52f, inner,
+                paint(36f, Color.rgb(20, 20, 20), bold = true))
+            drawFit(canvas, "แต่ละช่อง: เวลาที่ขั้นนั้นเกิด และ (นาที:วินาที) ที่ใช้นับจากขั้นก่อนหน้า", MARGIN.toFloat(), 98f, inner,
+                paint(26f, Color.rgb(70, 70, 70), bold = false))
+            val fill = Paint().apply { style = Paint.Style.FILL }
+            val grid = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = Color.rgb(190, 190, 190) }
+            fun drawRow(top: Int, h: Int, cells: List<GrabTable.Cell>, base: Paint, background: Int) {
+                var x = MARGIN
+                cells.forEachIndexed { i, cell ->
+                    val w = widths[i]
+                    fill.color = when (cell.tone) {
+                        GrabTable.Tone.GOOD -> Color.rgb(220, 244, 226)
+                        GrabTable.Tone.BAD -> Color.rgb(252, 226, 223)
+                        GrabTable.Tone.PLAIN -> background
+                    }
+                    canvas.drawRect(x.toFloat(), top.toFloat(), (x + w).toFloat(), (top + h).toFloat(), fill)
+                    canvas.drawRect(x.toFloat(), top.toFloat(), (x + w).toFloat(), (top + h).toFloat(), grid)
+                    val textPaint = Paint(base).apply {
+                        color = when (cell.tone) {
+                            GrabTable.Tone.GOOD -> Color.rgb(10, 110, 50)
+                            GrabTable.Tone.BAD -> Color.rgb(180, 30, 20)
+                            GrabTable.Tone.PLAIN -> base.color
+                        }
+                    }
+                    cell.lines.forEachIndexed { li, line ->
+                        drawFit(canvas, line, (x + CELL_PAD).toFloat(), (top + CELL_PAD + (li + 1) * LINE_H - 9).toFloat(),
+                            (w - 2 * CELL_PAD).toFloat(), textPaint)
+                    }
+                    x += w
+                }
+            }
+            var y = TABLE_TOP
+            drawRow(y, headH, GrabTable.HEADER.map { GrabTable.Cell(it) }, head, Color.rgb(236, 236, 236))
+            y += headH
+            pageRows.forEachIndexed { i, r ->
+                drawRow(y, rowH(r), r, body, if (i % 2 == 0) Color.WHITE else Color.rgb(248, 248, 248))
+                y += rowH(r)
+            }
+            val notePaint = paint(22f, Color.rgb(90, 90, 90), bold = false)
+            GrabTable.NOTES.forEachIndexed { i, note ->
+                drawFit(canvas, note, MARGIN.toFloat(), (y + (i + 1) * NOTE_H).toFloat(), inner, notePaint)
+            }
+            val fitted = shrink(sheet)
+            val bytes = encode(fitted)
+            if (fitted !== sheet) fitted.recycle()
+            sheet.recycle()
+            File(dir, "TimeTable_${day}_${p + 1}.jpg").apply { writeBytes(bytes) }
+        }
+    }
 
     private fun title(c: DelayCase, day: LocalDate): String =
         c.gf + " · " + ReportText.date(day) + " · Grab ระบุล่าช้า" + (c.delayMin?.let { " $it นาที" } ?: "")

@@ -32,7 +32,8 @@ class EndToEndTest {
         assertEquals(Verdict.UNCHECKED, r.withEvidence.single().verdict)
         assertEquals(2, r.actualDelayed)
         assertEquals(listOf("GF-002@10:30"), r.pendingReadyGfs)
-        assertEquals(listOf("GF-003@11:00"), r.missingHistoryInstances)
+        // only delayed rows need a History photo; the cancelled one is read as a row (owner, 3 Nov)
+        assertTrue(r.missingHistoryInstances.isEmpty())
         assertFalse(r.complete)
         assertEquals(2, ReportText.csv(r, zone).lines().count { it.startsWith(day.toString()) })
         assertTrue(ReportText.summary(r, zone).contains("INCOMPLETE"))
@@ -64,13 +65,19 @@ class EndToEndTest {
         assertFalse(after.cases.single().hasEvidence)
     }
 
-    @Test fun completeRequiresImagesEndOfListAndExplicitDate() {
+    @Test fun completeRequiresGrabsOwnTotalsEndOfListAndExplicitDate() {
+        // Grab's totals at the top of History: 1 completed, 1 cancelled (owner, 3 Nov: the count is Grab's)
+        val stats = record("stats", 20, 0).copy(kind = RecordKind.STATS, completed = 1, cancelled = 1, uri = null)
+        // a finished order that was not late needs no History photo, only its row read
         val rs = listOf(record("ready", 10, 0, Item("GF-001", ObsType.READY)),
             record("all", 20, 0, Item("GF-001", ObsType.DONE, doneAt = "11:00"),
-            Item("GF-002", ObsType.CANCELLED, doneAt = "12:00")))
+            Item("GF-002", ObsType.CANCELLED, doneAt = "12:00"), image = false), stats)
         assertTrue(report(rs).complete)
+        assertFalse(report(rs - stats).complete)
         assertFalse(report(rs, end = false).complete)
         assertFalse(report(rs.map { it.copy(historyDate = null) }).complete)
+        // Grab counts more than were read
+        assertFalse(report(rs - stats + stats.copy(completed = 2)).complete)
         assertEquals(day, HistoryDates.parse("วันนี้", day))
         assertNull(HistoryDates.parse("19:15", day))
         assertEquals(rs.last(), RecordCodec.decode(RecordCodec.encode(rs.last())))

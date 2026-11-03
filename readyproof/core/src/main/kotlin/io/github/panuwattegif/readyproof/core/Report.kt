@@ -250,10 +250,14 @@ data class DailyReport(
     val fairPct: Double? get() = pctOfBase(driverWaitedForFood.size)
     val pendingReadyProof: Int get() = maxOf(pendingReadyGfs.size, readySeenOrders - readyOrders, 0)
     val missingDelayProof: Int get() = cases.count { it.delayShot == null }
+    /**
+     * History was read in full: to its end, its date shown, every row known, every delayed row
+     * photographed, and the rows match Grab's own totals at its top (owner, 3 Nov: the count is
+     * Grab's, not the app's). Ready photos missing are listed apart and do not make it incomplete.
+     */
     val complete: Boolean get() = sweepReachedEnd && historyDateVerified &&
         unknownHistoryInstances.isEmpty() && missingHistoryInstances.isEmpty() &&
-        missingDelayProof == 0 && pendingReadyProof == 0 && missingReadyInstances.isEmpty() &&
-        historyMatchesGrab != false
+        missingDelayProof == 0 && historyMatchesGrab == true
     val readyVsCompletedMatch: Boolean get() = readyOrders == completedSeen && pendingReadyProof == 0
 
     /** Provisional percentage based on the History orders the scanner has actually counted. */
@@ -584,7 +588,8 @@ object ReportBuilder {
             readySeenOrders = seenInstances.size,
             shopId = shopId,
             pendingReadyGfs = pendingGfs.sorted(),
-            missingHistoryInstances = onDate.filterNot(::hasHistoryImage).map(::tag),
+            // only delayed rows are photographed in History; the others are read as text
+            missingHistoryInstances = onDate.filter { it.delayed }.filterNot(::hasHistoryImage).map(::tag),
             unknownHistoryInstances = onDate.filter { it.doneAt == null }.map(::tag),
             historyDateVerified = onDate.isNotEmpty() && onDate.all { a -> sorted.any { r ->
                 r.items.any { i ->
@@ -737,7 +742,7 @@ object ReportText {
         if (!r.complete) append("ยังตรวจ History ไม่ครบ — ยังสรุปว่าไม่มีออเดอร์ล่าช้าไม่ได้\n")
         append("วันที่ History: ").append(if (r.historyDateVerified) "ยืนยันจากหน้าจอ" else "UNKNOWN — เวลาอย่างเดียวไม่ยืนยันวันที่").append('\n')
         append("ถึงท้ายรายการ: ").append(r.sweepReachedEnd).append('\n')
-        append("History ขาดภาพ: ").append(r.missingHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
+        append("History ขาดภาพ (ออเดอร์ล่าช้า): ").append(r.missingHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
         append("Instance UNKNOWN: ").append(r.unknownHistoryInstances.joinToString(", ").ifEmpty { "-" }).append('\n')
         // By order number, so the owner sees which orders lack a Ready photo without opening the manifest.
         append("Ready ไม่มีภาพ (เสร็จแล้ว แต่ไม่มีภาพตอนอยู่ในแท็บ Ready): ").append(r.missingReadyInstances.size).append(" ออเดอร์")

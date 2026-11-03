@@ -9,8 +9,11 @@ import java.security.MessageDigest
 import kotlin.test.*
 
 class DriveApiTest {
-    private class Response(url: String, val code: Int, val body: String = "{}", val failWrite: Boolean = false) : HttpURLConnection(URL(url)) {
+    private class Response(url: String, val code: Int, val body: String = "{}", val failWrite: Boolean = false,
+        val canPatch: Boolean = false) : HttpURLConnection(URL(url)) {
         val sent = ByteArrayOutputStream()
+        // Android's own connection sends PATCH; the plain Java one refuses it.
+        override fun setRequestMethod(m: String) { if (canPatch && m == "PATCH") method = m else super.setRequestMethod(m) }
         override fun connect() = Unit
         override fun disconnect() = Unit
         override fun usingProxy() = false
@@ -71,5 +74,37 @@ class DriveApiTest {
             assertEquals("image", file.readText())
             assertEquals("PENDING", e.state)
         } finally { file.delete() }
+    }
+
+    private val sheet = Shop.KAPRAO.sheetId!!
+    private fun sheetReply(mime: String = DriveApi.SPREADSHEET) = Json.write(mapOf("id" to sheet, "mimeType" to mime, "trashed" to false))
+
+    @Test fun theShopsSheetIsReplacedWithTheWorkbook() {
+        for (canPatch in listOf(true, false)) {
+            val calls = mutableListOf<Response>()
+            val api = DriveApi("test-token") { url -> Response(url, 200, sheetReply(), canPatch = canPatch).also { calls += it } }
+            api.replaceSpreadsheet(sheet, byteArrayOf(80, 75, 3, 4))
+            val c = calls.single()
+            assertTrue(c.url.toString().startsWith("https://www.googleapis.com/upload/drive/v3/files/$sheet?uploadType=media"))
+            if (canPatch) {
+                assertEquals("PATCH", c.requestMethod)
+                assertNull(c.getRequestProperty("X-HTTP-Method-Override"))
+            } else {
+                // Google's documented way round a connection that cannot send PATCH
+                assertEquals("POST", c.requestMethod)
+                assertEquals("PATCH", c.getRequestProperty("X-HTTP-Method-Override"))
+            }
+            assertEquals(DriveApi.XLSX, c.getRequestProperty("Content-Type"))
+            assertEquals(listOf<Byte>(80, 75, 3, 4), c.sent.toByteArray().toList())
+        }
+    }
+    @Test fun onlyTheShopsSheetIsWrittenAndOnlyAConfirmedReplaceCounts() {
+        val none = DriveApi("test-token") { error("Must not call network") }
+        assertFailsWith<IllegalArgumentException> { none.replaceSpreadsheet(Shop.KAPRAO.folderId, byteArrayOf(1)) }
+        assertFailsWith<IllegalArgumentException> { none.replaceSpreadsheet("someone-elses-file", byteArrayOf(1)) }
+        val notASheet = DriveApi("test-token") { url -> Response(url, 200, sheetReply(DriveApi.XLSX)) }
+        assertFailsWith<IllegalArgumentException> { notASheet.replaceSpreadsheet(sheet, byteArrayOf(1)) }
+        val refused = DriveApi("test-token") { url -> Response(url, 403) }
+        assertEquals(403, assertFailsWith<DriveApi.HttpError> { refused.replaceSpreadsheet(sheet, byteArrayOf(1)) }.code)
     }
 }

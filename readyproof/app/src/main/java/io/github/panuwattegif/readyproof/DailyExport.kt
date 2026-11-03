@@ -66,6 +66,8 @@ object DailyExport {
                 "times" to times, "diagnostics" to diagnostics)))
         }
         DriveSync.offerDailyBatch(ctx, day, shopId, records, text, manifest, diagnostics, times)
+        // The day's times kept on the phone and, after closing time, the shop's Google Sheet rebuilt.
+        SheetSync.offer(ctx, report, zone)
         return report
     }
 
