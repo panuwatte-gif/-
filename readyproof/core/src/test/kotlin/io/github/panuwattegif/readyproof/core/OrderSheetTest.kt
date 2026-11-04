@@ -83,7 +83,10 @@ class OrderSheetTest {
     fun theWorkbookHasTheSummaryTheTablesAndOpensAsXlsx() {
         val d2 = OrderRows.day(day2(), zone)
         // an older day, 40 days before: only in "all" and the year
-        val old = d2.copy(date = LocalDate.of(2026, 9, 23), delayed = 2, inTime = 0, driverFirst = 0, base = 10, rows = emptyList())
+        // its one order read before the app saw drivers arrive: never seen arriving is not "food first" there
+        val early = d2.rows.first { it.gf == "GF-864F" }.copy(date = LocalDate.of(2026, 9, 23), gf = "GF-111", setTime = null,
+            arrived = null, pickedUp = null, readyBeforeDriver = true)
+        val old = d2.copy(date = LocalDate.of(2026, 9, 23), delayed = 2, inTime = 0, driverFirst = 0, base = 10, rows = listOf(early))
         val sheets = ShopWorkbook.sheets(listOf(old, d2), "กะเพรา", LocalDateTime.of(2026, 11, 2, 19, 30), zone)
         assertEquals(listOf("สรุป", "ออเดอร์ล่าช้า", "เวลาทุกออเดอร์", "สรุปรายวัน", "วิธีอ่าน"), sheets.map { it.name })
         fun texts(s: Xlsx.Sheet) = s.rows.map { row -> row.map { it?.text ?: it?.number?.toString() } }
@@ -97,9 +100,25 @@ class OrderSheetTest {
         assertTrue(summary.contains(listOf("1) แบบ Grab", "50.00%", "50.00%", "25.00%", "25.00%", "25.00%", "25.00%")), summary.toString())
         // the drivers waited 3:57 (GF-033) and 6:37 (GF-864F)
         assertTrue(summary.any { it.firstOrNull() == "คนขับมาถึงร้าน → รับอาหาร (คนขับรอ)" && it[1] == "5:17" }, summary.toString())
+        // the old day has no set time and no arrivals: 2) and 3) come from 2 Nov alone, beside Grab's rate of that day
+        val i = summary.indexOf(listOf("เทียบ 3 แบบ เฉพาะวันที่แอปจดเวลาที่ร้านตั้งและเวลาคนขับถึงร้านได้"))
+        assertTrue(i > 0, summary.toString())
+        assertEquals(listOf(
+            listOf("จำนวนวัน", "1", "1", "1", "1", "1", "1"),
+            listOf("ออเดอร์ทั้งหมด (ตาม Grab)", "2", "2", "2", "2", "2", "2"),
+            listOf("1) แบบ Grab", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%"),
+            listOf("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง", "0.00%", "0.00%", "0.00%", "0.00%", "0.00%", "0.00%"), // GF-033 was in time
+            listOf("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%"),
+        ), summary.subList(i + 1, i + 6))
+        // the daily tab says "-" for what the old day cannot tell
+        val daily = texts(sheets[3])
+        assertEquals(listOf("2.0", "20.00%", "-", "-", "-", "-", "-"), daily.first { it[0] == "23/09/2026" }.subList(3, 10))
+        assertEquals(listOf("1.0", "50.00%", "0.0", "0.00%", "1.0", "50.00%", "0.0"), daily.first { it[0] == "02/11/2026" }.subList(3, 10))
         // Grab's delayed orders only; every order with numbers to compute with
         assertEquals(listOf("GF-033"), texts(sheets[1]).drop(1).map { it[1] })
-        assertEquals(2, texts(sheets[2]).size - 1)
+        assertEquals(3, texts(sheets[2]).size - 1)
+        assertEquals("บอกไม่ได้", texts(sheets[2]).first { it[1] == "GF-111" }[12])
+        assertEquals("ไม่ — คนขับมาถึงก่อน", texts(sheets[2]).first { it[1] == "GF-864F" }[12])
         assertEquals("1.82", sheets[2].rows[2][15]?.number?.toString()?.take(4)) // GF-033 (made after GF-864F): 1:49 = 1.82 min
 
         val xlsx = Xlsx.write(sheets)

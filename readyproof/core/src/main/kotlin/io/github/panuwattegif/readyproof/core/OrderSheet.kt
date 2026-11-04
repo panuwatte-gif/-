@@ -97,6 +97,21 @@ data class OrderDay(
 ) {
     /** Delayed once the orders finished within the time the shop set are taken out. */
     val actualDelayed: Int get() = delayed - inTime
+
+    /**
+     * The app read the shop's set time this day (some order judged in time or over it). Days from
+     * before it did cannot say 2): none of their delayed orders could be taken out.
+     */
+    val hasSetTime: Boolean get() = rows.any { !it.cancelled && (it.setTime == Verdict.IN_TIME || it.setTime == Verdict.LATE) }
+
+    /**
+     * The app saw drivers reach the shop this day. Days from before it did cannot say 3), nor
+     * whether the food was ready first: a driver never seen arriving reads there as "food first".
+     */
+    val hasArrivals: Boolean get() = rows.any { it.arrived != null }
+
+    /** Both, so the three delay rates of these days stand on the same orders. */
+    val hasAllTimes: Boolean get() = hasSetTime && hasArrivals
 }
 
 object OrderRows {
@@ -243,6 +258,9 @@ object ShopWorkbook {
         Period("ทั้งหมด", null, end),
     )
 
+    private const val NO_SET_TIME = "บอกไม่ได้ (วันนั้นแอปยังไม่ได้จดเวลาที่ร้านตั้ง)"
+    private const val NO_ARRIVALS = "บอกไม่ได้ (วันนั้นแอปยังไม่ได้จดเวลาคนขับถึงร้าน)"
+
     private fun pct(n: Int, base: Int): String = if (base <= 0) "-" else String.format(Locale.ROOT, "%.2f%%", n * 100.0 / base)
 
     private fun avg(values: List<Long>): String = if (values.isEmpty()) "-" else OrderRows.minSec(values.sum() / values.size)
@@ -253,7 +271,11 @@ object ShopWorkbook {
 
     fun sheets(days: List<OrderDay>, shopLabel: String, updatedAt: LocalDateTime, zone: ZoneId): List<Xlsx.Sheet> {
         val sorted = days.sortedByDescending { it.date }
-        val rows = sorted.flatMap { d -> d.rows.sortedBy { it.orderIn?.at ?: it.ready?.at ?: it.deliveredAt ?: Long.MAX_VALUE } }
+        // A day the app did not yet see drivers arrive cannot say who came first (see [OrderDay.hasArrivals]).
+        val rows = sorted.flatMap { d ->
+            d.rows.map { if (d.hasArrivals) it else it.copy(readyBeforeDriver = null) }
+                .sortedBy { it.orderIn?.at ?: it.ready?.at ?: it.deliveredAt ?: Long.MAX_VALUE }
+        }
         return listOf(
             summary(sorted, shopLabel, updatedAt),
             orders(DELAYED, rows.filter { it.grabDelayMin != null }, zone, numbers = false),
@@ -279,9 +301,11 @@ object ShopWorkbook {
         out += listOf(t("ออเดอร์ทั้งหมดตาม Grab"), t(latest.grabCompleted?.let { "เสร็จ $it · ยกเลิก ${latest.grabCancelled ?: 0}" }
             ?: "ยังอ่านยอดของ Grab ไม่ได้ (แอปเห็น ${latest.completedSeen})"))
         out += listOf(t("1) Grab ว่าล่าช้า"), t("${latest.delayed} ออเดอร์ = ${pct(latest.delayed, latest.base)}"))
-        out += listOf(t("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง"), t("${latest.actualDelayed} ออเดอร์ = ${pct(latest.actualDelayed, latest.base)}"))
-        out += listOf(t("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)"), t("${latest.driverFirst} ออเดอร์ = ${pct(latest.driverFirst, latest.base)}" +
-            if (latest.driverUnknown > 0) " · บอกไม่ได้ ${latest.driverUnknown}" else ""))
+        out += listOf(t("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง"), t(if (!latest.hasSetTime) NO_SET_TIME else
+            "${latest.actualDelayed} ออเดอร์ = ${pct(latest.actualDelayed, latest.base)}"))
+        out += listOf(t("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)"), t(if (!latest.hasArrivals) NO_ARRIVALS else
+            "${latest.driverFirst} ออเดอร์ = ${pct(latest.driverFirst, latest.base)}" +
+                if (latest.driverUnknown > 0) " · บอกไม่ได้ ${latest.driverUnknown}" else ""))
         val closed = latest.rows.filter { !it.cancelled && it.atClose != null }
         out += listOf(t("ร้านปิดงานตอนยังไม่มีคนขับ"), t(if (closed.isEmpty()) "-" else
             "${closed.count { it.atClose == AtClose.NO_DRIVER }} จาก ${closed.size} ออเดอร์ = " +
@@ -295,8 +319,16 @@ object ShopWorkbook {
         out += listOf(t("จำนวนวัน")) + periods.map { t(inP(it).size.toString()) }
         out += listOf(t("ออเดอร์ทั้งหมด (ตาม Grab)")) + periods.map { p -> t(inP(p).sumOf { it.base }.toString()) }
         out += listOf(t("1) แบบ Grab")) + periods.map { p -> inP(p).let { d -> t(pct(d.sumOf { it.delayed }, d.sumOf { it.base })) } }
-        out += listOf(t("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง")) + periods.map { p -> inP(p).let { d -> t(pct(d.sumOf { it.actualDelayed }, d.sumOf { it.base })) } }
-        out += listOf(t("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)")) + periods.map { p -> inP(p).let { d -> t(pct(d.sumOf { it.driverFirst }, d.sumOf { it.base })) } }
+        // 2) and 3) only from the days the app read the set time and the drivers' arrival, with
+        // Grab's rate of those same days beside them: the days before would count as all late (2)
+        // and never the driver first (3).
+        fun full(p: Period) = inP(p).filter { it.hasAllTimes }
+        out += listOf(bold("เทียบ 3 แบบ เฉพาะวันที่แอปจดเวลาที่ร้านตั้งและเวลาคนขับถึงร้านได้"))
+        out += listOf(t("จำนวนวัน")) + periods.map { t(full(it).size.toString()) }
+        out += listOf(t("ออเดอร์ทั้งหมด (ตาม Grab)")) + periods.map { p -> t(full(p).sumOf { it.base }.toString()) }
+        out += listOf(t("1) แบบ Grab")) + periods.map { p -> full(p).let { d -> t(pct(d.sumOf { it.delayed }, d.sumOf { it.base })) } }
+        out += listOf(t("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง")) + periods.map { p -> full(p).let { d -> t(pct(d.sumOf { it.actualDelayed }, d.sumOf { it.base })) } }
+        out += listOf(t("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)")) + periods.map { p -> full(p).let { d -> t(pct(d.sumOf { it.driverFirst }, d.sumOf { it.base })) } }
         out += emptyList<Xlsx.Cell?>()
 
         out += listOf(bold("ค่าเฉลี่ย (นาที:วินาที)")) + periods.map { bold(it.label) }
@@ -321,7 +353,8 @@ object ShopWorkbook {
             orders(p).let { o -> t(share(o.count { it.setTime == Verdict.IN_TIME }, o.count { it.setTime == Verdict.IN_TIME || it.setTime == Verdict.LATE })) }
         }
         out += listOf(t("% อาหารเสร็จก่อนคนขับมาถึง")) + periods.map { p ->
-            orders(p).let { o -> t(share(o.count { it.readyBeforeDriver == true }, o.count { it.readyBeforeDriver != null })) }
+            inP(p).filter { it.hasArrivals }.flatMap { it.rows }.filter { !it.cancelled }
+                .let { o -> t(share(o.count { it.readyBeforeDriver == true }, o.count { it.readyBeforeDriver != null })) }
         }
         out += listOf(t("ออเดอร์ที่มีเวลาเตรียมครบ")) + periods.map { p -> t(orders(p).count { it.prepMs != null }.toString()) }
         out += emptyList<Xlsx.Cell?>()
@@ -368,9 +401,11 @@ object ShopWorkbook {
                 Xlsx.number((d.grabCompleted ?: d.completedSeen).toDouble()),
                 Xlsx.number((d.grabCancelled ?: d.cancelledSeen).toDouble()),
                 Xlsx.number(d.delayed.toDouble()), t(pct(d.delayed, d.base)),
-                Xlsx.number(d.actualDelayed.toDouble()), t(pct(d.actualDelayed, d.base)),
-                Xlsx.number(d.driverFirst.toDouble()), t(pct(d.driverFirst, d.base)),
-                Xlsx.number(d.driverUnknown.toDouble()),
+                if (d.hasSetTime) Xlsx.number(d.actualDelayed.toDouble()) else t("-"),
+                t(if (d.hasSetTime) pct(d.actualDelayed, d.base) else "-"),
+                if (d.hasArrivals) Xlsx.number(d.driverFirst.toDouble()) else t("-"),
+                t(if (d.hasArrivals) pct(d.driverFirst, d.base) else "-"),
+                if (d.hasArrivals) Xlsx.number(d.driverUnknown.toDouble()) else t("-"),
                 t(avg(o.mapNotNull { it.prepMs })), t(avg(o.mapNotNull { it.driverWaitMs })), t(avg(o.mapNotNull { it.totalMs })),
                 Xlsx.number(o.count { it.atClose == AtClose.NO_DRIVER }.toDouble()),
                 t(share(o.count { it.atClose == AtClose.NO_DRIVER }, o.count { it.atClose != null })),
@@ -395,6 +430,9 @@ object ShopWorkbook {
         "• ร้านปิดงาน → ลูกค้าได้รับ: นับจากที่แอปเห็นออเดอร์ในหน้าพร้อมจัดส่ง ถึงเวลาส่งเสร็จในหน้าประวัติ (ระดับนาที) มีทุกวัน",
         "• % ล่าช้า 3 แบบ ใช้ฐานเดียวกัน (ออเดอร์ทั้งหมดตามยอดของ Grab): 1) แบบ Grab 2) ตัดออเดอร์ที่ร้านเสร็จทันเวลาที่ตั้ง " +
             "3) ที่ถูกต้อง = นับเฉพาะออเดอร์ที่คนขับมาถึงร้านแล้วอาหารยังไม่เสร็จ",
+        "• 2) และ 3) คิดได้เฉพาะวันที่แอปจดเวลาที่ร้านตั้งและเวลาคนขับถึงร้านแล้ว วันก่อนหน้านั้นขึ้น \"-\" (ถ้านับรวม 2) จะสูงเกินจริง 3) จะต่ำเกินจริง) " +
+            "ในหน้าสรุปจึงเทียบ 3 แบบเฉพาะวันเหล่านั้น โดยมี 1) แบบ Grab ของวันเดียวกันไว้ข้างกัน",
+        "• % อาหารเสร็จก่อนคนขับมาถึง: นับเฉพาะวันที่แอปจดเวลาคนขับถึงร้านแล้ว",
         "• ค่าเฉลี่ยคิดเฉพาะออเดอร์ที่มีเวลาครบทั้งสองฝั่ง · ช่วงเวลานับย้อนจากวันล่าสุดที่มีข้อมูล",
         "• ตารางนี้แอปเขียนทับใหม่ทุกคืนหลังปิดร้าน (แก้ไขในชีตเองจะหาย)",
     ).map { listOf(t(it)) }, listOf(140.0))
