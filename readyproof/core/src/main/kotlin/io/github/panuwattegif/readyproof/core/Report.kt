@@ -717,8 +717,13 @@ object ReportText {
         if (deadline == null) return null
         fun mmss(ms: Long): String { val s = ms / 1000; return "${s / 60}:" + Parsers.pad2((s % 60).toInt()) }
         return when (v) {
-            Verdict.IN_TIME -> pressedBy?.let { "เหลือ " + mmss(deadline - it) }
-            Verdict.LATE -> if (pressedAfter != null && pressedAfter > deadline) "เกิน " + mmss(pressedAfter - deadline) else "เกิน (เห็นการ์ด 0:00)"
+            // under a second either side (an order watched to its 0:00): never written as "0:00"
+            Verdict.IN_TIME -> pressedBy?.let { if (deadline - it < 1_000) "เหลือไม่ถึง 1 วินาที" else "เหลือ " + mmss(deadline - it) }
+            Verdict.LATE -> when {
+                pressedAfter == null || pressedAfter <= deadline -> "เกิน (เห็นการ์ด 0:00)"
+                pressedAfter - deadline < 1_000 -> "เกิน (การ์ดยังอยู่ตอนหมดเวลา)"
+                else -> "เกิน " + mmss(pressedAfter - deadline)
+            }
             Verdict.UNCHECKED -> pressedBy?.let { "แยกไม่ออก (ช่วงที่กดคร่อม 0:00)" }
             Verdict.NO_EVIDENCE, null -> null
         }

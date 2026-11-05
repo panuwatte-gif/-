@@ -24,6 +24,8 @@ class PrepTracker {
         /** Last time it was on the Preparing tab, and what its countdown said then. */
         var lastSeen: Long = checkedAt,
         var lastCountdown: String? = null,
+        /** Watched on the Preparing tab up to its 0:00 (see [runningOut]): once per order. */
+        var heldAt: Long? = null,
     ) {
         val hasOverduePhoto: Boolean get() = overdueShotAt != null || overdueBackupAt != null
     }
@@ -143,6 +145,47 @@ class PrepTracker {
             (e.checkedAt < e.deadline + graceMs || (e.retry && e.overdueMisses < MAX_MISSES))
     }
 
+    /**
+     * Orders whose countdown runs out within [leadMs] (or ran out at most [HOLD_LATE_MS] ago) and
+     * that have not been watched to their 0:00 yet, with their deadlines. 5 Nov (owner): such an
+     * order is watched on the Preparing tab until it is gone (pressed in time) or shows 0:00
+     * (late, its red card photographed), instead of finding out later which came first.
+     */
+    @Synchronized
+    fun runningOut(now: Long, leadMs: Long): Map<String, Long> = entries
+        .filter { (_, e) -> e.heldAt == null && !e.hasOverduePhoto && e.deadline >= now - HOLD_LATE_MS && e.deadline <= now + leadMs }
+        .mapValues { it.value.deadline }
+
+    /** The soonest 0:00 among the orders [runningOut] could still return (to be there in time). */
+    @Synchronized
+    fun nextRunOut(now: Long): Long? = entries.values
+        .filter { it.heldAt == null && !it.hasOverduePhoto && it.deadline >= now - HOLD_LATE_MS }
+        .minOfOrNull { it.deadline }
+
+    /** Being watched to its 0:00 now: never waited for again. */
+    @Synchronized
+    fun holding(gfs: Collection<String>, now: Long) {
+        gfs.forEach { entries[it]?.heldAt = now }
+    }
+
+    /** Any of [gfs] still on the tab without its red card photographed. */
+    @Synchronized
+    fun unresolved(gfs: Collection<String>): Boolean = gfs.any { gf -> entries[gf]?.let { !it.hasOverduePhoto } == true }
+
+    /** When each of [gfs] was last seen on the tab and what its countdown said then (to write down). */
+    @Synchronized
+    fun lastSightings(gfs: Collection<String>): List<Gone> =
+        gfs.mapNotNull { gf -> entries[gf]?.let { Gone(gf, it.lastSeen, it.lastCountdown) } }
+
+    /**
+     * These orders were seen leaving the tab (gone from the top of the list while its count went
+     * down by at least as many): pressed ready by then.
+     */
+    @Synchronized
+    fun leave(gfs: Collection<String>): List<Gone> = gfs.mapNotNull { gf ->
+        entries.remove(gf)?.let { Gone(gf, it.lastSeen, it.lastCountdown) }
+    }
+
     @Synchronized
     fun known(): Set<String> = entries.keys.toSet()
 
@@ -181,6 +224,8 @@ class PrepTracker {
     companion object {
         /** A countdown that moved more than this was given more time: worth a new log line. */
         const val MOVE_MS = 30_000L
+        /** An order whose countdown ran out at most this long ago is still worth watching for its red card. */
+        const val HOLD_LATE_MS = 2_000L
         /** Looks at a red card that may end without a photo before giving up on it. */
         const val MAX_MISSES = 3
         /** Note on a red-card photo whose screen moved while it was taken. */

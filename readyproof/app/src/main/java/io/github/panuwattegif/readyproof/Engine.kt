@@ -93,6 +93,20 @@ class Engine(private val service: ProofService) {
         /** While orders are being prepared, look at least this often (what the tab count misses). */
         private const val PREP_RECHECK_MS = 5 * 60_000L
         private const val MAX_PREP_PAGES = 5
+        /** An order whose 0:00 is this close is watched on the Preparing tab until it is decided. */
+        private const val PREP_LEAD_MS = 15_000L
+        /** Start the look this long before an order's 0:00 (opening the tab takes a few seconds). */
+        private const val PREP_ARRIVE_MS = 10_000L
+        /** Between two looks when an order is about to run out. */
+        private const val PREP_SOON_GAP_MS = 5_000L
+        /** Watching an order lasts until this long after its 0:00 (the card turning red) ... */
+        private const val PREP_HOLD_AFTER_MS = 3_000L
+        /** ... and never longer than this for one order ... */
+        private const val PREP_HOLD_MAX_MS = 25_000L
+        /** ... nor, with the next orders about to run out watched on from there, than this in all. */
+        private const val PREP_HOLD_TOTAL_MS = 60_000L
+        /** One reading of the screen this often while watching. */
+        private const val PREP_HOLD_STEP_MS = 500L
         /** Away from Grab's order tabs this long, the guard goes back even if Grab seems in use. */
         private const val OUTSIDE_MAX_MS = 5 * 60_000L
         /** One move of a list: this share of its height (the slow pass uses smaller steps). */
@@ -180,6 +194,9 @@ class Engine(private val service: ProofService) {
     private var prepSteadyCount = 0
     /** During a look at the Preparing tab: its new-order lines, written at the end of the look. */
     private var pendingPrep: MutableList<Record>? = null
+    /** A look planned shortly before an order's 0:00 (see [planHold]), and when it starts. */
+    private var holdJob: Job? = null
+    private var holdJobAt = 0L
     private val problemAt = HashMap<String, Long>()
     private var historyDay: String? = null
     private var lastStats: String? = null
@@ -471,11 +488,19 @@ class Engine(private val service: ProofService) {
             }
             return
         }
-        val gap = if (prepMisses >= 3) PREP_RECHECK_MS / 2 else PREP_MIN_GAP_MS
+        val wall = System.currentTimeMillis()
+        // an order's 0:00 is near: be there to see it pressed or turn red (see [holdPreparing])
+        val soon = prepTracker.runningOut(wall, PREP_LEAD_MS).isNotEmpty()
+        val gap = when {
+            prepMisses >= 3 -> PREP_RECHECK_MS / 2
+            soon -> PREP_SOON_GAP_MS
+            else -> PREP_MIN_GAP_MS
+        }
         if (up - lastPrepVisitAt < gap) return
         val why = when {
             newOrder -> "new order"
-            prepTracker.runOutUnseen(System.currentTimeMillis(), PREP_RUNOUT_GRACE_MS) -> "time ran out"
+            prepTracker.runOutUnseen(wall, PREP_RUNOUT_GRACE_MS) -> "time ran out"
+            soon -> "about to run out"
             // count unreadable: the orders already being followed tell whether anything is preparing
             (count ?: prepTracker.known().size) > 0 && up - lastPrepVisitAt > PREP_RECHECK_MS -> "check"
             else -> return
@@ -537,6 +562,7 @@ class Engine(private val service: ProofService) {
         val read = LinkedHashMap<String, String?>()
         var count: Int? = null
         var pages = 0
+        var personTook = false
         if (emptyByCount) {
             prepTracker.complete(emptyList())
             lastPrepCount = 0
@@ -571,6 +597,7 @@ class Engine(private val service: ProofService) {
             // a red card still waiting for its photo keeps its second look unless the whole list was seen without it
             prepTracker.checked(System.currentTimeMillis(), if (whole) read.keys else null)
             if (count != null) lastPrepCount = count
+            personTook = !holdPreparing(c)
         }
         prepMisses = if (there || emptyByCount) 0 else prepMisses + 1
         Diagnostics.note(
@@ -582,9 +609,162 @@ class Engine(private val service: ProofService) {
             },
         )
         if (prepMisses == 3) problem("เปิดแท็บกำลังเตรียมไม่สำเร็จ 3 ครั้งติด — แอปจะลองใหม่ทุก 2–3 นาที (ออเดอร์ที่รออยู่ยังติดตามต่อ)")
+        if (personTook) {
+            // somebody is pressing an order (Grab's camera) or using another page: never pulled
+            // away from it, and the guard waits as for any person using the phone
+            lastUserTouchAt = SystemClock.uptimeMillis()
+            setWhere("มีคนใช้เครื่องอยู่ — แอปรอ แล้วจะกลับแท็บ Ready เอง")
+            return
+        }
         if (!openTab(c.readyTabLabels, OrderTab.READY)) {
             problem("กลับแท็บ Ready ไม่สำเร็จหลังดูแท็บกำลังเตรียม — กรุณาเปิด Grab ที่แท็บพร้อมจัดส่ง")
         }
+    }
+
+    /**
+     * 5 Nov (owner): an order whose 0:00 is near is watched on the Preparing tab until it is
+     * decided, instead of going back to Ready and finding out later which came first. Gone from
+     * the tab before 0:00 = pressed in time; still there at 0:00 = late, and its red card is
+     * photographed ([onPreparing]). Nothing is touched while watching, the screen is only read
+     * every [PREP_HOLD_STEP_MS]. A card counts as gone when the tab's count agrees: the whole list
+     * on screen without it, or (a longer list that stayed at its top) its count down by at least as
+     * many cards as went missing. It left by the first reading without it once two readings in a
+     * row miss it (one reading that misses a card proves nothing).
+     * Returns false when a person took over the phone (pressing an order opens Grab's camera):
+     * that screen is left alone.
+     */
+    private suspend fun holdPreparing(c: Config): Boolean {
+        val start = System.currentTimeMillis()
+        val near = prepTracker.runningOut(start, PREP_LEAD_MS)
+        if (near.isEmpty()) return true
+        // once per order, whatever happens now
+        prepTracker.holding(near.keys, start)
+        val first = reader.read(c) ?: return false
+        if (first.a.tab != OrderTab.PREPARING) return first.a.tabsVisible || first.dialog
+        val onScreen = onPreparing(first, visit = true).map { it.gf }.toMutableSet()
+        val watch = near.keys.filterTo(LinkedHashSet()) { it in onScreen }
+        if (watch.isEmpty()) {
+            Diagnostics.note(service, "preparing hold: ${near.keys.joinToString(",")} not on the first screen, not watched")
+            return true
+        }
+        var until = minOf(watch.maxOf { near.getValue(it) } + PREP_HOLD_AFTER_MS, start + PREP_HOLD_MAX_MS)
+        setWhere("รอดูการ์ด ${watch.joinToString(", ")} ที่ใกล้หมดเวลา — กดทันหรือขึ้น 0:00")
+        // a longer list read by its count only while it stays at its top (it says where it is)
+        val atTop = first.a.canScrollForward && !first.a.canScrollBackward
+        var baseCount = first.a.preparingCount
+        val absentSince = HashMap<String, Long>()
+        val absentReads = HashMap<String, Int>()
+        val gone = LinkedHashMap<String, String?>()
+        var offTab = 0
+        var personTook = false
+        var why = ""
+        while (true) {
+            val open = prepTracker.unresolved(watch)
+            val t0 = System.currentTimeMillis()
+            if (!open || t0 >= until) {
+                // the next order about to run out is watched on from here: no going back to Ready
+                // and straight back again (owner, 5 Nov: the app kept switching tabs)
+                val more = if (t0 - start < PREP_HOLD_TOTAL_MS) prepTracker.runningOut(t0, PREP_LEAD_MS) else emptyMap()
+                prepTracker.holding(more.keys, t0)
+                val next = more.keys.filter { it in onScreen }
+                if (next.isEmpty()) {
+                    why = if (open) "time up" else "decided"
+                    break
+                }
+                watch += next
+                until = maxOf(until, minOf(next.maxOf { more.getValue(it) } + PREP_HOLD_AFTER_MS, t0 + PREP_HOLD_MAX_MS))
+                setWhere("รอดูการ์ด ${next.joinToString(", ")} ที่ใกล้หมดเวลา — กดทันหรือขึ้น 0:00")
+            }
+            delay(PREP_HOLD_STEP_MS)
+            val s = reader.read(c)
+            if (s == null) {
+                if (++offTab < 2) continue
+                // Grab gone from the screen: a person switched apps
+                personTook = true
+                why = "Grab left the screen"
+                break
+            }
+            if (s.dialog) {
+                why = "pop-up"
+                break
+            }
+            // its tab counts 0 (an emptied list may not say which tab it is): every order left
+            val zero = s.a.tab != OrderTab.PREPARING && s.a.tabsVisible && s.a.preparingCount == 0
+            if (s.a.tab != OrderTab.PREPARING && !zero) {
+                if (++offTab < 2) continue
+                // Grab's camera or an order's own page (pressing an order), or History: a person
+                personTook = !s.a.tabsVisible || s.a.tab == OrderTab.HISTORY
+                why = if (personTook) "a person took the phone" else "the tab changed (${s.a.tab})"
+                break
+            }
+            offTab = 0
+            if (!zero && atTop && s.a.canScrollBackward) {
+                personTook = true
+                why = "a person moved the list"
+                break
+            }
+            val now = System.currentTimeMillis()
+            val listed = if (zero) emptySet<String>() else onPreparing(s, visit = true).map { it.gf }.toSet()
+            val hc = if (zero) 0 else s.a.preparingCount
+            for (gf in listed) {
+                absentSince.remove(gf)
+                absentReads.remove(gf)
+            }
+            for (gf in onScreen - listed) {
+                absentSince.putIfAbsent(gf, now)
+                absentReads[gf] = (absentReads[gf] ?: 0) + 1
+            }
+            onScreen += listed
+            // only orders being followed can leave (a card whose countdown could not be read is not)
+            val known = prepTracker.known()
+            absentSince.keys.retainAll(known)
+            absentReads.keys.retainAll(known)
+            // when it left: the first reading without it, if the one after missed it too
+            fun leftAt(gf: String): Long = if ((absentReads[gf] ?: 0) >= 2) absentSince[gf] ?: now else now
+            var out: List<PrepTracker.Gone> = emptyList()
+            val whole = hc != null && listed.size == hc
+            if (whole) {
+                // a card seen while watching is gone once two readings in a row miss it; one
+                // followed from before and not seen since is gone at the first whole reading
+                out = prepTracker.leave((known - listed).filter { (absentReads[it] ?: 0) >= 2 || it !in onScreen })
+                lastPrepWholeAt = now
+                lastPrepCount = hc!!
+            } else if (atTop && hc != null && baseCount != null && absentSince.isNotEmpty() &&
+                absentReads.values.all { it >= 2 } && baseCount - hc >= absentSince.size
+            ) {
+                out = prepTracker.leave(absentSince.keys.toList())
+            }
+            for ((t, group) in out.groupBy { leftAt(it.gf) }) noteLeftPreparing(group, t)
+            for (g in out) {
+                gone[g.gf] = g.countdown
+                onScreen -= g.gf
+                absentSince.remove(g.gf)
+                absentReads.remove(g.gf)
+            }
+            // a new base once nothing is missing (a lower count with nothing missing yet: wait)
+            if (hc != null && absentSince.isEmpty() && (whole || baseCount == null || hc >= baseCount || out.isNotEmpty())) baseCount = hc
+        }
+        // still there when watching ended: when it was last seen and what it said then
+        val still = watch.filter { prepTracker.unresolved(listOf(it)) }
+        val sightings = prepTracker.lastSightings(still).filter { it.countdown != null }
+        for ((t, group) in sightings.groupBy { it.lastSeen }) {
+            RecordStore.append(
+                service,
+                Record(
+                    id = "$t-ph${seq.incrementAndGet()}", t = t, kind = RecordKind.SEEN,
+                    items = group.map { Item(it.gf, ObsType.PREPARING, countdown = it.countdown) },
+                    note = "PREPARING", shopId = shop(),
+                ),
+            )
+        }
+        Diagnostics.note(
+            service,
+            "preparing hold ${watch.joinToString(",")}: $why after ${(System.currentTimeMillis() - start) / 1000}s" +
+                "; gone " + gone.entries.joinToString(",") { "${it.key} (last ${it.value})" }.ifEmpty { "-" } +
+                "; red shot " + watch.filter { it !in gone && it !in still }.joinToString(",").ifEmpty { "-" } +
+                "; still " + sightings.joinToString(",") { "${it.gf} ${it.countdown}" }.ifEmpty { "-" },
+        )
+        return !personTook
     }
 
     /**
@@ -1320,6 +1500,27 @@ class Engine(private val service: ProofService) {
         if (w.grabVisible && SystemClock.uptimeMillis() - lastObserveAt > IDLE_OBSERVE_MS) scheduleObserve()
         // a countdown just ran out: look now, not at the next idle look
         if (w.grabVisible && c.watchPreparing && prepTracker.runOutUnseen(System.currentTimeMillis(), PREP_RUNOUT_GRACE_MS)) scheduleObserve()
+        if (w.grabVisible && c.watchPreparing) planHold()
+    }
+
+    /**
+     * An order's 0:00 is near: look at the Preparing tab [PREP_ARRIVE_MS] before it (not at the
+     * next 10-second tick, which may come too late), so its card is watched to the end there.
+     */
+    private fun planHold() {
+        val now = System.currentTimeMillis()
+        if (prepTracker.runningOut(now, PREP_LEAD_MS).isNotEmpty()) scheduleObserve()
+        val next = prepTracker.nextRunOut(now) ?: return
+        val at = next - PREP_ARRIVE_MS
+        // a later tick plans it; one already planned as early stays
+        if (at - now > TICK_MS + 1_000L) return
+        if (holdJob?.isActive == true && holdJobAt <= at) return
+        holdJob?.cancel()
+        holdJobAt = at
+        holdJob = scope.launch {
+            delay(maxOf(0L, at - System.currentTimeMillis()))
+            scheduleObserve()
+        }
     }
 
     private suspend fun guard(w: WindowsState) {
