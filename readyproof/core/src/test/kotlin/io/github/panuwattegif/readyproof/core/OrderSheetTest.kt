@@ -58,7 +58,7 @@ class OrderSheetTest {
         assertEquals(891_000, r.rideMs) // delivered 10:59 (to the minute)
         assertEquals(2_264_000, r.totalMs)
         assertEquals(listOf(
-            "02/11/2026", "GF-033", "เสร็จ", "4", "ทันเวลาที่ตั้ง", "10:21:16", "10:23:05 (1:49)", "10:28:45 (7:29)",
+            "02/11/2026", "GF-033", "เสร็จ", "4", "ทันเวลาที่ตั้ง", "เหลือ 5:11", "10:21:16", "10:23:05 (1:49)", "10:28:45 (7:29)",
             "10:40:12 (11:27)", "10:44:09 (3:57)", "10:59 (14:51)", "37:44", "ใช่ (อาหารรอคนขับ 17:07)",
             "ยังไม่มีคนขับ", "35:55",
         ), OrderRows.cells(r, zone))
@@ -70,8 +70,8 @@ class OrderSheetTest {
         val f = day.rows.first { it.gf == "GF-864F" }
         assertEquals(false, f.readyBeforeDriver)
         assertNull(f.prepMs) // order in only "by 09:10:00"
-        assertEquals("ไม่เกิน 09:10:00", OrderRows.cells(f, zone)[5])
-        assertEquals("ไม่ — คนขับมาถึงก่อน", OrderRows.cells(f, zone)[12])
+        assertEquals("ไม่เกิน 09:10:00", OrderRows.cells(f, zone)[6])
+        assertEquals("ไม่ — คนขับมาถึงก่อน", OrderRows.cells(f, zone)[13])
         assertEquals(AtClose.WAITING, f.atClose)
         assertNull(f.closeToFoundMs) // a driver was already there
         assertEquals(1, day.driverFirst)
@@ -117,9 +117,9 @@ class OrderSheetTest {
         // Grab's delayed orders only; every order with numbers to compute with
         assertEquals(listOf("GF-033"), texts(sheets[1]).drop(1).map { it[1] })
         assertEquals(3, texts(sheets[2]).size - 1)
-        assertEquals("บอกไม่ได้", texts(sheets[2]).first { it[1] == "GF-111" }[12])
-        assertEquals("ไม่ — คนขับมาถึงก่อน", texts(sheets[2]).first { it[1] == "GF-864F" }[12])
-        assertEquals("1.82", sheets[2].rows[2][15]?.number?.toString()?.take(4)) // GF-033 (made after GF-864F): 1:49 = 1.82 min
+        assertEquals("บอกไม่ได้", texts(sheets[2]).first { it[1] == "GF-111" }[13])
+        assertEquals("ไม่ — คนขับมาถึงก่อน", texts(sheets[2]).first { it[1] == "GF-864F" }[13])
+        assertEquals("1.82", sheets[2].rows[2][16]?.number?.toString()?.take(4)) // GF-033 (made after GF-864F): 1:49 = 1.82 min
 
         val xlsx = Xlsx.write(sheets)
         val entries = HashMap<String, ByteArray>()

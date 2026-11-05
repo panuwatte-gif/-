@@ -54,15 +54,15 @@ object GrabTable {
                 Verdict.LATE -> Cell(listOf("ไม่ทัน"), Tone.BAD)
                 else -> Cell(listOf("บอกไม่ได้"))
             },
-            Cell(split(c[5])),
             Cell(split(c[6])),
             Cell(split(c[7])),
             Cell(split(c[8])),
             Cell(split(c[9])),
             Cell(split(c[10])),
             Cell(split(c[11])),
+            Cell(split(c[12])),
             when (r.readyBeforeDriver) {
-                true -> Cell(split(c[12]), Tone.GOOD)
+                true -> Cell(split(c[13]), Tone.GOOD)
                 false -> Cell(listOf("ไม่", "คนขับมาถึงก่อน"), Tone.BAD)
                 null -> Cell(listOf("บอกไม่ได้"))
             },

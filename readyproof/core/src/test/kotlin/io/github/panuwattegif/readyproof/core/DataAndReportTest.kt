@@ -432,7 +432,7 @@ class DataAndReportTest {
             rec(ms(2026, 10, 19, 15, 0), RecordKind.SEEN, Item("GF-500", ObsType.PREPARING, countdown = "2:00"), uri = null),
             rec(ms(2026, 10, 19, 15, 20), RecordKind.SEEN, Item("GF-500", ObsType.READY, prevAt = ms(2026, 10, 19, 14, 58)), uri = null),
             rec(ms(2026, 10, 19, 15, 20, 1), RecordKind.READY, Item("GF-500", ObsType.READY)),
-            // 5 s after: closer than the app can tell apart
+            // 5 s after, the phone could not see which came first: left open, not called in time (owner, 5 Nov)
             rec(ms(2026, 10, 19, 13, 0), RecordKind.SEEN, Item("GF-674", ObsType.PREPARING, countdown = "2:00"), uri = null),
             rec(ms(2026, 10, 19, 13, 2, 5), RecordKind.READY, Item("GF-674", ObsType.READY)),
             // given more time after it ran out: the last reading before Ready counts
@@ -451,25 +451,26 @@ class DataAndReportTest {
                 Item("GF-191", ObsType.DELAY, delayMin = 3, doneAt = "11:51")).copy(historyDate = "2026-10-19"),
         )
         val r = ReportBuilder.build(records, day, zone, cfg)
-        assertEquals(listOf("GF-204", "GF-674", "GF-234"), r.inTime.map { it.gf })
+        assertEquals(listOf("GF-204", "GF-234"), r.inTime.map { it.gf })
         assertEquals(listOf("GF-328", "GF-022"), r.late.map { it.gf })
-        assertEquals(listOf("GF-191", "GF-500"), r.unchecked.map { it.gf })
+        assertEquals(listOf("GF-191", "GF-674", "GF-500"), r.unchecked.map { it.gf })
         val c022 = r.cases.first { it.gf == "GF-022" }
         assertTrue(c022.prep!!.ranOut)
         assertEquals(overdue.id, c022.prep!!.overdueShot?.id)
         // only orders pressed in time go to Grab
-        assertEquals(listOf("GF-204", "GF-674", "GF-234"), r.sets(Verdict.IN_TIME).map { it.case.gf })
-        assertEquals(57.14, Math.round(r.realPct!! * 100) / 100.0) // (7 − 3) / 7
+        assertEquals(listOf("GF-204", "GF-234"), r.sets(Verdict.IN_TIME).map { it.case.gf })
+        assertEquals(71.43, Math.round(r.realPct!! * 100) / 100.0) // (7 − 2) / 7
         val text = ReportText.summary(r, zone)
         assertTrue(text.contains("GF-022 ล่าช้า 6 นาที (เสร็จ 16:27) — อยู่ในแท็บ Ready ตั้งแต่ 15:49:33 \"GF-022 คนขับของคุณมาถึงแล้ว 1 รายการ\" · เกินเวลาที่ตั้ง (หน้ากำลังเตรียมขึ้น 0:00 ตอน 15:47:05 มีภาพ)"), text)
         assertTrue(text.contains("GF-328 ล่าช้า 5 นาที (เสร็จ 12:22) — อยู่ในแท็บ Ready ตั้งแต่ 12:02:25 \"GF-328 กำลังค้นหาคนขับ... 1 รายการ\" · เกินเวลาที่ตั้ง"), text)
         assertTrue(text.contains("GF-204 ล่าช้า 4 นาที (เสร็จ 11:42) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:40 \"GF-204 กำลังค้นหาคนขับ... 2 รายการ\" · ทันเวลาที่ตั้ง"), text)
-        // 5 s after: within the slack, shown only as within the time the shop set (owner, 3 Nov)
-        assertTrue(text.contains("GF-674 ล่าช้า 7 นาที (เสร็จ 13:17) — อยู่ในแท็บ Ready ตั้งแต่ 13:02:05 · ทันเวลาที่ตั้ง\n"), text)
+        // 5 s after, last known not pressed at 13:00 (owner, 5 Nov: shown as it is, not rounded to in time)
+        assertTrue(text.contains("GF-674 ล่าช้า 7 นาที (เสร็จ 13:17) — อยู่ในแท็บ Ready ตั้งแต่ 13:02:05 · " +
+            "บอกไม่ได้ว่าทันเวลาที่ตั้ง (กดระหว่าง 13:00:00–13:02:05 คร่อมเวลาที่การ์ดถึง 0:00 13:02:00)\n"), text)
         assertTrue(text.contains("GF-191 ล่าช้า 3 นาที (เสร็จ 11:51) — อยู่ในแท็บ Ready ตั้งแต่ 10:40:00 · ไม่มีข้อมูลหน้ากำลังเตรียม"), text)
         // still 2:00 left at 15:00 (not pressed then), seen in Ready at 15:20
         assertTrue(text.contains("GF-500 ล่าช้า 5 นาที (เสร็จ 15:44) — อยู่ในแท็บ Ready ตั้งแต่ 15:20:00 · " +
-            "บอกไม่ได้ว่าทันเวลาที่ตั้ง (ตอนหมดเวลาแอปไม่ได้ดูอยู่)"), text)
+            "บอกไม่ได้ว่าทันเวลาที่ตั้ง (กดระหว่าง 15:00:00–15:20:00 คร่อมเวลาที่การ์ดถึง 0:00 15:02:00)"), text)
         // the times of each order, to compare with Grab's own (accepted, picked up, delivered)
         // a time known only between two looks is shown as that range, never as one time
         // how long it took to make (order in → pressed) and how long the driver waited at the shop
@@ -487,7 +488,9 @@ class DataAndReportTest {
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.startsWith("\uFEFF" + ReportText.TIMES_CSV_HEADER + "\n"), times)
         assertTrue(times.contains("2026-10-19,GF-204,เสร็จ,4,กดทัน (เข้า Ready ก่อนหมดเวลา),,11:05:00," +
-            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,ทันเวลาที่ตั้ง,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,ใช่,11:42\n"), times)
+            "11:09:36,11:09:40,อย่างน้อย 4:36 นาที,ทันเวลาที่ตั้ง,11:09:41,,,11:14:58,11:15:02,11:16:25,11:16:30,1:23–1:32 นาที,ใช่,11:42,เหลือ "), times)
+        val m204 = Regex("GF-204,.*,เหลือ (\\d+):(\\d\\d)\n").find(times)!!.groupValues
+        assertEquals((r.cases.first { it.gf == "GF-204" }.prep!!.deadline - c204.pressedBy!!) / 1000, m204[1].toLong() * 60 + m204[2].toLong())
         assertEquals(ReportText.TIMES_CSV_HEADER.split(',').size, times.lines()[1].split(',').size)
         assertEquals(7, r.orders.size)
     }
@@ -584,17 +587,24 @@ class DataAndReportTest {
             ReportText.timelineText(t760, LocalDateTime.of(2026, 10, 26, 16, 41), zone))
         val times = ReportText.timelineCsv(r, zone)
         assertTrue(times.contains("2026-10-26,GF-760,เสร็จ,,,16:00:02,16:00:10,16:10:00,16:10:05,9:50–10:03 นาที,ทันเวลาที่ตั้ง,16:10:06," +
-            "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,1:29–1:44 นาที,ใช่,16:41\n"), times)
+            "16:13:12,16:13:20,16:18:31,16:18:40,16:20:09,16:20:15,1:29–1:44 นาที,ใช่,16:41,เหลือ "), times)
+        // the margin: pressed by 16:10:05, its countdown ran out at that order's own 0:00
+        val m760 = Regex("GF-760,.*,เหลือ (\\d+):(\\d\\d)\n").find(times)!!.groupValues
+        assertEquals(r.orders.first { it.gf == "GF-760" }.timeline.let { (it.deadline!! - it.pressedBy!!) / 1000 },
+            m760[1].toLong() * 60 + m760[2].toLong())
 
-        // gone from the Preparing list before the Ready list showed it: pressed by 11:09:24, 7 s after
-        // its time (11:09:17), within the slack; the later look at the Ready list proves nothing
+        // gone from the Preparing list before the Ready list showed it: pressed between 11:08:43 and
+        // 11:09:24, its time ran out at 11:09:17 in between: cannot tell, so neither in time nor late
         val c884 = r.cases.first { it.gf == "GF-884" }
         assertEquals(ms(2026, 10, 26, 11, 9, 24), c884.timeline.pressedBy)
         assertEquals(ms(2026, 10, 26, 11, 8, 43), c884.timeline.pressedAfter)
         assertEquals(ms(2026, 10, 26, 11, 9, 17), c884.prep?.deadline)
-        assertEquals(Verdict.IN_TIME, c884.verdict)
+        assertEquals(Verdict.UNCHECKED, c884.verdict)
         val text = ReportText.summary(r, zone)
-        assertTrue(text.contains("GF-884 ล่าช้า 4 นาที (เสร็จ 11:31) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:51 · ทันเวลาที่ตั้ง"), text)
+        assertTrue(text.contains("GF-884 ล่าช้า 4 นาที (เสร็จ 11:31) — อยู่ในแท็บ Ready ตั้งแต่ 11:09:51 · " +
+            "บอกไม่ได้ว่าทันเวลาที่ตั้ง (กดระหว่าง 11:08:43–11:09:24 คร่อมเวลาที่การ์ดถึง 0:00 11:09:17)"), text)
+        assertTrue(times.contains("2026-10-26,GF-884,") && times.lineSequence().first { it.startsWith("2026-10-26,GF-884,") }
+            .endsWith(",แยกไม่ออก (ช่วงที่กดคร่อม 0:00)"), times)
         assertTrue(text.contains("ร้านทำเสร็จ ระหว่าง 11:08:43–11:09:24 · เตรียม อย่างน้อย 13:02 นาที · ภาพ Ready 11:09:51"), text)
         // the missed card does not count as pressed: the whole Ready list without it after its time ran out
         val c901 = r.cases.first { it.gf == "GF-901" }
@@ -700,22 +710,27 @@ class DataAndReportTest {
     }
 
     @Test
-    fun theSlackIsOnlyForWhatThePhoneCouldNotSee() {
+    fun aFewSecondsLateIsLateAndWhatThePhoneCouldNotSeeIsLeftOpen() {
         val deadline = 1_000_000L
         val prep = PrepCheck(deadline - 60_000, "1:00", deadline, null)
         // in the Ready tab before the time ran out
         assertEquals(Verdict.IN_TIME, ReportBuilder.judge(deadline - 1_000, prep, deadline - 3_000))
-        // the whole Ready list was seen without it 7 s after the time ran out: late, slack or not
+        // the whole Ready list was seen without it 7 s after the time ran out: late
         assertEquals(Verdict.LATE, ReportBuilder.judge(deadline + 8_000, prep, deadline + 7_000))
-        // last whole look before the time ran out, seen 8 s after: closer than the phone can tell
-        assertEquals(Verdict.IN_TIME, ReportBuilder.judge(deadline + 8_000, prep, deadline - 2_000))
-        // ... with the slack set to 0 it is left open, not called late
-        assertEquals(Verdict.UNCHECKED, ReportBuilder.judge(deadline + 8_000, prep, deadline - 2_000, slackMs = 0))
+        // last whole look before the time ran out, seen 8 s after: not called in time on a guess (owner, 5 Nov)
+        assertEquals(Verdict.UNCHECKED, ReportBuilder.judge(deadline + 8_000, prep, deadline - 2_000))
+        // ... and 1 s after is no different
+        assertEquals(Verdict.UNCHECKED, ReportBuilder.judge(deadline + 1_000, prep, deadline - 2_000))
         // red 0:00 seen: late whatever came after
         assertEquals(Verdict.LATE, ReportBuilder.judge(deadline + 1_000, PrepCheck(deadline, "0:00", deadline, null), null))
-        // the setting is kept and limited to 0–60 s
-        assertEquals(0, ConfigCodec.decode(ConfigCodec.encode(Config(pressSlackSeconds = 0))).pressSlackSeconds)
-        assertEquals(60, Config(pressSlackSeconds = 300).sanitized().pressSlackSeconds)
+        // a saved setting from before is simply ignored
+        assertEquals(Config.DEFAULT, ConfigCodec.decode("""{"pressSlackSeconds":10}""").sanitized())
+        // what the sheet shows for each
+        assertEquals("เหลือ 0:01", ReportText.marginText(Verdict.IN_TIME, deadline, deadline - 1_000, deadline - 3_000))
+        assertEquals("เกิน 0:07", ReportText.marginText(Verdict.LATE, deadline, deadline + 8_000, deadline + 7_000))
+        assertEquals("เกิน (เห็นการ์ด 0:00)", ReportText.marginText(Verdict.LATE, deadline, deadline + 1_000, null))
+        assertEquals("แยกไม่ออก (ช่วงที่กดคร่อม 0:00)", ReportText.marginText(Verdict.UNCHECKED, deadline, deadline + 8_000, deadline - 2_000))
+        assertEquals(null, ReportText.marginText(Verdict.UNCHECKED, null, deadline, null))
     }
 
     @Test

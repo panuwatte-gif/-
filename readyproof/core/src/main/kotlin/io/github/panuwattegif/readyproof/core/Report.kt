@@ -314,9 +314,6 @@ object ReportBuilder {
     /** How long before a Ready photo an order must have been seen in the Ready tab to count as shown in it. */
     private const val SHOWN_LOOKBACK_MS = 90 * 60_000L
 
-    /** Default for [Config.pressSlackSeconds]. */
-    const val PRESS_TOLERANCE_MS = 10_000L
-
     /** History shows the finish to the minute: its events may run to the end of that minute. */
     private const val MINUTE_MS = 59_999L
 
@@ -324,18 +321,17 @@ object ReportBuilder {
      * Pressed in time or not, from the Preparing tab: the last reading of the countdown before the
      * order was pressed decides. What the phone saw for certain comes first: in the Ready tab (or
      * gone from the whole Preparing list) before the time ran out = in time; still red 0:00 on
-     * the Preparing tab, or a whole look at the Ready list without it after the time ran out = late. Only when it could not see
-     * which came first does [slackMs] apply (it notices a press a few seconds late); beyond that
-     * it is left open, never called late on a guess.
+     * the Preparing tab, or a whole look at the Ready list without it after the time ran out = late.
+     * When the phone could not see which came first it is left open: never called in time or late
+     * on a guess (owner, 5 Nov: a few seconds late is late; what is sent to Grab must be true).
      */
-    fun judge(pressedBy: Long?, prep: PrepCheck?, pressedAfter: Long? = null, slackMs: Long = PRESS_TOLERANCE_MS): Verdict = when {
+    fun judge(pressedBy: Long?, prep: PrepCheck?, pressedAfter: Long? = null): Verdict = when {
         // never seen pressed: late only if its red 0:00 card was seen
         pressedBy == null -> if (prep?.ranOut == true) Verdict.LATE else Verdict.NO_EVIDENCE
         prep == null -> Verdict.UNCHECKED
         prep.ranOut -> Verdict.LATE
         pressedBy <= prep.deadline -> Verdict.IN_TIME
         pressedAfter != null && pressedAfter >= prep.deadline -> Verdict.LATE
-        pressedBy <= prep.deadline + slackMs -> Verdict.IN_TIME
         else -> Verdict.UNCHECKED
     }
 
@@ -424,8 +420,7 @@ object ReportBuilder {
      * report showed no times during the day). One per order number, and a new one when the number
      * shows up again after its driver took it. No delivery time yet.
      */
-    fun liveOrders(records: List<Record>, date: LocalDate, zone: ZoneId, shopId: String? = null,
-                   slackMs: Long = PRESS_TOLERANCE_MS): List<OrderTimeline> {
+    fun liveOrders(records: List<Record>, date: LocalDate, zone: ZoneId, shopId: String? = null): List<OrderTimeline> {
         val dayStart = TimeResolve.toMillis(date.atStartOfDay(), zone)
         val dayEnd = TimeResolve.toMillis(date.plusDays(1).atStartOfDay(), zone)
         val sorted = records.filter { it.shopId == shopId }.sortedBy { it.t }
@@ -453,7 +448,7 @@ object ReportBuilder {
         return spans.map { sp ->
             val (t, prep) = timesOf(sorted, sp.gf, sp.from, sp.until, firstReady(sp, photo = false))
             OrderTimeline(sp.gf, null, false, null, t.copy(readyPhotoAt = firstReady(sp, photo = true)),
-                judge(t.pressedBy, prep, t.pressedAfter, slackMs))
+                judge(t.pressedBy, prep, t.pressedAfter))
         }
     }
 
@@ -532,7 +527,7 @@ object ReportBuilder {
             val timeline = times.copy(readyPhotoAt = ev.firstOrNull()?.t)
             DelayCase(a.gf, a.delayMin, a.doneAt, a.firstSeen, ev, a.delayShots.sortedByDescending { it.t }, taps,
                 if (ambiguous) "UNKNOWN_INSTANCE" else if (ev.isNotEmpty()) "READY_EVIDENCE" else "MISSING_READY",
-                judge(timeline.pressedBy, prep, timeline.pressedAfter, cfg.pressSlackSeconds * 1000L), readyAt, prep, timeline)
+                judge(timeline.pressedBy, prep, timeline.pressedAfter), readyAt, prep, timeline)
         }.sortedWith(compareBy<DelayCase>({ it.doneAt == null }, { it.doneAt }, { it.gf }))
 
         fun gfsOf(rs: List<Record>, type: ObsType) =
@@ -584,7 +579,7 @@ object ReportBuilder {
                 timesOf(sorted, a.gf, from, doneMs + MINUTE_MS, readyAt).let { (t, p) -> t.copy(readyPhotoAt = photo) to p }
             }
             OrderTimeline(a.gf, a.doneAt, a.cancelled, a.delayMin.takeIf { a.delayed }, timeline,
-                judge(timeline.pressedBy, prep, timeline.pressedAfter, cfg.pressSlackSeconds * 1000L))
+                judge(timeline.pressedBy, prep, timeline.pressedAfter))
         }
         return DailyReport(
             date = date,
@@ -714,6 +709,22 @@ object ReportText {
     }
 
     /**
+     * How far from its own countdown's 0:00 the order was pressed (owner, 5 Nov: every "in time"
+     * shows its margin): "เหลือ 5:09" = pressed at least 5:09 before 0:00 (it was in the Ready tab
+     * by then); "เกิน 0:04" = at least 0:04 after (the Ready list was still without it then).
+     */
+    fun marginText(v: Verdict?, deadline: Long?, pressedBy: Long?, pressedAfter: Long?): String? {
+        if (deadline == null) return null
+        fun mmss(ms: Long): String { val s = ms / 1000; return "${s / 60}:" + Parsers.pad2((s % 60).toInt()) }
+        return when (v) {
+            Verdict.IN_TIME -> pressedBy?.let { "เหลือ " + mmss(deadline - it) }
+            Verdict.LATE -> if (pressedAfter != null && pressedAfter > deadline) "เกิน " + mmss(pressedAfter - deadline) else "เกิน (เห็นการ์ด 0:00)"
+            Verdict.UNCHECKED -> pressedBy?.let { "แยกไม่ออก (ช่วงที่กดคร่อม 0:00)" }
+            Verdict.NO_EVIDENCE, null -> null
+        }
+    }
+
+    /**
      * The delay rate three ways, on the same base (owner, 3 Nov): as Grab counts it; without the
      * orders the shop finished before the time it set itself; and counting only the orders whose
      * driver was at the shop before the food was ready.
@@ -827,7 +838,15 @@ object ReportText {
                 append(" · เกินเวลาที่ตั้ง (หน้ากำลังเตรียมขึ้น 0:00 ตอน ").append(timeSec(p.readAt, zone))
                 append(if (p.overdueShot != null) " มีภาพ)" else " ไม่มีภาพ)")
             }
-            c.verdict == Verdict.UNCHECKED -> append(" · บอกไม่ได้ว่าทันเวลาที่ตั้ง (ตอนหมดเวลาแอปไม่ได้ดูอยู่)")
+            c.verdict == Verdict.UNCHECKED -> {
+                append(" · บอกไม่ได้ว่าทันเวลาที่ตั้ง (")
+                val by = c.timeline.pressedBy
+                // the press lies between the last time it was known not pressed and the first time it was seen pressed
+                if (by != null) append("กดระหว่าง ").append(timeSec(maxOf(c.timeline.pressedAfter ?: p.readAt, p.readAt), zone))
+                    .append("–").append(timeSec(by, zone)).append(" คร่อมเวลาที่การ์ดถึง 0:00 ").append(timeSec(p.deadline, zone))
+                else append("ตอนหมดเวลาแอปไม่ได้ดูอยู่")
+                append(")")
+            }
             else -> setTimeText(c.verdict)?.let { append(" · ").append(it) }
         }
     }
@@ -888,6 +907,7 @@ object ReportText {
                 span(tl.waitShortest, tl.waitLongest).orEmpty(),
                 when (tl.driverCameFirst) { true -> "ไม่ (คนขับรออาหาร)"; false -> "ใช่"; null -> "บอกไม่ได้" },
                 o.doneAt?.let { Parsers.hhmm(it.toLocalTime()) }.orEmpty(),
+                marginText(o.setTime, tl.deadline, tl.pressedBy, tl.pressedAfter).orEmpty(),
             )
             append(row.joinToString(",") { cell(it) }).append('\n')
         }
@@ -897,7 +917,8 @@ object ReportText {
         "1 ออเดอร์เข้า (หลัง),1 ออเดอร์เข้า (ไม่เกิน),2 ร้านทำเสร็จ (หลัง),2 ร้านทำเสร็จ (ไม่เกิน)," +
         "เวลาเตรียมอาหาร (เข้า→เสร็จ),เวลาที่ร้านตั้ง,ภาพ Ready," +
         "3 หาคนขับเจอ (หลัง),3 หาคนขับเจอ (ไม่เกิน),คนขับมาถึงร้าน (หลัง),คนขับมาถึงร้าน (ไม่เกิน)," +
-        "4 คนขับรับอาหาร (หลัง),4 คนขับรับอาหาร (ไม่เกิน),คนขับรอที่ร้าน (ถึง→รับอาหาร),อาหารเสร็จก่อนคนขับมาถึง,5 ส่งเสร็จ (นาที)"
+        "4 คนขับรับอาหาร (หลัง),4 คนขับรับอาหาร (ไม่เกิน),คนขับรอที่ร้าน (ถึง→รับอาหาร),อาหารเสร็จก่อนคนขับมาถึง,5 ส่งเสร็จ (นาที)," +
+        "เหลือเวลาตอนกด (ถึงการ์ด 0:00)"
 
     private fun cell(s: String): String =
         if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s

@@ -126,7 +126,7 @@ class ReportActivity : Activity() {
     private fun ordersCard(col: LinearLayout, r: DailyReport, records: List<Record>, shopId: String?, zone: ZoneId) {
         val live = r.orders.isEmpty()
         val orders = if (live) {
-            ReportBuilder.liveOrders(records, date, zone, shopId, ConfigStore.get(this).pressSlackSeconds * 1000L)
+            ReportBuilder.liveOrders(records, date, zone, shopId)
         } else {
             r.orders
         }

@@ -51,6 +51,10 @@ data class OrderRow(
     val readyBeforeDriver: Boolean? = null,
     /** Driver or not when the shop closed it (known since the first day, unlike the driver-found time). */
     val atClose: AtClose? = null,
+    /** When its own countdown reached 0:00 (the time the shop set for this order). */
+    val deadline: Long? = null,
+    /** The last look at the whole Ready list without it: pressed after this. */
+    val readyAfter: Long? = null,
 ) {
     private fun between(a: Seen?, b: Seen?): Long? = if (a != null && b != null && a.exact && b.exact) b.at - a.at else null
 
@@ -134,6 +138,8 @@ object OrderRows {
         deliveredAt = doneAt?.let { TimeResolve.toMillis(it, zone) },
         readyBeforeDriver = t.driverCameFirst?.not(),
         atClose = AtClose.of(t.readyStatus, cfg),
+        deadline = t.deadline,
+        readyAfter = t.pressedAfter,
     )
 
     fun day(r: DailyReport, zone: ZoneId, cfg: Config = Config.DEFAULT): OrderDay = OrderDay(
@@ -158,7 +164,7 @@ object OrderRows {
         listOfNotNull(moment(s, zone), took?.let { "(" + minSec(it) + ")" }).joinToString(" ")
 
     val HEADER = listOf(
-        "วันที่", "ออเดอร์", "สถานะ", "Grab ว่าล่าช้า (นาที)", "เวลาที่ร้านตั้ง", "ออเดอร์เข้า",
+        "วันที่", "ออเดอร์", "สถานะ", "Grab ว่าล่าช้า (นาที)", "เวลาที่ร้านตั้ง", "เหลือเวลาตอนกด (ถึงการ์ด 0:00)", "ออเดอร์เข้า",
         "ร้านทำเสร็จ (เตรียมกี่นาที)", "เจอคนขับ (นาทีนับจากออเดอร์เข้า)", "คนขับมาถึงร้าน (นาทีนับจากเจอคนขับ)",
         "คนขับรับอาหาร (คนขับรอกี่นาที)", "ลูกค้าได้รับ (นาทีนับจากรับอาหาร)", "รวมทั้งหมด (นาทีนับจากออเดอร์เข้า)",
         "อาหารเสร็จก่อนคนขับมาถึง", "ตอนร้านปิดงาน", "ร้านปิดงาน → ลูกค้าได้รับ (นาที)",
@@ -171,6 +177,7 @@ object OrderRows {
         if (r.cancelled) "ยกเลิก" else "เสร็จ",
         r.grabDelayMin?.toString().orEmpty(),
         ReportText.setTimeText(r.setTime).orEmpty(),
+        ReportText.marginText(r.setTime, r.deadline, r.ready?.at, r.readyAfter).orEmpty(),
         moment(r.orderIn, zone).orEmpty(),
         step(r.ready, r.prepMs, zone),
         step(r.found, r.toFoundMs, zone),
@@ -192,7 +199,7 @@ object OrderRows {
 /** Day files kept on the phone (one per shop and day): never deleted, so averages can go back years. */
 object OrderDayCodec {
     /** Raised when a day file gains something the old ones lack: every day is built again once. */
-    const val VERSION = 2
+    const val VERSION = 3
 
     private fun seen(s: Seen?): Map<String, Any?>? = s?.let { linkedMapOf("at" to it.at, "x" to it.exact) }
 
@@ -209,7 +216,7 @@ object OrderDayCodec {
             "gf" to r.gf, "cancelled" to r.cancelled, "delayMin" to r.grabDelayMin, "setTime" to r.setTime?.name,
             "in" to seen(r.orderIn), "ready" to seen(r.ready), "found" to seen(r.found), "arrived" to seen(r.arrived),
             "picked" to seen(r.pickedUp), "delivered" to r.deliveredAt, "readyFirst" to r.readyBeforeDriver,
-            "atClose" to r.atClose?.name,
+            "atClose" to r.atClose?.name, "deadline" to r.deadline, "readyAfter" to r.readyAfter,
         ) },
     ))
 
@@ -229,6 +236,7 @@ object OrderDayCodec {
                     orderIn = seen(r["in"]), ready = seen(r["ready"]), found = seen(r["found"]), arrived = seen(r["arrived"]),
                     pickedUp = seen(r["picked"]), deliveredAt = r.long("delivered"), readyBeforeDriver = r.bool("readyFirst"),
                     atClose = r.str("atClose")?.let { a -> AtClose.entries.firstOrNull { it.name == a } },
+                    deadline = r.long("deadline"), readyAfter = r.long("readyAfter"),
                 )
             },
         )
@@ -382,7 +390,7 @@ object ShopWorkbook {
                 ) else emptyList()
             }
         }
-        val widths = listOf(11.0, 10.0, 7.0, 10.0, 16.0, 18.0, 22.0, 22.0, 22.0, 22.0, 16.0, 12.0, 26.0, 20.0, 14.0) +
+        val widths = listOf(11.0, 10.0, 7.0, 10.0, 16.0, 16.0, 18.0, 22.0, 22.0, 22.0, 22.0, 16.0, 12.0, 26.0, 20.0, 14.0) +
             if (numbers) List(NUMBER_HEADER.size) { 12.0 } else emptyList()
         return Xlsx.Sheet(name, out, widths, frozenRows = 1)
     }
@@ -423,7 +431,8 @@ object ShopWorkbook {
         "• \"ไม่เกิน 10:23:05\" = แอปเห็นตอนนั้น แต่ไม่รู้ว่าเกิดก่อนนานแค่ไหน จึงไม่คำนวณนาทีจากเวลานี้",
         "• ร้านทำเสร็จ = ร้านปิดงาน (ถ่ายรูปยืนยันในแอป Grab หรือกดพร้อมจัดส่ง) ออเดอร์ย้ายไปหน้าพร้อมจัดส่ง",
         "• คนขับมาถึงร้าน = การ์ด Grab ขึ้น \"คนขับของคุณมาถึงแล้ว\" · คนขับรับอาหาร = ออเดอร์หายจากหน้าพร้อมจัดส่ง",
-        "• เวลาที่ร้านตั้ง: บอกแค่ร้านทำเสร็จทันเวลาที่ตั้งไว้หรือเกิน (การ์ดแดง 0:00 = เกิน)",
+        "• เวลาที่ร้านตั้ง: ร้านทำเสร็จทันตัวนับถอยหลังบนการ์ดของออเดอร์นั้นเองหรือไม่ (การ์ดขึ้น 0:00 ในหน้ากำลังเตรียม = เกิน) ไม่มีการปัดเศษ แยกไม่ออก = บอกไม่ได้",
+        "• เหลือเวลาตอนกด: \"เหลือ 5:09\" = กดก่อนการ์ดถึง 0:00 อย่างน้อย 5 นาที 9 วินาที · \"เกิน 0:04\" = กดหลัง 0:00 อย่างน้อย 4 วินาที",
         "• อาหารเสร็จก่อนคนขับมาถึง: ใช่ = ร้านปิดงานก่อนคนขับถึงร้าน เวลาหลังจากนั้นไม่ใช่เวลาที่ร้านทำให้ช้า",
         "• ตอนร้านปิดงาน = ข้อความบนการ์ดตอนออเดอร์เข้าหน้าพร้อมจัดส่ง (ยังไม่มีคนขับ = \"กำลังค้นหาคนขับ\") มีทุกวันตั้งแต่ 7 ต.ค. 2026",
         "• ร้านปิดงาน → เจอคนขับ: เฉพาะออเดอร์ที่ร้านปิดงานตอนยังไม่มีคนขับ มีตั้งแต่ 29 ต.ค. 2026 (ก่อนหน้านั้นแอปยังไม่ได้จดเวลาเจอคนขับ)",
