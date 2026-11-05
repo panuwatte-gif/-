@@ -3,6 +3,7 @@ package io.github.panuwattegif.readyproof.core
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PrepTrackerTest {
@@ -141,5 +142,53 @@ class PrepTrackerTest {
             Record("b", 824_000, RecordKind.SEEN, listOf(Item("GF-884", ObsType.LEFT_PREP, countdown = "0:34", prevAt = 783_000))),
         ))
         assertTrue(u.known().isEmpty())
+    }
+
+    @Test
+    fun anOrderAboutToRunOutIsWatchedOnceUntilItIsDecided() {
+        val t = PrepTracker()
+        // GF-1 runs out at 100 s, GF-2 at 400 s
+        t.read(listOf(prep("GF-1", "1:40"), prep("GF-2", "6:40")), 0)
+        // 20 s before: not yet, but the next 0:00 to be there for is GF-1's
+        assertTrue(t.runningOut(80_000, 15_000).isEmpty())
+        assertEquals(100_000L, t.nextRunOut(80_000))
+        // within 15 s of its 0:00, and up to 2 s after it (its red card may not be photographed yet)
+        assertEquals(mapOf("GF-1" to 100_000L), t.runningOut(86_000, 15_000))
+        assertEquals(setOf("GF-1"), t.runningOut(101_500, 15_000).keys)
+        assertTrue(t.runningOut(102_500, 15_000).isEmpty())
+        // watched once, whatever came of it: never waited for again, the next one is GF-2
+        t.holding(listOf("GF-1"), 90_000)
+        assertTrue(t.runningOut(92_000, 15_000).isEmpty())
+        assertEquals(400_000L, t.nextRunOut(92_000))
+        // undecided until it is gone or its red card is photographed: seeing it red is not enough
+        assertTrue(t.unresolved(listOf("GF-1")))
+        t.read(listOf(prep("GF-1", "0:00"), prep("GF-2", "5:00")), 100_400)
+        assertTrue(t.unresolved(listOf("GF-1")))
+        t.shotOverdue(listOf("GF-1"), 100_500)
+        assertFalse(t.unresolved(listOf("GF-1")))
+        // a red card already photographed is never planned for
+        val u = PrepTracker()
+        u.read(listOf(prep("GF-3", "0:00")), 0)
+        u.shotOverdue(listOf("GF-3"), 0)
+        assertTrue(u.runningOut(0, 15_000).isEmpty())
+        assertNull(u.nextRunOut(0))
+        // an order already past its 0:00 by more than 2 s is the red-card look's job (runOutUnseen)
+        val v = PrepTracker()
+        v.read(listOf(prep("GF-4", "0:10")), 0)
+        assertNull(v.nextRunOut(12_500))
+    }
+
+    @Test
+    fun anOrderSeenLeavingWhileWatchedKeepsItsLastSighting() {
+        val t = PrepTracker()
+        t.read(listOf(prep("GF-7", "0:09"), prep("GF-8", "5:00")), 0)
+        // read again 6 s later: not logged (moved by less than 30 s) but remembered
+        assertTrue(t.read(listOf(prep("GF-7", "0:03"), prep("GF-8", "4:54")), 6_000).isEmpty())
+        assertEquals(listOf(PrepTracker.Gone("GF-7", 6_000, "0:03")), t.lastSightings(listOf("GF-7", "GF-9")))
+        // gone from the top of the list with the tab's count down by one: left, with that sighting
+        assertEquals(listOf(PrepTracker.Gone("GF-7", 6_000, "0:03")), t.leave(listOf("GF-7", "GF-9")))
+        assertFalse(t.unresolved(listOf("GF-7")))
+        assertEquals(setOf("GF-8"), t.known())
+        assertTrue(t.leave(listOf("GF-7")).isEmpty())
     }
 }

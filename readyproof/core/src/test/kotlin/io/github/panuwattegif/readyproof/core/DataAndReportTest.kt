@@ -734,6 +734,39 @@ class DataAndReportTest {
     }
 
     @Test
+    fun anOrderWatchedToItsZeroIsDecidedToTheSecond() {
+        // 5 Nov (owner): the app stays on the Preparing tab near 0:00 instead of finding out later
+        val base = 1_000_000L
+        val records = listOf(
+            // GF-1: 6:00 set; watched from 0:09; last seen at 0:03, gone half a second later
+            rec(base, RecordKind.SEEN, Item("GF-1", ObsType.PREPARING, countdown = "6:00"), uri = null),
+            rec(base + 357_500, RecordKind.SEEN, Item("GF-1", ObsType.LEFT_PREP, countdown = "0:03", prevAt = base + 357_000), uri = null),
+            rec(base + 380_000, RecordKind.SEEN, Item("GF-1", ObsType.READY, prevAt = base + 300_000), uri = null),
+            rec(base + 380_000, RecordKind.READY, Item("GF-1", ObsType.READY)),
+            // GF-2: still there when watching ended at 0:04 (a person took the phone): that sighting
+            // is written, so the press is known to be after it
+            rec(base, RecordKind.SEEN, Item("GF-2", ObsType.PREPARING, countdown = "6:00"), uri = null),
+            rec(base + 356_000, RecordKind.SEEN, Item("GF-2", ObsType.PREPARING, countdown = "0:04"), uri = null),
+            rec(base + 365_000, RecordKind.SEEN, Item("GF-2", ObsType.READY, prevAt = base + 350_000), uri = null),
+            rec(base + 365_000, RecordKind.READY, Item("GF-2", ObsType.READY)),
+        ).sortedBy { it.t }
+        val (t1, p1) = ReportBuilder.timesOf(records, "GF-1", base - 1, base + 600_000, base + 380_000)
+        assertEquals(base + 357_500, t1.pressedBy)
+        assertEquals(base + 357_000, t1.pressedAfter)
+        assertEquals(base + 360_000, t1.deadline)
+        assertEquals(Verdict.IN_TIME, ReportBuilder.judge(t1.pressedBy, p1, t1.pressedAfter))
+        assertEquals("เหลือ 0:02", ReportText.marginText(Verdict.IN_TIME, t1.deadline, t1.pressedBy, t1.pressedAfter))
+        // the written sighting puts the press after 0:04 (not just after the last Ready look), still across 0:00: left open
+        val (t2, p2) = ReportBuilder.timesOf(records, "GF-2", base - 1, base + 600_000, base + 365_000)
+        assertEquals(base + 356_000, t2.pressedAfter)
+        assertEquals(Verdict.UNCHECKED, ReportBuilder.judge(t2.pressedBy, p2, t2.pressedAfter))
+        // under a second either side is said so, never "0:00"
+        assertEquals("เหลือไม่ถึง 1 วินาที", ReportText.marginText(Verdict.IN_TIME, 5_000, 4_400, 4_000))
+        assertEquals("เกิน (การ์ดยังอยู่ตอนหมดเวลา)", ReportText.marginText(Verdict.LATE, 5_000, 6_000, 5_300))
+        assertEquals("เกิน 0:01", ReportText.marginText(Verdict.LATE, 5_000, 7_000, 6_200))
+    }
+
+    @Test
     fun theCountdownIsReadAsSecondsLeft() {
         assertEquals(353, Item("GF-1", ObsType.PREPARING, countdown = "5:53").dueSeconds)
         assertEquals(0, Item("GF-1", ObsType.PREPARING, countdown = "0:00").dueSeconds)
