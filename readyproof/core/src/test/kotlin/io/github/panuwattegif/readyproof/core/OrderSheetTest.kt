@@ -96,24 +96,31 @@ class OrderSheetTest {
         assertTrue(summary.contains(listOf("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)", "1 ออเดอร์ = 50.00%")), summary.toString())
         assertTrue(summary.contains(listOf("ร้านปิดงานตอนยังไม่มีคนขับ", "1 จาก 2 ออเดอร์ = 50%")), summary.toString())
         assertTrue(summary.any { it.firstOrNull() == "ร้านปิดงาน → เจอคนขับ (เฉพาะที่ปิดงานตอนยังไม่มีคนขับ)" && it[1] == "5:40" }, summary.toString())
-        // 7 days: only 2 Nov (1 of 2); all: 3 of 12
-        assertTrue(summary.contains(listOf("1) แบบ Grab", "50.00%", "50.00%", "25.00%", "25.00%", "25.00%", "25.00%")), summary.toString())
+        // this month, 7 and 30 days: only 2 Nov (1 of 2); October: no day; 60 days on: 3 of 12
+        assertTrue(summary.contains(listOf("% ล่าช้า", "เดือนนี้ (พ.ย.)", "เดือนก่อน (ต.ค.)", "7 วัน", "30 วัน", "60 วัน", "90 วัน", "ปี 2026", "ทั้งหมด")), summary.toString())
+        assertTrue(summary.contains(listOf("1) แบบ Grab", "50.00%", "-", "50.00%", "50.00%", "25.00%", "25.00%", "25.00%", "25.00%")), summary.toString())
+        // the month so far, as Grab rates it, and the day the phone has nothing for
+        assertTrue(summary.contains(listOf("สะสมเดือนนี้ 1–2 พ.ย. 2026 (ล่าช้าทั้งหมด ÷ ออเดอร์ทั้งหมด)")), summary.toString())
+        assertTrue(summary.contains(listOf("1) Grab ว่าล่าช้า", "1 ÷ 2 ออเดอร์ = 50.00%")), summary.toString())
+        assertTrue(summary.contains(listOf("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง", "0 ÷ 2 ออเดอร์ = 0.00%")), summary.toString())
+        assertTrue(summary.contains(listOf("วันที่ไม่มีข้อมูลในเครื่อง (ไม่ได้นับ)", "01/11/2026")), summary.toString())
         // the drivers waited 3:57 (GF-033) and 6:37 (GF-864F)
         assertTrue(summary.any { it.firstOrNull() == "คนขับมาถึงร้าน → รับอาหาร (คนขับรอ)" && it[1] == "5:17" }, summary.toString())
         // the old day has no set time and no arrivals: 2) and 3) come from 2 Nov alone, beside Grab's rate of that day
         val i = summary.indexOf(listOf("เทียบ 3 แบบ เฉพาะวันที่แอปจดเวลาที่ร้านตั้งและเวลาคนขับถึงร้านได้"))
         assertTrue(i > 0, summary.toString())
         assertEquals(listOf(
-            listOf("จำนวนวัน", "1", "1", "1", "1", "1", "1"),
-            listOf("ออเดอร์ทั้งหมด (ตาม Grab)", "2", "2", "2", "2", "2", "2"),
-            listOf("1) แบบ Grab", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%"),
-            listOf("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง", "0.00%", "0.00%", "0.00%", "0.00%", "0.00%", "0.00%"), // GF-033 was in time
-            listOf("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%"),
+            listOf("จำนวนวัน", "1", "0", "1", "1", "1", "1", "1", "1"),
+            listOf("ออเดอร์ทั้งหมด (ตาม Grab)", "2", "0", "2", "2", "2", "2", "2", "2"),
+            listOf("1) แบบ Grab", "50.00%", "-", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%"),
+            listOf("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง", "0.00%", "-", "0.00%", "0.00%", "0.00%", "0.00%", "0.00%", "0.00%"), // GF-033 was in time
+            listOf("3) ที่ถูกต้อง (คนขับมาถึงแล้วอาหารยังไม่เสร็จ)", "50.00%", "-", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%", "50.00%"),
         ), summary.subList(i + 1, i + 6))
-        // the daily tab says "-" for what the old day cannot tell
+        // the daily tab: each day, then its month so far; "-" for what the old day cannot tell
         val daily = texts(sheets[3])
-        assertEquals(listOf("2.0", "20.00%", "-", "-", "-", "-", "-"), daily.first { it[0] == "23/09/2026" }.subList(3, 10))
-        assertEquals(listOf("1.0", "50.00%", "0.0", "0.00%", "1.0", "50.00%", "0.0"), daily.first { it[0] == "02/11/2026" }.subList(3, 10))
+        assertEquals(listOf("Grab ว่าล่าช้า", "% แบบ Grab", "ล่าช้าสะสมเดือนนี้", "ออเดอร์สะสมเดือนนี้", "% สะสมเดือนนี้ (แบบ Grab)"), daily[0].subList(3, 8))
+        assertEquals(listOf("2.0", "20.00%", "2.0", "10.0", "20.00%", "-", "-", "-", "-", "-"), daily.first { it[0] == "23/09/2026" }.subList(3, 13))
+        assertEquals(listOf("1.0", "50.00%", "1.0", "2.0", "50.00%", "0.0", "0.00%", "1.0", "50.00%", "0.0"), daily.first { it[0] == "02/11/2026" }.subList(3, 13))
         // Grab's delayed orders only; every order with numbers to compute with
         assertEquals(listOf("GF-033"), texts(sheets[1]).drop(1).map { it[1] })
         assertEquals(3, texts(sheets[2]).size - 1)
@@ -187,5 +194,30 @@ class OrderSheetTest {
             }
         }
         assertTrue(sheet.contains("&lt;&amp;&quot;&gt;"), sheet)
+    }
+
+    @Test
+    fun theMonthSoFarIsEveryDelayedOrderOverEveryOrderNotAnAverageOfDays() {
+        // 2–6 Nov as the sheet has them (Grab's totals and its delayed rows read each night)
+        val d2 = OrderRows.day(day2(), zone)
+        val nov = listOf(2 to (101 to 8), 3 to (92 to 9), 4 to (96 to 10), 5 to (86 to 12), 6 to (80 to 11))
+        val inTime = mapOf(2 to 8, 3 to 7, 4 to 5, 5 to 9, 6 to 10)
+        val days = nov.map { (d, n) -> d2.copy(date = LocalDate.of(2026, 11, d), base = n.first, delayed = n.second, inTime = inTime.getValue(d)) }
+        val m = MonthToDate.of(days, LocalDate.of(2026, 11, 6))!!
+        assertEquals(455, m.orders)
+        assertEquals(50, m.delayed)
+        assertEquals(11, m.actualDelayed)
+        assertEquals(listOf(LocalDate.of(2026, 11, 1)), m.missing)
+        assertEquals("10.99%", ReportText.pct(m.grabPct))
+        // the average of the five daily rates would say 11.16%: a quiet day must not weigh as much as a busy one
+        assertEquals("11.16%", ReportText.pct(nov.map { it.second.second * 100.0 / it.second.first }.average()))
+        assertEquals("สะสม 1–6 พ.ย. 2026: ล่าช้าตาม Grab 50 ÷ 455 ออเดอร์ = 10.99% · ตัดที่ทันเวลาที่ตั้ง 11 ÷ 455 = 2.42% (ไม่มีข้อมูลวันที่ 1)",
+            ReportText.monthLine(m))
+        // up to 3 Nov only; another month is never mixed in
+        val early = MonthToDate.of(days + d2.copy(date = LocalDate.of(2026, 10, 31), base = 47, delayed = 4), LocalDate.of(2026, 11, 3))!!
+        assertEquals(17 to 193, early.delayed to early.orders)
+        // a day without the set time: 2) is not given for the month
+        assertNull(MonthToDate.of(days.map { it.copy(rows = emptyList()) }, LocalDate.of(2026, 11, 6))!!.actualDelayed)
+        assertNull(MonthToDate.of(days, LocalDate.of(2026, 12, 1)))
     }
 }

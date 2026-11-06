@@ -614,6 +614,24 @@ object ReportBuilder {
 object ReportText {
     fun date(d: LocalDate): String = Parsers.pad2(d.dayOfMonth) + "/" + Parsers.pad2(d.monthValue) + "/" + d.year
 
+    private val TH_MONTHS = listOf("ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.")
+
+    /** "พ.ย." */
+    fun month(d: LocalDate): String = TH_MONTHS[d.monthValue - 1]
+
+    /** "1–6 พ.ย. 2026" */
+    fun span(m: MonthToDate): String =
+        (if (m.from == m.to) "" else "${m.from.dayOfMonth}–") + "${m.to.dayOfMonth} ${month(m.to)} ${m.to.year}"
+
+    /**
+     * The month so far, weighted (see [MonthToDate]): "สะสม 1–6 พ.ย. 2026: ล่าช้าตาม Grab 50 ÷ 455
+     * ออเดอร์ = 10.99% · ตัดที่ทันเวลาที่ตั้ง 12 ÷ 455 = 2.64% (ไม่มีข้อมูลวันที่ 1)".
+     */
+    fun monthLine(m: MonthToDate): String =
+        "สะสม ${span(m)}: ล่าช้าตาม Grab ${m.delayed} ÷ ${m.orders} ออเดอร์ = ${pct(m.grabPct)}" +
+            (m.actualDelayed?.let { " · ตัดที่ทันเวลาที่ตั้ง $it ÷ ${m.orders} = ${pct(m.realPct)}" } ?: "") +
+            (if (m.missing.isEmpty()) "" else " (ไม่มีข้อมูลวันที่ ${m.missing.joinToString(", ") { it.dayOfMonth.toString() }})")
+
     fun time(ms: Long, zone: ZoneId): String = Parsers.hhmm(TimeResolve.toLocal(ms, zone).toLocalTime())
 
     /** "15:49:33". */

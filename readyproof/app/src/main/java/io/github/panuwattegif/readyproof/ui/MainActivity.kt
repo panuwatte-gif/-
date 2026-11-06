@@ -9,6 +9,7 @@ import io.github.panuwattegif.readyproof.ShopStore
 import io.github.panuwattegif.readyproof.DailyExport
 import io.github.panuwattegif.readyproof.DriveSync
 import io.github.panuwattegif.readyproof.Notifier
+import io.github.panuwattegif.readyproof.OrderStore
 import io.github.panuwattegif.readyproof.ProofService
 import io.github.panuwattegif.readyproof.RecordStore
 import io.github.panuwattegif.readyproof.ServiceStatus
@@ -156,6 +157,8 @@ class MainActivity : Activity() {
                 14f, topDp = 3,
             )
         }
+        // the month so far as Grab rates it: Σ delayed ÷ Σ orders since the 1st (owner, 6 Nov)
+        OrderStore.monthToDate(this, report, zone)?.let { Ui.text(day, ReportText.monthLine(it), 14f, topDp = 3) }
         ConfigStore.prefs(this).getString("auto_history_last_result", null)?.let {
             Ui.text(day, "History ล่าสุด: $it", 13f, Ui.MUTED, topDp = 2)
         }

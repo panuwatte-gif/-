@@ -3,6 +3,7 @@ package io.github.panuwattegif.readyproof
 import android.content.Context
 import android.util.AtomicFile
 import io.github.panuwattegif.readyproof.core.DailyReport
+import io.github.panuwattegif.readyproof.core.MonthToDate
 import io.github.panuwattegif.readyproof.core.NightlyUploads
 import io.github.panuwattegif.readyproof.core.OrderDay
 import io.github.panuwattegif.readyproof.core.OrderDayCodec
@@ -58,6 +59,19 @@ object OrderStore {
         dir(ctx, shopId).listFiles()?.filter { it.name.endsWith(".json") }?.mapNotNull { f ->
             runCatching { OrderDayCodec.decode(AtomicFile(f).readFully().toString(Charsets.UTF_8)) }.getOrNull()
         } ?: emptyList()
+    }
+
+    /**
+     * The month so far, Σ delayed ÷ Σ orders (see [MonthToDate]): the days kept, with [today]'s
+     * report in place of its kept day once its History was read. Null without a shop or data.
+     */
+    fun monthToDate(ctx: Context, today: DailyReport, zone: ZoneId): MonthToDate? {
+        val shopId = today.shopId ?: return null
+        return runCatching {
+            val kept = all(ctx, shopId).filter { it.date != today.date }
+            val now = if (today.base > 0) listOf(OrderRows.day(today, zone, ConfigStore.get(ctx))) else emptyList()
+            MonthToDate.of(kept + now, today.date)
+        }.getOrNull()
     }
 }
 
