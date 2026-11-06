@@ -244,6 +244,43 @@ object OrderDayCodec {
 }
 
 /**
+ * The month so far as Grab counts its monthly delay rate (owner, 6 Nov): every delayed order of
+ * the month's days ÷ every order of those days. Weighted by each day's orders, never an average
+ * of the daily rates (a quiet day weighs less than a busy one).
+ */
+data class MonthToDate(
+    val from: LocalDate,
+    /** The last day of the month with data. */
+    val to: LocalDate,
+    val days: Int,
+    val orders: Int,
+    val delayed: Int,
+    /** Delayed once the orders finished in time are taken out; null unless every day says so. */
+    val actualDelayed: Int?,
+    /** Days of the month up to [to] with no data on this phone (the app was off, or no History). */
+    val missing: List<LocalDate>,
+) {
+    val grabPct: Double? get() = if (orders > 0) delayed * 100.0 / orders else null
+    val realPct: Double? get() = actualDelayed?.let { if (orders > 0) it * 100.0 / orders else null }
+
+    companion object {
+        /** The month of [date], from its 1st up to [date] (one entry per day: the last given wins). */
+        fun of(days: List<OrderDay>, date: LocalDate): MonthToDate? {
+            val from = date.withDayOfMonth(1)
+            val m = days.filter { !it.date.isBefore(from) && !it.date.isAfter(date) }.associateBy { it.date }.values
+            if (m.isEmpty()) return null
+            val to = m.maxOf { it.date }
+            return MonthToDate(
+                from = from, to = to, days = m.size, orders = m.sumOf { it.base }, delayed = m.sumOf { it.delayed },
+                actualDelayed = if (m.all { it.hasSetTime }) m.sumOf { it.actualDelayed } else null,
+                missing = generateSequence(from) { it.plusDays(1) }.takeWhile { !it.isAfter(to) }
+                    .filter { d -> m.none { it.date == d } }.toList(),
+            )
+        }
+    }
+}
+
+/**
  * The shop's Google Sheet (owner, 3 Nov): a summary page, Grab's delayed orders, every order with
  * its times, a line per day, and how to read them. Rebuilt whole from the day files every night.
  */
@@ -257,11 +294,17 @@ object ShopWorkbook {
     /** A span of days ending on the latest day with data. */
     data class Period(val label: String, val from: LocalDate?, val to: LocalDate)
 
+    /**
+     * Grab rates the shop by calendar month (owner, 6 Nov): this month so far and last month come
+     * first, then the last 7 / 30 / 60 / 90 days. Every rate is Σ delayed ÷ Σ orders of its days.
+     */
     fun periods(end: LocalDate): List<Period> = listOf(
+        Period("เดือนนี้ (${ReportText.month(end)})", end.withDayOfMonth(1), end),
+        end.withDayOfMonth(1).minusDays(1).let { last -> Period("เดือนก่อน (${ReportText.month(last)})", last.withDayOfMonth(1), last) },
         Period("7 วัน", end.minusDays(6), end),
-        Period("1 เดือน", end.minusDays(29), end),
-        Period("2 เดือน", end.minusDays(59), end),
-        Period("3 เดือน", end.minusDays(89), end),
+        Period("30 วัน", end.minusDays(29), end),
+        Period("60 วัน", end.minusDays(59), end),
+        Period("90 วัน", end.minusDays(89), end),
         Period("ปี ${end.year}", LocalDate.of(end.year, 1, 1), end),
         Period("ทั้งหมด", null, end),
     )
@@ -319,6 +362,17 @@ object ShopWorkbook {
             "${closed.count { it.atClose == AtClose.NO_DRIVER }} จาก ${closed.size} ออเดอร์ = " +
                 share(closed.count { it.atClose == AtClose.NO_DRIVER }, closed.size)))
         out += listOf(t("อ่านหน้าประวัติครบ"), t(if (latest.historyComplete) "ครบ" else "ไม่ครบ — ตัวเลขยังไม่ยืนยัน"))
+        // the month so far, as Grab rates it: Σ delayed ÷ Σ orders, not an average of daily rates
+        MonthToDate.of(days, latest.date)?.let { m ->
+            out += emptyList<Xlsx.Cell?>()
+            out += listOf(bold("สะสมเดือนนี้ " + ReportText.span(m) + " (ล่าช้าทั้งหมด ÷ ออเดอร์ทั้งหมด)"))
+            out += listOf(t("1) Grab ว่าล่าช้า"), t("${m.delayed} ÷ ${m.orders} ออเดอร์ = ${ReportText.pct(m.grabPct)}"))
+            out += listOf(t("2) ตัดที่ร้านเสร็จทันเวลาที่ตั้ง"), t(m.actualDelayed?.let { "$it ÷ ${m.orders} ออเดอร์ = ${ReportText.pct(m.realPct)}" }
+                ?: "บอกไม่ได้ (บางวันของเดือนนี้แอปยังไม่ได้จดเวลาที่ร้านตั้ง)"))
+            if (m.missing.isNotEmpty()) {
+                out += listOf(t("วันที่ไม่มีข้อมูลในเครื่อง (ไม่ได้นับ)"), t(m.missing.joinToString(", ") { ReportText.date(it) }))
+            }
+        }
         out += emptyList<Xlsx.Cell?>()
 
         val periods = periods(latest.date)
@@ -398,17 +452,22 @@ object ShopWorkbook {
     private fun daily(days: List<OrderDay>): Xlsx.Sheet {
         val out = ArrayList<List<Xlsx.Cell?>>()
         out += listOf(
-            "วันที่", "เสร็จ (Grab)", "ยกเลิก (Grab)", "Grab ว่าล่าช้า", "% แบบ Grab", "หลังตัดที่ทันเวลาที่ตั้ง", "%",
+            "วันที่", "เสร็จ (Grab)", "ยกเลิก (Grab)", "Grab ว่าล่าช้า", "% แบบ Grab",
+            "ล่าช้าสะสมเดือนนี้", "ออเดอร์สะสมเดือนนี้", "% สะสมเดือนนี้ (แบบ Grab)", "หลังตัดที่ทันเวลาที่ตั้ง", "%",
             "ที่ถูกต้อง", "%", "บอกไม่ได้", "เตรียมเฉลี่ย", "คนขับรอเฉลี่ย", "รวมเฉลี่ย",
             "ปิดงานตอนยังไม่มีคนขับ", "%", "ปิดงาน→เจอคนขับ เฉลี่ย", "ปิดงาน→ลูกค้าได้รับ เฉลี่ย", "อ่านประวัติครบ",
         ).map { bold(it) }
         for (d in days) {
             val o = d.rows.filter { !it.cancelled }
+            // from the 1st of its month up to this day
+            val m = MonthToDate.of(days, d.date)
             out += listOf(
                 t(ReportText.date(d.date)),
                 Xlsx.number((d.grabCompleted ?: d.completedSeen).toDouble()),
                 Xlsx.number((d.grabCancelled ?: d.cancelledSeen).toDouble()),
                 Xlsx.number(d.delayed.toDouble()), t(pct(d.delayed, d.base)),
+                m?.let { Xlsx.number(it.delayed.toDouble()) }, m?.let { Xlsx.number(it.orders.toDouble()) },
+                t(m?.let { ReportText.pct(it.grabPct) } ?: "-"),
                 if (d.hasSetTime) Xlsx.number(d.actualDelayed.toDouble()) else t("-"),
                 t(if (d.hasSetTime) pct(d.actualDelayed, d.base) else "-"),
                 if (d.hasArrivals) Xlsx.number(d.driverFirst.toDouble()) else t("-"),
@@ -421,7 +480,7 @@ object ShopWorkbook {
                 t(if (d.historyComplete) "ครบ" else "ไม่ครบ"),
             )
         }
-        return Xlsx.Sheet(DAILY, out, listOf(11.0, 10.0, 10.0, 11.0, 10.0, 14.0, 9.0, 10.0, 9.0, 9.0, 11.0, 12.0, 10.0, 14.0, 7.0, 14.0, 16.0, 12.0), frozenRows = 1)
+        return Xlsx.Sheet(DAILY, out, listOf(11.0, 10.0, 10.0, 11.0, 10.0, 13.0, 13.0, 14.0, 14.0, 9.0, 10.0, 9.0, 9.0, 11.0, 12.0, 10.0, 14.0, 7.0, 14.0, 16.0, 12.0), frozenRows = 1)
     }
 
     private fun help(): Xlsx.Sheet = Xlsx.Sheet(HELP, listOf(
@@ -439,6 +498,9 @@ object ShopWorkbook {
         "• ร้านปิดงาน → ลูกค้าได้รับ: นับจากที่แอปเห็นออเดอร์ในหน้าพร้อมจัดส่ง ถึงเวลาส่งเสร็จในหน้าประวัติ (ระดับนาที) มีทุกวัน",
         "• % ล่าช้า 3 แบบ ใช้ฐานเดียวกัน (ออเดอร์ทั้งหมดตามยอดของ Grab): 1) แบบ Grab 2) ตัดออเดอร์ที่ร้านเสร็จทันเวลาที่ตั้ง " +
             "3) ที่ถูกต้อง = นับเฉพาะออเดอร์ที่คนขับมาถึงร้านแล้วอาหารยังไม่เสร็จ",
+        "• % ของหลายวัน (สะสมเดือนนี้ · เดือนก่อน · 7/30/60/90 วัน) = ออเดอร์ล่าช้าทั้งหมดของวันเหล่านั้น ÷ ออเดอร์ทั้งหมดของวันเหล่านั้น " +
+            "(ถ่วงตามจำนวนออเดอร์ ไม่ใช่เอา % รายวันมาเฉลี่ย) แบบเดียวกับที่ Grab คิดรายเดือน · ออเดอร์ทั้งหมด = เสร็จ + ยกเลิก ตามยอดของ Grab",
+        "• ตัวเลขล่าช้าเป็นของคืนนั้น (แอปอ่านหน้าประวัติตอนปิดร้าน) ถ้า Grab มาลบป้ายล่าช้าให้ทีหลัง ตัวเลขในชีตจะยังไม่ลดตาม",
         "• 2) และ 3) คิดได้เฉพาะวันที่แอปจดเวลาที่ร้านตั้งและเวลาคนขับถึงร้านแล้ว วันก่อนหน้านั้นขึ้น \"-\" (ถ้านับรวม 2) จะสูงเกินจริง 3) จะต่ำเกินจริง) " +
             "ในหน้าสรุปจึงเทียบ 3 แบบเฉพาะวันเหล่านั้น โดยมี 1) แบบ Grab ของวันเดียวกันไว้ข้างกัน",
         "• % อาหารเสร็จก่อนคนขับมาถึง: นับเฉพาะวันที่แอปจดเวลาคนขับถึงร้านแล้ว",

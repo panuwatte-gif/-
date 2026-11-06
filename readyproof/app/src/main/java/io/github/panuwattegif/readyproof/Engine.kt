@@ -1830,12 +1830,14 @@ class Engine(private val service: ProofService) {
             eod = Eod.IDLE
         }
         eodForced = false
+        val month = withContext(Dispatchers.IO) { OrderStore.monthToDate(service, report, zone) }
         val text = "อ่านประวัติได้ " + (report.grabCompleted?.let { "${report.completedSeen}/$it" } ?: "${report.completedSeen}") +
             " ออเดอร์ · ล่าช้าตาม Grab ${report.delayed} (${ReportText.pct(report.grabPct)})\n" +
             "กดทัน ${report.inTime.size} · กดช้า ${report.late.size} · บอกไม่ได้ ${report.unchecked.size} · " +
             "ไม่มีหลักฐาน ${report.noEvidence.size}\n" +
             "% ล่าช้า: Grab ${ReportText.pct(report.grabPct)} · ตัดที่เสร็จก่อนเวลาที่ตั้ง ${ReportText.pct(report.realPct)} · " +
             "ที่ถูกต้อง ${ReportText.pct(report.fairPct)}" +
+            (month?.let { "\n" + ReportText.monthLine(it) } ?: "") +
             (if (incomplete) "\n⚠ ยังไม่ครบ: ดูรายละเอียดในรายงาน" else "")
         setEodStatus(
             "สรุปวันที่ ${ReportText.date(date)} เสร็จ ${ReportText.time(System.currentTimeMillis(), zone)} · " +
